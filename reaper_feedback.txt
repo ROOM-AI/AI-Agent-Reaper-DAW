@@ -1,2 +1,4 @@
-🎛️ Automated VST3: MannyM Distortion Stereo (Waves) > Drive: 0.00s→3.69s (0%→0%)
-🎛️ Automated VST3: MannyM Distortion Stereo (Waves) > Drive: 3.70s→3.70s (100%→100%)
+🎚️ Track 0 FX#0 'VST3: Pro-Q 3 (FabFilter)' - Band 1 Frequency → 42% [288.66 Hz]
+🎚️ Track 0 FX#0 'VST3: Pro-Q 3 (FabFilter)' - Band 1 Gain → 45% [-3.00 dB]
+🎚️ Track 0 FX#0 'VST3: Pro-Q 3 (FabFilter)' - Band 2 Frequency → 82% [7099.7 Hz]
+🎚️ Track 0 FX#0 'VST3: Pro-Q 3 (FabFilter)' - Band 2 Gain → 53% [+1.80 dB]

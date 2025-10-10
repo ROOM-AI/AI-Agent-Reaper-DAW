@@ -606,7 +606,7 @@ def filter_relevant_actions(user_input, all_actions, max_actions=50):
     
     return relevant
 
-def plan_actions(user_input, state, known_actions, available_plugins, previous_issues="", feedback="", lyric_context=""):
+def plan_actions(user_input, state, known_actions, available_plugins, previous_issues="", feedback="", lyric_context="", analysis_context="", retry_history=[]):
     """Phase 1: AI Plans what to do"""
     
     # Use smart index search instead of old filter (MUCH faster!)
@@ -646,6 +646,15 @@ def plan_actions(user_input, state, known_actions, available_plugins, previous_i
     issues_section = f"\n**PREVIOUS ATTEMPT - WHAT FAILED:**\n{previous_issues}\n" if previous_issues else ""
     feedback_section = f"\n**FEEDBACK FROM LAST COMMANDS:**\n{feedback}\n\n**IMPORTANT**: Look at the feedback above to see what ACTUALLY executed. Only retry the commands that failed or are missing. Don't repeat successful commands!\n" if feedback else ""
     lyric_section = lyric_context if lyric_context else ""
+    analysis_section = analysis_context if analysis_context else ""
+    
+    # Build retry history section
+    history_section = ""
+    if retry_history:
+        history_section = "\n**RETRY HISTORY (what you tried and what happened):**\n"
+        for entry in retry_history:
+            history_section += f"- {entry}\n"
+        history_section += "\n**USE THIS HISTORY:** Learn from what worked and what overshot. Converge toward target, don't repeat failed approaches.\n"
     
     system_prompt = f"""You are an AI controlling Reaper DAW. THINK STEP-BY-STEP and pick EXACT matches.
 
@@ -657,6 +666,37 @@ def plan_actions(user_input, state, known_actions, available_plugins, previous_i
 
 **AVAILABLE PLUGINS (use EXACT names from this list):**
 {plugins_text}
+
+**PLUGIN TYPE KNOWLEDGE (CRITICAL - learn these categories):**
+
+**EQ PLUGINS (can CUT/BOOST frequencies - use these to FIX problems):**
+- Names containing: "EQ", "Pro-Q", "ReaEQ", "SSL" (channel/bus), "Pultec", "API", "Neve"
+- Examples: FabFilter Pro-Q 3, ReaEQ (Cockos), Waves SSL E-Channel, Waves API-550
+
+**VISUALIZERS/ANALYZERS (ONLY show frequencies - CANNOT fix anything!):**
+- Names containing: "PAZ", "SPAN", "Spectrum", "Frequency Analyzer", "Meter"
+- Examples: PAZ-Frequency, JS: Frequency Spectrum Analyzer, Voxengo SPAN
+- **DO NOT USE THESE TO FIX PROBLEMS - THEY ARE READ-ONLY TOOLS!**
+
+**DYNAMICS PLUGINS (compression/limiting):**
+- Names containing: "Comp", "1176", "LA-2A", "SSL Comp", "CLA", "Limiter"
+
+**SATURATION/DISTORTION (harmonics/color):**
+- Names containing: "Saturn", "Decapitator", "Distortion", "Drive", "Tube"
+
+**REVERB/DELAY (space/time effects):**
+- Names containing: "Reverb", "Delay", "Echo", "Room", "Plate", "Hall"
+
+**CRITICAL RULES:**
+1. When user wants to FIX frequency problems (muddy, harsh, bright) → ONLY use EQ plugins
+2. NEVER add visualizers/analyzers unless user specifically asks to "see" or "show" frequencies
+3. If no EQ exists in AVAILABLE PLUGINS list, search for "EQ" or "ReaEQ" (Reaper's built-in)
+4. Visualizers are for ANALYSIS requests only ("show me the frequencies", "what's the spectrum")
+
+**Examples:**
+- "fix muddy frequencies" → ADD_FX Pro-Q 3 or ReaEQ (NEVER PAZ or Spectrum Analyzer!)
+- "show me the frequency spectrum" → ADD_FX PAZ or Spectrum Analyzer (OK to use visualizers here)
+- "make it brighter" → ADD_FX EQ plugin and boost highs (NOT an analyzer!)
 
 **CUSTOM COMMANDS (use these for plugins and automation):**
 - SELECT_TRACK <trackIdx> - Select track (REQUIRED before track actions!)
@@ -752,17 +792,48 @@ When user wants automation on multiple FX parameters, use FX_PARAM_AUTO for each
 - CORRECT: FX_PARAM_AUTO 0 0 11 3.7 3.7 0.3 0.3, then FX_PARAM_AUTO 0 1 5 5.0 5.0 0.5 0.5
 - Each command directly targets specific track/FX/param - no "last touched" confusion
 - You can automate multiple parameters on different FX in any order
-{issues_section}{feedback_section}{lyric_section}
+{history_section}{issues_section}{feedback_section}{lyric_section}{analysis_section}
 **USER REQUEST:** "{user_input}"
 
 **AUDIO ANALYSIS REQUESTS:**
-When user asks questions about audio quality/characteristics, use ANALYZE_TRACK:
-- "Does this sound muddy?" → ANALYZE_TRACK to check frequency balance
-- "Is the vocal too loud/quiet?" → ANALYZE_TRACK to check loudness levels
-- "Is this compressed?" → ANALYZE_TRACK to check dynamic range
-- "Does this sound bright/dark?" → ANALYZE_TRACK to check tonal characteristics
-Analysis returns: frequency balance (6 bands), loudness (RMS, peak, dynamic range), stereo width, detected issues, recommendations
-After analysis, interpret results and answer user's question in natural language
+
+**CRITICAL: NEVER RE-ANALYZE ON RETRIES!**
+If you see **AUDIO ANALYSIS RESULTS** in this prompt, analysis already ran. DO NOT run ANALYZE_TRACK again!
+Re-analyzing causes oscillation because your EQ changes alter the frequency balance, making new analysis contradict old settings.
+
+**When to analyze:**
+- User asks question ONLY: "Does this sound muddy?" → ANALYZE_TRACK 0, then ANSWER in natural language (no actions)
+- User says "analyze AND fix/configure/add": "analyze track 0 and fix muddy" → Run ANALYZE_TRACK 0, THEN take action based on results
+- User wants fix (no analyze mentioned): "fix muddy" → Analysis auto-ran BEFORE planning, results shown above, just READ them and ACT
+
+**CRITICAL:** If user says "analyze" followed by "and", "then", "fix", "add", "configure" - they want BOTH analysis AND action, not just analysis!
+
+**On retries with re-analysis:**
+Analysis on retries is FEEDBACK to help you converge, use it wisely:
+
+**SCENARIO A - Problem still exists:**
+- Original: "Muddy 250-500Hz"
+- After your cut: Still "Muddy 250-500Hz"
+- Action: Cut wasn't deep enough, increase the cut by 1-2dB more
+
+**SCENARIO B - Problem got worse (OVERSHOOT):**
+- Original: "Muddy 250-500Hz"  
+- Your action: Set param 3 (gain) to 0.35 → created -9dB cut
+- Re-analysis: Now "Thin (lacking bass)" or "Harsh"
+- **ROOT CAUSE:** Param 3 at 0.35 gave -9dB, that's TOO MUCH cut (wanted -3dB)
+- **ACTION:** Dial back THE SAME PARAM 3: change from 0.35 to 0.43 (less cut, closer to -3dB)
+- **NOT:** Add different plugin or change different param - fix the specific value that overshot!
+
+**SCENARIO C - New problem appeared:**
+- Original: "Muddy 250-500Hz"
+- After your cut: Muddy reduced, but now "Dull (lacking air)"
+- Action: Original cut worked! Now add high boost separately (don't undo the cut)
+
+**CONVERGENCE STRATEGY:**
+- Use NEW analysis to see if you're getting closer or overshooting
+- Don't abandon the original plan - refine it based on feedback
+- If problem flips (muddy → harsh), you overcompensated
+- Aim for "Issues Detected: None" or minimal issues
 
 **CRITICAL INSTRUCTIONS:**
 1. **MULTIPLE PLUGINS/COMMANDS**: When user says "open X and Y" or "add A, B, and C", create SEPARATE steps for each plugin/action.
@@ -794,9 +865,35 @@ After analysis, interpret results and answer user's question in natural language
    - Example: You tried param index 2 for gain but failed
    - Look in state for "Band 1 Gain" → See it's at param index 3 → Use 3, not 2
    
-   **STEP 3: OUTPUT ONLY RETRY COMMANDS**:
+   **STEP 3: CONVERGENCE - INTERPOLATE TO TARGET**:
+   When adjusting parameter values, use INTERPOLATION not random guessing:
+   
+   **INTERPOLATION MATH:**
+   Look at RETRY HISTORY and STATE to find two known data points:
+   - Point A: Param value 0.35 → got 164Hz
+   - Point B: Param value 0.44 → got 338Hz
+   - Target: 300Hz
+   
+   **Linear interpolation:**
+   - Range: 164Hz to 338Hz (difference = 174Hz)
+   - Target 300Hz is at: (300 - 164) / (338 - 164) = 136/174 = 78% of the way from A to B
+   - Param value: 0.35 + (0.44 - 0.35) × 0.78 = 0.35 + 0.07 = 0.42
+   - **Try 0.42** - should land close to 300Hz!
+   
+   **RULES:**
+   - Use data from previous attempts to interpolate, don't guess randomly
+   - If you have 2+ data points, calculate the exact value needed
+   - Each retry should get significantly closer (within 10% of target)
+   - If you overshoot, interpolate back between the two closest values
+   - **NEVER:**
+     * Repeat a failed value
+     * Go backwards in wrong direction
+     * Use random values when you have data to interpolate from
+   
+   **STEP 4: OUTPUT ONLY RETRY COMMANDS**:
    - Don't repeat successful commands
    - Only add commands for what FAILED or is MISSING
+   - Keep successful parameter changes, only fix what's off
    
    **EXAMPLE RETRY:**
    Feedback showed:
@@ -859,7 +956,7 @@ CRITICAL: Return ONLY valid JSON. No text before or after."""
     try:
         response = client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=2000,
+            max_tokens=8000,
             messages=[{"role": "user", "content": system_prompt}]
         ).content[0].text.strip()
         
@@ -915,7 +1012,7 @@ CRITICAL: Return ONLY valid JSON."""
     try:
         response = client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=1500,
+            max_tokens=3000,
             messages=[{"role": "user", "content": system_prompt}]
         ).content[0].text.strip()
         
@@ -971,7 +1068,7 @@ Compare before/after states and feedback. Check if goal was achieved. Be BRIEF.
     try:
         response = client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=1000,
+            max_tokens=2000,
             messages=[{"role": "user", "content": system_prompt}]
         ).content[0].text.strip()
         
@@ -985,6 +1082,67 @@ def execute_user_command(user_input):
     """Main agentic loop: Plan → Execute → Verify → Retry if needed"""
     
     print(f"\n🎤 User: {user_input}")
+    
+    # Check if user is requesting analysis-based actions
+    analysis_keywords = ['muddy', 'harsh', 'bright', 'dark', 'compressed', 'loud', 'quiet', 'thin', 'fix', 'improve', 'balance']
+    needs_analysis = any(keyword in user_input.lower() for keyword in analysis_keywords)
+    
+    analysis_context = ""
+    if needs_analysis and not any(cmd in user_input.lower() for cmd in ['analyze track', 'analyze audio']):
+        # User wants to fix/improve something - analyze first
+        print("🔬 Analysis-based request detected - analyzing audio first...")
+        track_idx = 0  # Default to track 0
+        
+        # Get track name from state  
+        state = get_reaper_state()
+        track_name_match = re.search(r'--- Track 0: (.+) ---', state)
+        track_name = track_name_match.group(1) if track_name_match else f"Track_{track_idx}"
+        
+        # Start playback before export (prevents offline/empty exports)
+        print("▶️ Starting playback for export...")
+        send_reaper_commands(["1007"])  # Play command
+        time.sleep(0.5)  # Brief wait for playback to start
+        
+        # Export and analyze
+        Path(TEMP_AUDIO_DIR).mkdir(exist_ok=True)
+        temp_audio_folder = Path(TEMP_AUDIO_DIR) / f"analyze_track_{track_idx}_{int(time.time())}"
+        
+        if send_reaper_commands([f"EXPORT_AUDIO {track_idx} {temp_audio_folder}"]):
+            time.sleep(2.0)
+            wav_files = list(temp_audio_folder.glob("*.wav")) if temp_audio_folder.exists() else []
+            if wav_files:
+                temp_audio = wav_files[0]
+                analysis = analyze_audio_track(track_idx, track_name, str(temp_audio))
+                
+                if "error" not in analysis:
+                    # Format analysis for Claude
+                    analysis_context = f"""
+**AUDIO ANALYSIS RESULTS for {track_name}:**
+Loudness: {analysis['loudness']['average_rms_db']}dB RMS, Peak: {analysis['loudness']['peak_db']}dB
+Dynamic Range: {analysis['loudness']['dynamic_range_db']}dB ({analysis['loudness']['assessment']})
+Stereo Width: {analysis['stereo_image']['width_percentage']}% ({analysis['stereo_image']['assessment']})
+Brightness: {analysis['tonal_characteristics']['assessment']}
+
+Frequency Balance:
+- Sub Bass (20-60Hz): {analysis['frequency_balance']['sub_bass_20_60hz']:.1f}dB
+- Bass (60-250Hz): {analysis['frequency_balance']['bass_60_250hz']:.1f}dB  
+- Low Mids (250-500Hz): {analysis['frequency_balance']['low_mids_250_500hz']:.1f}dB
+- Mids (500-2kHz): {analysis['frequency_balance']['mids_500_2khz']:.1f}dB
+- High Mids (2-5kHz): {analysis['frequency_balance']['high_mids_2_5khz']:.1f}dB
+- Highs (5-20kHz): {analysis['frequency_balance']['highs_5_20khz']:.1f}dB
+
+Issues Detected: {', '.join(analysis['issues_detected']) if analysis['issues_detected'] else 'None'}
+Recommendations: {', '.join(analysis['recommendations']) if analysis['recommendations'] else 'None'}
+
+**Use this analysis to decide what plugins/settings to apply to fix the detected issues.**
+"""
+                    print(f"✅ Analysis complete - {len(analysis['issues_detected'])} issues found")
+                
+                # Clean up
+                try:
+                    shutil.rmtree(temp_audio_folder)
+                except:
+                    pass
     
     # Check if user is requesting word-based automation
     word_pattern = r'(?:after|before|at|during)\s+(?:the\s+word\s+)?([A-Z]+)'
@@ -1039,18 +1197,19 @@ def execute_user_command(user_input):
     print(f"💪 Loaded {len(known_actions)} total actions")
     print(f"🎛️ Loaded {len(available_plugins)} available plugins")
     
-    # Retry loop (up to 6 attempts for complex multi-step commands)
-    max_retries = 6
+    # Retry loop (up to 10 attempts for complex multi-step commands)
+    max_retries = 10
     retry_count = 0
     previous_issues = ""
     previous_feedback = ""
+    retry_history = []  # Track what we tried and what happened
     
     while retry_count < max_retries:
         attempt_label = "" if retry_count == 0 else f" (retry {retry_count}/{max_retries})"
         print(f"\n🧠 Planning actions{attempt_label}...")
         
         # PHASE 1: PLAN
-        plan_response = plan_actions(technical_input, initial_state, known_actions, available_plugins, previous_issues, previous_feedback, lyric_context)
+        plan_response = plan_actions(technical_input, initial_state, known_actions, available_plugins, previous_issues, previous_feedback, lyric_context, analysis_context, retry_history)
         
         try:
             plan = json.loads(plan_response)
@@ -1127,6 +1286,11 @@ def execute_user_command(user_input):
                     track_name_match = re.search(rf'--- Track {track_idx}: (.+) ---', initial_state)
                     track_name = track_name_match.group(1) if track_name_match else f"Track_{track_idx}"
 
+                    # Start playback before export (prevents offline/empty exports)
+                    print("▶️ Starting playback for export...")
+                    send_reaper_commands(["1007"])  # Play command
+                    time.sleep(0.5)  # Brief wait for playback to start
+                    
                     # Export audio for analysis
                     Path(TEMP_AUDIO_DIR).mkdir(exist_ok=True)
                     temp_audio_folder = Path(TEMP_AUDIO_DIR) / f"analyze_track_{track_idx}_{int(time.time())}"
@@ -1242,6 +1406,13 @@ def execute_user_command(user_input):
                     print(f"📌 Issues: {issues}")
                 
                 # Prepare for retry
+                # Track what we tried and what happened (include commands and outcome)
+                commands_summary = ", ".join([cmd[:50] for cmd in commands[:3]])  # First 3 commands, truncated
+                if len(commands) > 3:
+                    commands_summary += f" ... (+{len(commands)-3} more)"
+                retry_entry = f"Attempt {retry_count + 1}: {commands_summary} → Result: {explanation}"
+                retry_history.append(retry_entry)
+                
                 previous_issues = issues
                 previous_feedback = feedback
                 initial_state = final_state  # Continue from current state
@@ -1273,6 +1444,14 @@ def execute_user_command(user_input):
             # Retry if unclear or incomplete
             if retry_count < max_retries:
                 print("📌 Will retry to verify or complete remaining steps")
+                
+                # Track this attempt in history
+                commands_summary = ", ".join([cmd[:50] for cmd in commands[:3]])
+                if len(commands) > 3:
+                    commands_summary += f" ... (+{len(commands)-3} more)"
+                retry_entry = f"Attempt {retry_count + 1}: {commands_summary} → Verification unclear"
+                retry_history.append(retry_entry)
+                
                 previous_issues = f"Verification unclear. Feedback: {feedback}. Check NEW STATE for what actually happened."
                 previous_feedback = feedback if feedback else "No feedback"
                 initial_state = final_state
@@ -1284,7 +1463,7 @@ def execute_user_command(user_input):
                 break
     
     if retry_count == max_retries:
-        print("\n❌ Max retries reached - giving up")
+        print(f"\n⚠️ Reached {max_retries} attempts - stopping here")
     
     # Save to memory
     history_entry = f"User: '{user_input}' → {reasoning}"
