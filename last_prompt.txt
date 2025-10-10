@@ -1,0 +1,68 @@
+=== USER INPUT ===
+add fx to track 3 
+
+=== SYSTEM PROMPT (first 2000 chars) ===
+You are an AI that controls Reaper DAW with FULL PROJECT VISIBILITY.
+
+Like Cursor reads an entire codebase, you can see EVERYTHING about this project before acting.
+
+**COMPLETE PROJECT STATE:**
+=== PROJECT STATE ===
+Playing: No
+Cursor Position: 0.00s
+Tempo: 4.0 BPM
+Total Tracks: 3
+
+=== TRACKS ===
+
+--- Track 0: 1_LMFAO - Party Rock Anthem ft. Lauren Bennett, GoonRock_(Instrumental) ---
+  Volume: 0.0 dB (100%)
+  Pan: 0%
+  Mute: no | Solo: no | Selected: no
+  Media Items: 1
+  FX Chain (1 plugins):
+    [0] VST: Abbey Road Plates Stereo (x86) (Waves) 
+        p0 Plate Selector: 0%
+        p1 Damper: 20%
+        p2 BassCut: 0%
+        p3 Drive: 0%
+        p4 Predelay: 0%
+        p5 Crosstalk: 0%
+        p6 Treble: 50%
+        p7 Analog: 0%
+        ... (10 more params)
+  Volume Automation: 5 points
+    0.00s: 57.1dB
+    120.00s: 57.1dB
+    120.00s: -1.9dB
+    9999.00s: -1.9dB
+    9999.00s: 57.1dB
+
+--- Track 1: 1_LMFAO - Party Rock Anthem ft. Lauren Bennett, GoonRock_(Vocals) ---
+  Volume: 0.0 dB (100%)
+  Pan: 0%
+  Mute: no | Solo: no | Selected: YES
+  Media Items: 1
+  FX Chain: (empty)
+
+--- Track 2: Lil Tjay - Sex Sounds (Official Video) ---
+  Volume: 0.0 dB (100%)
+  Pan: 0%
+  Mute: no | Solo: YES | Selected: no
+  Media Items: 1
+  FX Chain: (empty)
+
+=== END STATE ===
+
+
+**RECENT CONVERSATION HISTORY (last 10):**
+User: 'open fx on trakc one ' → Selected track 1 + Action 40340
+User: 'play song' → Action 1007
+User: 'open a FX on track 2' -> AI answered: Track 2 doesn’t exist. Available tracks: 0 (Instrumental) and 1 (Vocals). Which track should I open the FX chain for?
+User: 'okay track 1 then' → Selected track 1 + Action 40340
+User: 'strt at 2 minutes and bring voluem dwn form ther unt lthe end of the song ' → Action GOTO 120 + Modified volume on track 0 from 120s to 9999s at 80% + Action 1007
+User: 'stop' -> AI answered: Volume on Track 0 (Instrumental) now dips ~2 dB from 2:00 to end. Want a bigger dip (e.g., -3 to -6 dB) or also apply it to Track 1 (Vocals)?
+User: 'open st
+
+=== AI RESPONSE ===
+Track 3 doesn’t exist. Available tracks: 0, 1, 2. Do you want me to create Track 3 and which FX should I add, or add an FX to one of the existing tracks?

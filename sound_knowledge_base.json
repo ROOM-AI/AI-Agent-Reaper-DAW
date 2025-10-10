@@ -1,0 +1,292 @@
+{
+  "sonic_qualities": {
+    "brightness": {
+      "deep_explanation": "Brightness in audio refers to the perceptual emphasis on high frequencies that evokes sparkle, air, and presence, making sounds feel vivid and alive. It's not just boosting highs but creating a sense of openness and clarity that draws the listener in emotionally, like sunlight piercing through clouds. Too much can lead to harshness, fatiguing the ears and masking subtler details, while too little results in dull, muffled tones lacking excitement.",
+      "multiple_paths": [
+        {
+          "path": "EQ Boosting",
+          "description": "Subtle high-shelf boosts (3-6dB at 5-10kHz) enhance air without harshness; ideal for vocals or cymbals to add polish.",
+          "when_to_choose": "When precision is needed in clean mixes; avoids introducing artifacts."
+        },
+        {
+          "path": "Exciter/Enhancer",
+          "description": "Adds harmonic excitement to highs, simulating tape or tube effects for smoother brightness.",
+          "when_to_choose": "For digital sources lacking natural sheen; complements EQ for organic feel."
+        },
+        {
+          "path": "Saturation on Highs",
+          "description": "Light distortion on upper mids/highs (e.g., via multi-band) creates even harmonics for perceived brightness without peak buildup.",
+          "when_to_choose": "In dense mixes where direct boosts cause masking; adds warmth alongside sparkle."
+        }
+      ],
+      "frequency_psychology": "Frequencies around 5-10kHz tap into human perception of 'presence' and 'air,' evoking alertness and emotional uplift, but over 12kHz can feel piercing due to ear sensitivity. Combining 5kHz (bite) with 8kHz (air) creates layered brightness; phase issues from boosts can cause masking, dulling overall clarity.",
+      "plugin_options": [
+        {
+          "plugin": "FabFilter Pro-Q 3",
+          "why": "Transparent surgical EQ for precise boosts without coloration; dynamic mode adapts to signal for natural brightness.",
+          "sweet_spots": "High-shelf at 6-8kHz, +2-4dB with Q=0.7 for subtle air; bell at 10kHz for sparkle."
+        },
+        {
+          "plugin": "iZotope Ozone Exciter",
+          "why": "Adds harmonic enhancement tailored to highs, mimicking analog excitement without harshness.",
+          "sweet_spots": "10-20% on highs band for gentle sheen; avoid over 30% to prevent fatigue."
+        }
+      ],
+      "contextual_variations": {
+        "vocals": "Subtle for intimate indie (avoid harshness); aggressive for pop presence (boost 7kHz for shine).",
+        "synths": "Enhances shimmer in pads but risks clashing in leads—use M/S for width.",
+        "drums": "Adds snap to cymbals; too much masks transients in dense kits."
+      }
+    },
+    "warmth": {
+      "deep_explanation": "Warmth evokes a comforting, rich texture through harmonic richness and low-mid emphasis, like a cozy fire—perceptually softening edges while adding body. It stems from even harmonics and subtle compression, differing by source: vocal warmth feels intimate and human, bass warmth grounding and powerful, synth warmth vintage and nostalgic. Overdo it, and mud ensues, masking clarity; underdo, and sounds feel sterile and detached.",
+      "multiple_paths": [
+        {
+          "path": "Saturation/Distortion",
+          "description": "Introduces harmonics (20-40% drive) for analog-like richness; multi-band targets mids.",
+          "when_to_choose": "For digital sterility; tape/tube types for subtle glow."
+        },
+        {
+          "path": "EQ Shaping",
+          "description": "Gentle low-mid boosts (200-500Hz, +2-4dB) add body without mud.",
+          "when_to_choose": "Corrective tonal balance; pairs with high cuts for smoothness."
+        },
+        {
+          "path": "Vintage Emulation",
+          "description": "Plugins mimicking consoles/tape (e.g., RC-20) add noise, wow/flutter for character.",
+          "when_to_choose": "Holistic track treatment; ideal for buses to glue mixes."
+        },
+        {
+          "path": "Harmonic Excitement",
+          "description": "Subtle enhancers generate even harmonics for depth.",
+          "when_to_choose": "When EQ alone lacks life; avoids overdrive artifacts."
+        }
+      ],
+      "frequency_psychology": "200-500Hz feels enveloping and emotional, triggering 'closeness' perception; harmonics from distortion create psychoacoustic fullness. Combining with highs avoids mud—phase from boosts can muddy if conflicting; masking in lows demands careful balance.",
+      "plugin_options": [
+        {
+          "plugin": "FabFilter Saturn 2",
+          "why": "Multi-band saturation for targeted warmth; bands allow mid-body without low mud.",
+          "sweet_spots": "20-30% drive on mids band for subtle tube glow; highs band under 20% for air."
+        },
+        {
+          "plugin": "Soundtoys Decapitator",
+          "why": "Aggressive analog modeling; styles vary harmonic character for versatile warmth.",
+          "sweet_spots": "Low drive (2-4) on 'A' style for tape-like richness."
+        }
+      ],
+      "contextual_variations": {
+        "vocals": "Subtle for intimacy (avoid mud in pop); heavier for indie grit.",
+        "bass": "Enhances growl but risks boom—genre-dependent (EDM vs rock).",
+        "synths": "Vintage warmth revives digital; too much conflicts in pads."
+      }
+    },
+    "space": {
+      "deep_explanation": "Space creates perceptual depth and immersion, simulating environments that evoke vastness or intimacy—reverb tails build emotional distance, delays add rhythm. It differs by source: vocal space feels ethereal, drum space punchy and expansive. Trade-offs: excess washes out clarity, causing masking; deficit feels dry and confined.",
+      "multiple_paths": [
+        {
+          "path": "Reverb",
+          "description": "20-50% wet for depth; long decays for halls, short for rooms.",
+          "when_to_choose": "Natural ambiance; pre-delay for separation."
+        },
+        {
+          "path": "Delay",
+          "description": "Subtle echoes (10-30% wet) for rhythmic space.",
+          "when_to_choose": "When reverb muddies; tape-style for warmth."
+        },
+        {
+          "path": "Stereo Imaging",
+          "description": "Widen highs for perceived space without reverb wash.",
+          "when_to_choose": "Mono-compatible mixes; avoids phase issues."
+        }
+      ],
+      "frequency_psychology": "Long decays (2-4s) evoke vastness, triggering awe; pre-delay (20-50ms) separates source from space. Masking from lows in reverb demands high-pass; phase in delays can create comb filtering, altering timbre.",
+      "plugin_options": [
+        {
+          "plugin": "Valhalla Room",
+          "why": "Natural algorithmic reverb for realistic spaces; modes vary from rooms to halls.",
+          "sweet_spots": "20-40% wet, 2-4s decay for vocals; high-cut for clarity."
+        },
+        {
+          "plugin": "FabFilter Timeless 3",
+          "why": "Tape delay with effects for creative space; modulation adds movement.",
+          "sweet_spots": "100-500ms time, 20-30% feedback for echoes."
+        }
+      ],
+      "contextual_variations": {
+        "vocals": "Subtle for presence (pop); long for ambiance (ambient).",
+        "drums": "Short rooms for punch; halls for epic impact.",
+        "synths": "Modulated for width; risks wash in pads."
+      }
+    },
+    "clarity": {
+      "deep_explanation": "Clarity is perceptual definition, reducing mud through frequency separation—feels crisp and focused, like clear vision. Sources vary: vocals need de-mudding for intelligibility, drums for snap. Trade-offs: over-clarity harshens; under muddies, masking details.",
+      "multiple_paths": [
+        {
+          "path": "Subtractive EQ",
+          "description": "Cut mud (200-400Hz, -2-4dB) for definition.",
+          "when_to_choose": "Corrective; first line against masking."
+        },
+        {
+          "path": "High-Pass Filtering",
+          "description": "Roll-off lows (80-120Hz) to free space.",
+          "when_to_choose": "Low-end buildup; essential in mixes."
+        },
+        {
+          "path": "Dynamic Processing",
+          "description": "Compress to even levels, unmasking details.",
+          "when_to_choose": "When EQ alone fails; sidechain for separation."
+        }
+      ],
+      "frequency_psychology": "1-5kHz boosts presence but risks harshness; masking from resonances dulls—phase alignment critical. Comb filtering from delays can obscure; psychology ties to alertness.",
+      "plugin_options": [
+        {
+          "plugin": "FabFilter Pro-Q 3",
+          "why": "Surgical cuts for resonances; dynamic unmasking.",
+          "sweet_spots": "Notch at problem freqs, -3-6dB; high-pass 100Hz."
+        },
+        {
+          "plugin": "SSL Compressor",
+          "why": "Punchy control evens levels, enhancing clarity.",
+          "sweet_spots": "Fast attack (3ms), 4:1 ratio for glue."
+        }
+      ],
+      "contextual_variations": {
+        "vocals": "De-ess for sibilance; professional vs demo feel.",
+        "drums": "Cut mud for snap; genre (rock punchy vs jazz natural).",
+        "synths": "Avoid harsh highs; balance in dense arrangements."
+      }
+    },
+    "punch": {
+      "deep_explanation": "Punch delivers perceptual impact through sharp transients, evoking energy and rhythm—like a heartbeat. Vocals punch for presence, bass for drive. Over-punch fatigues; under lacks groove.",
+      "multiple_paths": [
+        {
+          "path": "Compression",
+          "description": "Slow attack (5-10ms) lets transients through.",
+          "when_to_choose": "Dynamic control with snap."
+        },
+        {
+          "path": "Transient Shaping",
+          "description": "Boost attack for emphasis.",
+          "when_to_choose": "Percussive sources; fine-tune impact."
+        },
+        {
+          "path": "EQ Boosts",
+          "description": "+2-4dB at 50-200Hz for low punch, 2-5kHz for attack.",
+          "when_to_choose": "Tonal shaping; complements dynamics."
+        }
+      ],
+      "frequency_psychology": "50-200Hz feels visceral; transients trigger alertness. Masking dulls punch—phase alignment preserves snap.",
+      "plugin_options": [
+        {
+          "plugin": "SSL Compressor",
+          "why": "Fast, punchy for impact; glue without squash.",
+          "sweet_spots": "Attack 3ms, ratio 4:1-8:1."
+        },
+        {
+          "plugin": "Transient Shaper",
+          "why": "Direct control over attack/sustain.",
+          "sweet_spots": "+20% attack for drums."
+        }
+      ],
+      "contextual_variations": {
+        "drums": "Essential for kick/snare; electronic vs acoustic.",
+        "bass": "Enhances groove; risks boom in EDM.",
+        "vocals": "Consonants for punch; rap vs singing."
+      }
+    },
+    "width": {
+      "deep_explanation": "Width expands stereo perception for immersion, using phase/time differences—feels expansive and engaging. Vocals wide for choruses, synths for pads. Trade-offs: excess causes phase issues in mono; deficit feels narrow.",
+      "multiple_paths": [
+        {
+          "path": "Panning",
+          "description": "Hard pan duplicates for basic width.",
+          "when_to_choose": "Simple stereo; mono-compatible."
+        },
+        {
+          "path": "Haas Effect",
+          "description": "Short delays (5-40ms) between channels.",
+          "when_to_choose": "Subtle widening; risks comb filtering."
+        },
+        {
+          "path": "M/S Processing",
+          "description": "Boost sides for width, mid for center.",
+          "when_to_choose": "Precise control; maintains mono integrity."
+        }
+      ],
+      "frequency_psychology": "Above 200Hz safe for widening; phase shifts create spatial cues. Masking in sides reduces clarity—psychoacoustics tie to environmental awareness.",
+      "plugin_options": [
+        {
+          "plugin": "Ozone Imager",
+          "why": "Visualizes width; adjusts stereo without phase harm.",
+          "sweet_spots": "20-50% on mids/highs."
+        },
+        {
+          "plugin": "FabFilter Pro-Q 3 (M/S)",
+          "why": "EQ sides differently for perceived space.",
+          "sweet_spots": "Boost highs in sides +2dB."
+        }
+      ],
+      "contextual_variations": {
+        "synths": "Wide pads for immersion; mono leads for focus.",
+        "vocals": "Doubles for choruses; risks phase in mono.",
+        "drums": "Overheads wide; kick center for punch."
+      }
+    }
+  },
+  "plugin_encyclopedia": {
+    "FabFilter Pro-Q 3": {
+      "sonic_signature": "Transparent and surgical with zero-latency precision; excels in clean tonal shaping without coloration, making it versatile for corrective or creative EQ.",
+      "sweet_spots": "Dynamic bands for adaptive cuts/boosts; high-shelf 6-10kHz for air; notch for resonances.",
+      "what_it_does": "Balances frequencies, unmasks elements, enhances clarity/presence; dynamic mode compresses specific freqs for even response."
+    },
+    "FabFilter Saturn 2": {
+      "sonic_signature": "Multi-band saturation with harmonic richness; ranges from subtle tube warmth to aggressive distortion, preserving clarity via bands.",
+      "sweet_spots": "20-40% drive on mids for body; highs under 30% for excitement without harshness.",
+      "what_it_does": "Adds even/odd harmonics for warmth/grit; bands target frequencies, gluing mixes or adding character."
+    },
+    "Valhalla Room": {
+      "sonic_signature": "Natural algorithmic reverb emulating realistic spaces; warm, versatile from rooms to halls with lush modulation.",
+      "sweet_spots": "20-40% wet for vocals; 2-4s decay; high-cut for clarity.",
+      "what_it_does": "Creates depth/ambiance; modes vary density for natural vs modulated spaces."
+    },
+    "FabFilter Timeless 3": {
+      "sonic_signature": "Vintage tape delay with clean to lo-fi character; excels in rhythmic echoes and creative modulation.",
+      "sweet_spots": "100-500ms time, 20-50% feedback; Lo-Fi for degradation.",
+      "what_it_does": "Adds space via delays; effects like pitch/diffuse color feedback for unique textures."
+    },
+    "SSL Compressor": {
+      "sonic_signature": "Punchy, transparent with glue; fast attack for impact, adding cohesion without squash.",
+      "sweet_spots": "3ms attack, 4:1-8:1 ratio; auto-release for musicality.",
+      "what_it_does": "Controls dynamics, enhances punch; bus use glues mixes."
+    }
+  },
+  "processing_chains": {
+    "principles": [
+      {
+        "principle": "EQ Before Compression",
+        "why": "EQ cleans spectral flaws (e.g., resonances) first, preventing compressor from amplifying issues; post-EQ compression responds evenly, avoiding tonal fights.",
+        "when_to_reverse": "If compression generates needed harmonics first, or for creative distortion emphasis."
+      },
+      {
+        "principle": "Subtractive EQ First",
+        "why": "Removes mud/masking early, freeing space; additive after for boosts without amplifying junk.",
+        "when_to_reverse": "Creative shaping where boosts inspire, then subtract conflicts."
+      },
+      {
+        "principle": "Dynamics Before Effects",
+        "why": "Even levels before reverb/delay prevents washed tails; effects process consistent signal.",
+        "when_to_reverse": "For distorted delays where compression post amplifies grit."
+      },
+      {
+        "principle": "Saturation After EQ",
+        "why": "EQ shapes tone first; saturation adds harmonics to balanced signal, avoiding mud buildup.",
+        "when_to_reverse": "Vintage emulation where pre-EQ saturation mimics analog chain."
+      }
+    ]
+  },
+  "natural_language_parsing": {
+    "how_to_extract_intent": "Parse for keywords (e.g., 'brighter' → brightness) but probe context: intensity ('subtle' → low), source ('vocals' → intimate), genre ('pop' → presence). Use NLI-like entailment: Convert utterance to hypothesis (e.g., 'warmer vocals' entails warmth via saturation). Avoid rigid matches—analyze true sonic need (e.g., 'punchy drums' implies transient emphasis, not just compression). Chain multi-intents (e.g., 'brighter with warmth' balances highs/mids to avoid conflicts)."
+  }
+}
+

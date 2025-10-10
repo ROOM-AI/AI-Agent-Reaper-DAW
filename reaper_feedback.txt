@@ -1,0 +1,2 @@
+🎛️ Automated VST3: MannyM Distortion Stereo (Waves) > Drive: 0.00s→3.69s (0%→0%)
+🎛️ Automated VST3: MannyM Distortion Stereo (Waves) > Drive: 3.70s→3.70s (100%→100%)

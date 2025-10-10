@@ -1,0 +1,47 @@
+=== PROJECT STATE ===
+Playing: No
+Cursor Position: 1.00s
+Tempo: 4.0 BPM
+Total Tracks: 1
+
+=== TRACKS ===
+
+--- Track 0: 1_Scared To Live-The Weeknd (2)_(Vocals) ---
+  Volume: 0.0 dB (100%)
+  Pan: 0%
+  Mute: no | Solo: no | Selected: YES
+  Media Items: 1
+  FX Chain (1 plugins):
+    [0] VST3: MannyM Distortion Stereo (Waves) 
+
+        === MAIN CONTROLS ===
+        p0 Bypass: 0% [Off]
+        p1 Preset: 0% [Manny's Defaults]
+        p2 Input: 50% [0.0 dB]
+        p3 Direct LVL: 100% [100.0 ]
+        p4 Drive: 0% [0.0 ]
+        p5 Attack: 27% [1.0 ms]
+        p6 Dist LVL: 62% [62.0 ]
+        p7 Release: 27% [31.80 ms]
+        p8 Bass: 0% [-50.0 ]
+        p9 Mid: 50% [0.0 ]
+
+        === EQ BANDS ===
+        p10 Mid Freq: 61% [1252 Hz]
+        p11 Treble: 35% [-15.0 ]
+        p12 LP: 87% [13015 Hz]
+
+        === OUTPUT ===
+        p13 Output: 50% [0.0 dB]
+        p14 Bypass: 0% [normal]
+        p15 Wet: 100% [100]
+        p16 Delta: 0% [normal]
+
+        === AUTOMATED PARAMETERS ===
+        p4 Drive: 9 automation points
+          -0.00s: 50%
+          0.00s: 50%
+          0.00s: 0%
+          ... (6 more points)
+
+=== END STATE ===
