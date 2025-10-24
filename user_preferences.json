@@ -1,0 +1,31 @@
+{
+  "plugin_preferences": {
+    "EQ": {
+      "always_use": "FabFilter Pro-Q 3",
+      "never_use": ["API-550", "SSL EQ", "ReaEQ", "TRACT"],
+      "reason": "Pro-Q 3 has all filter types (low-pass, high-pass, band-pass, bell, shelf) with slopes up to Brickwall. Other EQs have confusing parameter mappings."
+    },
+    "Distortion": {
+      "always_use": ["Manny M", "Kramer Tape", "J37 Tape"],
+      "never_use": ["Aphex Vintage Exciter", "API-550", "Abbey Road Vinyl"],
+      "reason": "Manny M and Kramer Tape are actual tape saturation/distortion. Aphex is an exciter, not distortion."
+    },
+    "Reverb": {
+      "always_use": "Valhalla Room",
+      "alternatives": ["Valhalla Vintage Verb", "Valhalla Shimmer"],
+      "reason": "Valhalla reverbs sound natural and have clear parameters."
+    },
+    "Saturation": {
+      "always_use": "FabFilter Saturn 2",
+      "reason": "Multi-band saturation allows targeting specific frequencies without affecting the whole signal."
+    }
+  },
+  "workflow_rules": [
+    "When user says 'EQ', add Pro-Q 3 - never API-550, SSL, ReaEQ, or TRACT",
+    "When user says 'distortion', add Manny M or Kramer Tape - never Aphex Exciter or EQs",
+    "When user says 'reverb', add Valhalla Room - never generic reverbs",
+    "When user says 'cut high' or 'cut highs', use Pro-Q 3 with High Cut (Low-Pass) filter, NOT high-shelf",
+    "When user says 'boost bass', use Pro-Q 3 with Low Shelf or Bell filter at 100-200Hz"
+  ]
+}
+

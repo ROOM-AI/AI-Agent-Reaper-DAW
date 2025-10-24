@@ -42,6 +42,22 @@ function write_feedback()
     end
 end
 
+-- Generalized command execution wrapper
+-- Automatically logs success/failure for ANY command
+function execute_with_feedback(command_name, success, message)
+    if success then
+        local feedback_msg = string.format("✓ %s: %s", command_name, message or "success")
+        msg(feedback_msg)
+        add_feedback(feedback_msg)
+        return true
+    else
+        local feedback_msg = string.format("✗ %s: %s", command_name, message or "failed")
+        msg(feedback_msg)
+        add_feedback(feedback_msg)
+        return false
+    end
+end
+
 function export_state()
     -- Export FULL Reaper project state to file (like Cursor reading entire codebase)
     local stateFile = io.open(STATE_FILE, "w")
@@ -231,7 +247,7 @@ function process_command(line)
         
         local track = reaper.GetTrack(0, trackIdx)
         if not track then
-            msg("Track "..trackIdx.." not found")
+            execute_with_feedback("VOL_DIP", false, string.format("Track %d not found", trackIdx))
             return
         end
         
@@ -253,7 +269,9 @@ function process_command(line)
             reaper.InsertEnvelopePoint(env, tEnd+0.0005, val_after, 0, 0.0, true, false)
             
             reaper.Envelope_SortPoints(env)
-            msg(string.format("📉 Vol dip track %d: %.1fs→%.1fs at %.0f%%", trackIdx, tStart, tEnd, value*100))
+            execute_with_feedback("VOL_DIP", true, string.format("Track %d: %.1fs→%.1fs at %.0f%%", trackIdx, tStart, tEnd, value*100))
+        else
+            execute_with_feedback("VOL_DIP", false, string.format("Could not create volume envelope for track %d", trackIdx))
         end
         
     elseif cmd == "ADD_FX" then
@@ -371,9 +389,13 @@ function process_command(line)
             if fxIdx < numFX then
                 local fxName = reaper.TrackFX_GetFXName(track, fxIdx, "")
                 reaper.TrackFX_Delete(track, fxIdx)
-                msg(string.format("🗑️ Removed FX#%d '%s' from track %d", fxIdx, fxName, trackIdx))
+                local successMsg = string.format("🗑️ Removed FX#%d '%s' from track %d", fxIdx, fxName, trackIdx)
+                msg(successMsg)
+                add_feedback(successMsg)
             else
-                msg(string.format("❌ Track %d only has %d FX (tried to remove FX#%d)", trackIdx, numFX, fxIdx))
+                local failMsg = string.format("❌ Track %d only has %d FX (tried to remove FX#%d)", trackIdx, numFX, fxIdx)
+                msg(failMsg)
+                add_feedback(failMsg)
             end
         end
         
@@ -395,11 +417,9 @@ function process_command(line)
             -- ALSO "touch" the track by setting volume to current volume (makes it "last touched")
             local currentVol = reaper.GetMediaTrackInfo_Value(track, "D_VOL")
             reaper.SetMediaTrackInfo_Value(track, "D_VOL", currentVol)
-            msg(string.format("✅ Selected & touched track %d", trackIdx))
-            add_feedback(string.format("✓ Selected track %d", trackIdx))
+            execute_with_feedback("SELECT_TRACK", true, string.format("Selected track %d", trackIdx))
         else
-            msg(string.format("❌ Track %d not found", trackIdx))
-            add_feedback(string.format("✗ Track %d not found", trackIdx))
+            execute_with_feedback("SELECT_TRACK", false, string.format("Track %d not found", trackIdx))
         end
         
     elseif cmd == "SET_TRACK_VOL" then
@@ -411,9 +431,9 @@ function process_command(line)
         if track then
             local volume = 10^(volDB/20)  -- Convert dB to linear
             reaper.SetMediaTrackInfo_Value(track, "D_VOL", volume)
-            msg(string.format("🔊 Track %d volume set to %.1fdB", trackIdx, volDB))
+            execute_with_feedback("SET_TRACK_VOL", true, string.format("Track %d → %.1fdB", trackIdx, volDB))
         else
-            msg(string.format("❌ Track %d not found", trackIdx))
+            execute_with_feedback("SET_TRACK_VOL", false, string.format("Track %d not found", trackIdx))
         end
         
     elseif cmd == "CLEAR_AUTOMATION" then
@@ -430,15 +450,23 @@ function process_command(line)
                 if numPoints > 0 then
                     -- Delete entire range of points
                     reaper.DeleteEnvelopePointRange(env, 0, 999999)
-                    msg(string.format("🗑️ Cleared %d automation points from %s on track %d", numPoints, envName, trackIdx))
+                    local successMsg = string.format("🗑️ Cleared %d automation points from %s on track %d", numPoints, envName, trackIdx)
+                    msg(successMsg)
+                    add_feedback(successMsg)
                 else
-                    msg(string.format("ℹ️ No automation points on %s envelope of track %d", envName, trackIdx))
+                    local infoMsg = string.format("ℹ️ No automation points on %s envelope of track %d", envName, trackIdx)
+                    msg(infoMsg)
+                    add_feedback(infoMsg)
                 end
             else
-                msg(string.format("❌ No %s envelope on track %d", envName, trackIdx))
+                local failMsg = string.format("❌ No %s envelope on track %d", envName, trackIdx)
+                msg(failMsg)
+                add_feedback(failMsg)
             end
         else
-            msg(string.format("❌ Track %d not found", trackIdx))
+            local failMsg = string.format("❌ Track %d not found", trackIdx)
+            msg(failMsg)
+            add_feedback(failMsg)
         end
         
     elseif cmd == "FX_PARAM_AUTO" then
@@ -506,7 +534,7 @@ function process_command(line)
         -- GOTO <seconds>
         local pos = tonumber(parts[2]) or 0
         reaper.SetEditCurPos(pos, true, true)
-        msg(string.format("⏩ Jump to %.1fs", pos))
+        execute_with_feedback("GOTO", true, string.format("Jump to %.1fs", pos))
         
     elseif cmd == "EXPORT_AUDIO" then
         -- EXPORT_AUDIO <trackIdx> <outputPath>

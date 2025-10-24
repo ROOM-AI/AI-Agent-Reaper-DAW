@@ -1,4 +1,4 @@
-{
+ {
   "sonic_qualities": {
     "brightness": {
       "deep_explanation": "Brightness in audio refers to the perceptual emphasis on high frequencies that evokes sparkle, air, and presence, making sounds feel vivid and alive. It's not just boosting highs but creating a sense of openness and clarity that draws the listener in emotionally, like sunlight piercing through clouds. Too much can lead to harshness, fatiguing the ears and masking subtler details, while too little results in dull, muffled tones lacking excitement.",
@@ -238,7 +238,58 @@
     "FabFilter Pro-Q 3": {
       "sonic_signature": "Transparent and surgical with zero-latency precision; excels in clean tonal shaping without coloration, making it versatile for corrective or creative EQ.",
       "sweet_spots": "Dynamic bands for adaptive cuts/boosts; high-shelf 6-10kHz for air; notch for resonances.",
-      "what_it_does": "Balances frequencies, unmasks elements, enhances clarity/presence; dynamic mode compresses specific freqs for even response."
+      "what_it_does": "Balances frequencies, unmasks elements, enhances clarity/presence; dynamic mode compresses specific freqs for even response.",
+      "filter_types": {
+        "Bell": "Standard parametric EQ - boost or cut a frequency range with adjustable Q (width). Use for surgical corrections or tonal shaping.",
+        "Low Shelf": "Gradual boost/cut below a frequency. Use for gentle bass adjustments, NOT for aggressive filtering effects.",
+        "High Shelf": "Gradual boost/cut above a frequency. Use for gentle treble adjustments, NOT for aggressive filtering effects.",
+        "Low Cut (High-Pass)": "Removes frequencies below cutoff. Steep slopes available up to 96dB/oct or Brickwall. Use for removing rumble/sub-bass.",
+        "High Cut (Low-Pass)": "Removes frequencies above cutoff. THIS IS WHAT YOU USE FOR UNDERWATER. Steep slopes available up to 96dB/oct or Brickwall mode.",
+        "Band-Pass": "Only allows frequencies between two cutoffs. Use for telephone/radio effects.",
+        "Notch": "Very narrow cut at specific frequency. Use for removing resonances or feedback.",
+        "Tilt Shelf": "Simultaneous low shelf and high shelf pivoting around a center frequency."
+      },
+      "slope_options": {
+        "available": ["6 dB/oct", "12 dB/oct", "18 dB/oct", "24 dB/oct", "30 dB/oct", "36 dB/oct", "48 dB/oct", "72 dB/oct", "96 dB/oct", "Brickwall"],
+        "when_to_use": {
+          "6-12 dB/oct": "Gentle, natural-sounding slopes. Use for subtle tonal shaping where you want smooth transitions.",
+          "24 dB/oct": "Standard steep slope. Good for most corrective EQ work. MINIMUM for underwater effect.",
+          "48-72 dB/oct": "Very steep. Use when you need aggressive filtering but still want some rolloff character.",
+          "96 dB/oct": "Extremely steep, near-brickwall. Use for aggressive effects like underwater where you want sharp cutoff.",
+          "Brickwall": "Sharpest possible cutoff - nearly vertical wall. BEST for underwater, telephone, radio effects where you want complete removal above/below cutoff."
+        }
+      },
+      "parameter_mappings": {
+        "Band 1 Shape (p8)": {
+          "Bell": "0.0 to ~0.12",
+          "Low Shelf": "~0.125 to ~0.24",
+          "High Shelf": "~0.25 to ~0.37",
+          "Low Cut (High-Pass)": "~0.375 to ~0.49",
+          "High Cut (Low-Pass)": "~0.50 to ~0.62",
+          "Band-Pass": "~0.625 to ~0.74",
+          "Notch": "~0.75 to ~0.87",
+          "Tilt Shelf": "~0.875 to 1.0"
+        },
+        "Band 1 Slope (p9)": {
+          "6 dB/oct": "0.0 to ~0.09",
+          "12 dB/oct": "~0.10 to ~0.19",
+          "24 dB/oct": "~0.20 to ~0.29",
+          "48 dB/oct": "~0.30 to ~0.49",
+          "96 dB/oct": "~0.50 to ~0.89",
+          "Brickwall": "~0.90 to 1.0"
+        }
+      },
+      "underwater_effect_settings": {
+        "filter_type": "High Cut (Low-Pass)",
+        "parameter_8_value": "0.55 (High Cut filter type)",
+        "frequency": "1000Hz (range: 800-1500Hz)",
+        "parameter_2_value": "0.58 (approximately 1000Hz)",
+        "slope": "Brickwall",
+        "parameter_9_value": "1.0 (Brickwall slope)",
+        "gain": "0dB (low-pass doesn't use gain)",
+        "critical_note": "p8=0.55 gives High Cut (Low-Pass), NOT p8=0.29 which gives Low Cut (High-Pass) - opposite effect!",
+        "why_brickwall": "Brickwall mode creates the sharpest possible cutoff, removing ALL frequencies above 1kHz instantly."
+      }
     },
     "FabFilter Saturn 2": {
       "sonic_signature": "Multi-band saturation with harmonic richness; ranges from subtle tube warmth to aggressive distortion, preserving clarity via bands.",
@@ -287,6 +338,609 @@
   },
   "natural_language_parsing": {
     "how_to_extract_intent": "Parse for keywords (e.g., 'brighter' → brightness) but probe context: intensity ('subtle' → low), source ('vocals' → intimate), genre ('pop' → presence). Use NLI-like entailment: Convert utterance to hypothesis (e.g., 'warmer vocals' entails warmth via saturation). Avoid rigid matches—analyze true sonic need (e.g., 'punchy drums' implies transient emphasis, not just compression). Chain multi-intents (e.g., 'brighter with warmth' balances highs/mids to avoid conflicts)."
+  },
+  "production_effects": {
+    "underwater": {
+      "description": "Muffled, submerged sound created by aggressive LOW-PASS filtering at 1kHz. This is a SIMPLE effect: just add Pro-Q 3 with one low-pass filter set to Brickwall mode. Don't overcomplicate it.",
+      "technical_steps": [
+        {
+          "step": "Remove conflicting plugins first",
+          "details": "If track has plugins boosting highs (exciters, high-shelf EQs) or cutting lows (high-pass/low-cut filters), REMOVE them. They prevent the muffled underwater sound.",
+          "critical": true,
+          "why": "Underwater needs lows only, highs removed. If existing plugins boost 5-10kHz or use high-pass filters, they fight the effect."
+        },
+        {
+          "step": "Add Pro-Q 3 with HIGH CUT (Low-Pass) filter - EXACT PARAMETERS",
+          "details": "Add Pro-Q 3. Configure Band 1: p0 (Band 1 Used) = 1.0, p8 (Shape) = 0.55 for High Cut (Low-Pass), p2 (Frequency) = 0.58 for ~1000Hz, p9 (Slope) = 1.0 for Brickwall. DONE.",
+          "critical": true,
+          "why": "Water absorbs highs. HIGH CUT (Low-Pass) with Brickwall = removes ALL above 1kHz. CRITICAL: p8=0.55 is High Cut (removes highs). p8=0.29 is Low Cut (removes lows) - OPPOSITE! Check Pro-Q 3 parameter_mappings above for exact values."
+        }
+      ],
+      "what_NOT_to_do": [
+        "Using Little AlterBoy or pitch shifters - pitch does NOT create muffling",
+        "Using high-shelf with negative gain - that's gradual, not a steep cutoff",
+        "Using ReaEQ without knowing if it has low-pass - use Pro-Q 3 instead",
+        "Adding reverb/formant/multiple plugins first - do the simple low-pass FIRST, verify it works, THEN add extras"
+      ],
+      "plugin_chain_example": "Step 1: REMOVE_FX (any conflicting high-pass or exciter plugins) → Step 2: ADD_FX Pro-Q 3 → Step 3: SET_FX_PARAM p0=1.0, p8=0.55 (High Cut), p2=0.58 (1000Hz), p9=1.0 (Brickwall) → DONE",
+      "common_mistakes": [
+        "Using p8=0.29 (Low Cut/High-Pass) instead of p8=0.55 (High Cut/Low-Pass) - creates OPPOSITE effect, removes lows instead of highs!",
+        "Using high-shelf instead of low-pass—shelf is gradual reduction, not aggressive cutoff",
+        "Using pitch shift without filtering—creates deeper sound, not underwater muffling",
+        "Not removing conflicting plugins—existing high-pass filters or exciters fight the underwater effect",
+        "Low-pass cutoff too high (>2kHz)—doesn't remove enough highs"
+      ],
+      "reference_tracks": ["Drake - Marvin's Room (intro vocals with heavy low-pass)", "Billie Eilish - ocean eyes (chorus underwater texture)"],
+      "intensity_variations": {
+        "subtle": "Low-pass at 1500Hz, minimal reverb (20% wet), no additional processing",
+        "moderate": "Low-pass at 1000Hz (START HERE), 40% reverb with filtered tail",
+        "extreme": "Low-pass at 700Hz, 60% reverb, bit crush 12-bit, optional pitch -2 to -3 semitones"
+      },
+      "drake_style_notes": "Drake underwater vocals = low-pass 1000-1200Hz + heavy reverb (plate, 40-50% wet, 4s decay) + pitch shift -2 to -4 semitones BLENDED (not full wet). The low-pass is still the foundation."
+    },
+    "telephone_lofi": {
+      "description": "Narrow, tinny sound like phone speakers or old recordings. Used for storytelling (phone calls), vintage aesthetics, or lo-fi hip-hop.",
+      "technical_steps": [
+        {
+          "step": "Band-Pass Filter",
+          "details": "300-3500Hz passband (high-pass at 300Hz, low-pass at 3500Hz). This defines the effect.",
+          "critical": true,
+          "why": "Phone speakers have limited frequency response—cuts bass AND highs for boxed-in sound."
+        },
+        {
+          "step": "Bit Crusher or Sample Rate Reduction",
+          "details": "Reduce to 8-16kHz sample rate or 8-10 bit depth for digital artifacts.",
+          "critical": false,
+          "why": "Adds grit and aliasing, mimics low-quality transmission."
+        },
+        {
+          "step": "Slight Distortion/Saturation",
+          "details": "5-15% drive, tube or tape style for warmth.",
+          "critical": false,
+          "why": "Phone mics clip/distort; adds analog character."
+        },
+        {
+          "step": "Subtle Noise/Hiss",
+          "details": "Very low level pink or white noise (-40 to -50dB).",
+          "critical": false,
+          "why": "Emulates line noise, increases realism."
+        }
+      ],
+      "plugin_chain_example": "Pro-Q 3 (band-pass 300-3500Hz) → Bit crusher → Saturn 2 (light drive) → Noise generator",
+      "common_mistakes": [
+        "Only cutting bass—needs high cut too for boxed effect",
+        "Over-distorting—sounds broken, not vintage",
+        "Too much noise—distracting, not subtle"
+      ],
+      "reference_tracks": ["Mac DeMarco - Chamber of Reflection (verse vocals)", "Tyler, The Creator - EARFQUAKE (intro)"],
+      "intensity_variations": {
+        "subtle": "Band-pass 250-4000Hz, no distortion",
+        "moderate": "Band-pass 300-3000Hz, light bit crush",
+        "extreme": "Band-pass 400-2500Hz, heavy bit crush, 10% distortion, audible noise"
+      }
+    },
+    "drake_style_vocal": {
+      "description": "Dark, atmospheric, reverb-drenched vocals with subtle pitch effects. Signature of OVO Sound aesthetic—intimate yet spacious.",
+      "technical_steps": [
+        {
+          "step": "Low-Pass Filter on Vocal",
+          "details": "5-8kHz gentle roll-off (not steep) to darken tone without muffling.",
+          "critical": true,
+          "why": "Reduces air/brightness for moody, intimate feel without losing clarity."
+        },
+        {
+          "step": "Heavy Reverb",
+          "details": "Long decay (3-5s), 30-50% wet mix, plate or hall type. High-pass reverb at 200Hz.",
+          "critical": true,
+          "why": "Creates signature spaciousness; filtering reverb prevents mud."
+        },
+        {
+          "step": "Pitch Shift Down",
+          "details": "-2 to -4 semitones on doubled vocal layer (blend 20-40% with dry).",
+          "critical": true,
+          "why": "Thickens vocals, adds weight and melancholy vibe."
+        },
+        {
+          "step": "Compression",
+          "details": "Medium-slow attack (10-30ms), 3:1-4:1 ratio for consistency.",
+          "critical": false,
+          "why": "Evens dynamics for intimate whisper feel."
+        },
+        {
+          "step": "De-Essing",
+          "details": "Tame 6-8kHz sibilance by 3-5dB.",
+          "critical": false,
+          "why": "Prevents harsh S sounds in dark, reverb-heavy mix."
+        }
+      ],
+      "plugin_chain_example": "Pro-Q 3 (low-pass 6kHz, de-ess) → Compressor → Valhalla Vintage Verb (plate, 40% wet) → Little AlterBoy (-3 semitones, 30% blend)",
+      "common_mistakes": [
+        "Pitch shifting entire vocal—needs to be blended layer for natural sound",
+        "No high-pass on reverb—low-end buildup causes mud",
+        "Too much reverb wet—loses lyric intelligibility"
+      ],
+      "reference_tracks": ["Drake - Marvin's Room", "Drake - Passionfruit", "The Weeknd - The Hills"],
+      "intensity_variations": {
+        "subtle": "Low-pass 7kHz, 25% reverb, -2 semitones at 20% blend",
+        "moderate": "Low-pass 6kHz, 40% reverb, -3 semitones at 30% blend",
+        "extreme": "Low-pass 5kHz, 50% reverb, -4 semitones at 40% blend, add chorus"
+      }
+    },
+    "lofi_vinyl": {
+      "description": "Warm, nostalgic sound with crackle and imperfections. Core of lo-fi hip-hop aesthetic—evoking old records and cozy vibes.",
+      "technical_steps": [
+        {
+          "step": "Vinyl Crackle/Noise",
+          "details": "Layer vinyl crackle sample or use RC-20 Retro Color plugin. Mix at -35 to -45dB.",
+          "critical": true,
+          "why": "Defines lo-fi aesthetic—adds texture and nostalgia."
+        },
+        {
+          "step": "Wow & Flutter",
+          "details": "Subtle pitch modulation (0.1-0.3Hz rate, 5-15 cents depth).",
+          "critical": true,
+          "why": "Mimics turntable speed variations, adds organic movement."
+        },
+        {
+          "step": "Low-Pass Filter",
+          "details": "8-12kHz gentle roll-off for darker, aged tone.",
+          "critical": false,
+          "why": "Old vinyl lacks extreme highs; softens digital harshness."
+        },
+        {
+          "step": "Saturation/Warmth",
+          "details": "Tape or tube saturation at 20-30% drive for harmonics.",
+          "critical": false,
+          "why": "Adds analog warmth, glues mix together."
+        },
+        {
+          "step": "Bit Crushing (Optional)",
+          "details": "Light reduction to 12-14 bit for subtle digital grit.",
+          "critical": false,
+          "why": "Adds texture without heavy degradation."
+        }
+      ],
+      "plugin_chain_example": "RC-20 Retro Color (vinyl + wow/flutter) → Pro-Q 3 (low-pass 10kHz) → Saturn 2 (tape, 25% drive)",
+      "common_mistakes": [
+        "Too much crackle—distracting, not atmospheric",
+        "No wow/flutter—sounds static, loses organic feel",
+        "Over bit-crushing—harsh, not warm"
+      ],
+      "reference_tracks": ["Lofi hip-hop beats to study to (various)", "Jinsang - Affection", "Idealism - Both of Us"],
+      "intensity_variations": {
+        "subtle": "Light crackle, gentle wow/flutter, 12kHz low-pass",
+        "moderate": "Medium crackle, moderate wow/flutter, 10kHz low-pass, light saturation",
+        "extreme": "Heavy crackle, strong wow/flutter, 8kHz low-pass, bit crush, heavy saturation"
+      }
+    },
+    "radio_am": {
+      "description": "Compressed, band-limited sound like AM radio broadcast. Used for transitions, flashbacks, or retro aesthetics.",
+      "technical_steps": [
+        {
+          "step": "Tight Band-Pass Filter",
+          "details": "500-5000Hz passband for AM radio frequency range.",
+          "critical": true,
+          "why": "AM radio has severely limited bandwidth—defines the effect."
+        },
+        {
+          "step": "Heavy Compression",
+          "details": "Fast attack (1-3ms), high ratio (8:1-12:1) for crushed dynamics.",
+          "critical": true,
+          "why": "Radio stations compress heavily for loudness; flattens dynamics."
+        },
+        {
+          "step": "Distortion/Clipping",
+          "details": "Light to moderate clipping or hard-clipping distortion (10-20%).",
+          "critical": false,
+          "why": "Radio transmitters clip on peaks; adds grit."
+        },
+        {
+          "step": "Subtle Noise/Hum",
+          "details": "Very low pink noise + optional 60Hz hum at -50dB.",
+          "critical": false,
+          "why": "Transmission noise and electrical interference for realism."
+        }
+      ],
+      "plugin_chain_example": "Pro-Q 3 (band-pass 500-5000Hz) → SSL Compressor (fast, 10:1) → Soft clipper → Noise generator",
+      "common_mistakes": [
+        "Not compressing enough—needs to feel squashed",
+        "Band-pass too wide—loses characteristic boxiness",
+        "Over-distorting—sounds broken, not broadcast"
+      ],
+      "reference_tracks": ["Queens of the Stone Age - Go With The Flow (verse vocals)", "The Strokes - Last Nite (intro guitar)"],
+      "intensity_variations": {
+        "subtle": "Band-pass 400-6000Hz, moderate compression (6:1)",
+        "moderate": "Band-pass 500-5000Hz, heavy compression (10:1), light distortion",
+        "extreme": "Band-pass 600-4000Hz, crushing (12:1), audible distortion and noise"
+      }
+    },
+    "vhs_tape": {
+      "description": "Degraded, warbled sound like old VHS recordings. Used for 80s/90s nostalgia, vaporwave, or dreamlike sequences.",
+      "technical_steps": [
+        {
+          "step": "Wow & Flutter (Heavy)",
+          "details": "Pitch modulation 0.3-1Hz rate, 20-50 cents depth for warble.",
+          "critical": true,
+          "why": "VHS tape speed inconsistencies—signature wobbly sound."
+        },
+        {
+          "step": "Low-Pass Filter",
+          "details": "6-10kHz roll-off for dull, aged tone.",
+          "critical": true,
+          "why": "Magnetic tape degrades highs over time."
+        },
+        {
+          "step": "Chorus/Modulation",
+          "details": "Wide, slow chorus for warbly stereo effect.",
+          "critical": false,
+          "why": "Tape azimuth errors create phase shifting."
+        },
+        {
+          "step": "Saturation",
+          "details": "Tape saturation 30-50% for compression and warmth.",
+          "critical": false,
+          "why": "Magnetic tape saturates naturally, adds harmonics."
+        },
+        {
+          "step": "Noise/Hiss",
+          "details": "Pink noise at -40dB, filtered above 2kHz.",
+          "critical": false,
+          "why": "Tape hiss from magnetic particles."
+        }
+      ],
+      "plugin_chain_example": "RC-20 (VHS mode) → Pro-Q 3 (low-pass 8kHz) → Chorus (wide, slow) → Saturn 2 (tape, 40%)",
+      "common_mistakes": [
+        "Not enough wow/flutter—loses characteristic warble",
+        "Too bright—needs significant high-frequency loss",
+        "No stereo modulation—sounds too clean"
+      ],
+      "reference_tracks": ["Blank Banshee - Teen Pregnancy", "Macintosh Plus - リサフランク420 / 現代のコンピュー", "HOME - Resonance"],
+      "intensity_variations": {
+        "subtle": "Light wow/flutter, 10kHz low-pass, minimal noise",
+        "moderate": "Medium wow/flutter, 8kHz low-pass, chorus, light saturation",
+        "extreme": "Heavy wow/flutter, 6kHz low-pass, wide chorus, heavy saturation, audible noise"
+      }
+    },
+    "sidechain_ducking": {
+      "description": "Pumping effect creating rhythmic breathing in tracks, making bass and kicks punch through while everything else ducks. Essential for EDM/dance genres.",
+      "technical_steps": [
+        {
+          "step": "Set up compressor on target track",
+          "details": "Insert compressor on bass/synth bus; threshold -20dB, ratio 4:1, attack 5ms, release 200ms synced to tempo.",
+          "critical": true,
+          "why": "Compression reduces gain when kick triggers, creating space; fast attack ducks quickly, release timed to beat builds rhythmic pressure."
+        },
+        {
+          "step": "Route sidechain trigger",
+          "details": "Send kick drum signal to compressor's sidechain input; use pre-fader send at 0dB.",
+          "critical": true,
+          "why": "External trigger ensures ducking syncs precisely to kick transient, creating that club pumping effect."
+        },
+        {
+          "step": "Add makeup gain",
+          "details": "Apply +5-10dB makeup gain post-compression.",
+          "critical": false,
+          "why": "Restores overall level, making the pumping more pronounced without losing volume."
+        }
+      ],
+      "plugin_chain_example": "Stock compressor on bass bus → Sidechain from kick → EQ post-comp cutting 100-200Hz by 3dB to clean mud",
+      "common_mistakes": [
+        "Setting release too short, causing unnatural chattering instead of smooth pump",
+        "Forgetting to high-pass sidechain trigger, letting sub-bass falsely trigger compression"
+      ],
+      "reference_tracks": ["Avicii - Levels", "Daft Punk - One More Time"],
+      "intensity_variations": {
+        "subtle": "Ratio 2:1, release 100ms for light breathing",
+        "moderate": "Ratio 4:1, release 200ms for standard EDM pump",
+        "extreme": "Ratio 10:1, release 500ms with -30dB threshold for aggressive ducking"
+      }
+    },
+    "slap_delay": {
+      "description": "Single fast echo for vintage rockabilly vocals, adding depth with sharp retro charm. Classic 50s studio technique.",
+      "technical_steps": [
+        {
+          "step": "Insert delay plugin",
+          "details": "Set delay time to 100-150ms, feedback 0-10%, mix 20-40%.",
+          "critical": true,
+          "why": "Short delay mimics tape echo, creating perceived space without mud; low feedback ensures single repeat for slap."
+        },
+        {
+          "step": "High-pass and low-pass filtering",
+          "details": "High-pass at 200Hz, low-pass at 5kHz on delay return.",
+          "critical": true,
+          "why": "Filters emulate vintage tape degradation, adding warmth and character."
+        },
+        {
+          "step": "Modulate slightly",
+          "details": "Add 5-10% wow/flutter modulation at 0.5Hz rate.",
+          "critical": false,
+          "why": "Simulates tape speed variation for organic feel."
+        }
+      ],
+      "plugin_chain_example": "Stock delay → EQ with HPF 200Hz, LPF 5kHz → Light saturation at 10% drive",
+      "common_mistakes": [
+        "Using too much feedback, turning slap into repeating echo mess",
+        "Ignoring filtering, making delay sound modern and harsh instead of vintage"
+      ],
+      "reference_tracks": ["Elvis Presley - Hound Dog", "Buddy Holly - Peggy Sue"],
+      "intensity_variations": {
+        "subtle": "Delay time 80ms, mix 15% for light hint",
+        "moderate": "Delay time 120ms, mix 30% for standard slap",
+        "extreme": "Delay time 180ms, mix 50% with 20% feedback for bold echo"
+      }
+    },
+    "gated_reverb": {
+      "description": "Huge 80s drum splash that cuts off abruptly. Iconic Phil Collins snare sound for arena fills.",
+      "technical_steps": [
+        {
+          "step": "Apply reverb to drum",
+          "details": "Reverb decay 2-4s, pre-delay 0ms, room size large (80-100%).",
+          "critical": true,
+          "why": "Long tail creates ambient wash; gating chops it, preventing mud."
+        },
+        {
+          "step": "Insert noise gate after reverb",
+          "details": "Threshold -40dB, attack 1ms, hold 50ms, release 100ms, reduction -∞dB.",
+          "critical": true,
+          "why": "Gate silences reverb tail below threshold, sharpening transient impact."
+        },
+        {
+          "step": "Sidechain gate if needed",
+          "details": "Trigger gate from dry snare at 0dB send.",
+          "critical": false,
+          "why": "Ensures precise timing, enhancing rhythmic punch."
+        }
+      ],
+      "plugin_chain_example": "Stock reverb → Gate (e.g., FabFilter Pro-G) with fast release → EQ boost 5kHz by 3dB for shine",
+      "common_mistakes": [
+        "Setting release too slow, letting reverb bleed into next hit",
+        "Over-reverb without gating, drowning mix in wash"
+      ],
+      "reference_tracks": ["Phil Collins - In the Air Tonight", "Peter Gabriel - Sledgehammer"],
+      "intensity_variations": {
+        "subtle": "Reverb decay 1s, gate release 50ms for light tail",
+        "moderate": "Reverb decay 3s, gate release 100ms for standard 80s",
+        "extreme": "Reverb decay 5s, gate release 200ms with deeper reduction"
+      }
+    },
+    "tape_stop": {
+      "description": "Pitch-dropping slowdown to silence for dramatic builds and transitions.",
+      "technical_steps": [
+        {
+          "step": "Automate pitch bend",
+          "details": "Pitch shift from 0 to -12 semitones over 500-1000ms.",
+          "critical": true,
+          "why": "Mimics tape speed reduction, lowering frequency exponentially for slowdown illusion."
+        },
+        {
+          "step": "Add low-pass filter automation",
+          "details": "Cutoff from 20kHz to 200Hz over same time, resonance 20%.",
+          "critical": true,
+          "why": "Filters highs as speed drops, like tape friction loss."
+        },
+        {
+          "step": "Volume fade",
+          "details": "Fade to -∞dB at end of automation.",
+          "critical": false,
+          "why": "Completes stop effect, building tension."
+        }
+      ],
+      "plugin_chain_example": "Stock pitch shifter → Auto Filter with LPF automation → Volume utility fade",
+      "common_mistakes": [
+        "Linear pitch drop instead of exponential, sounding unnatural",
+        "No filtering, making it pitchy without slowdown feel"
+      ],
+      "reference_tracks": ["Skrillex - Scary Monsters and Nice Sprites", "Travis Scott - Sicko Mode"],
+      "intensity_variations": {
+        "subtle": "Pitch -6 semitones over 300ms, cutoff to 1kHz",
+        "moderate": "Pitch -12 semitones over 700ms, cutoff to 500Hz",
+        "extreme": "Pitch -24 semitones over 1500ms, cutoff to 100Hz with distortion"
+      }
+    },
+    "reverse_reverb": {
+      "description": "Pre-echo that builds anticipation before the sound hits. Creates surreal atmospheres.",
+      "technical_steps": [
+        {
+          "step": "Reverse the audio clip",
+          "details": "Duplicate and reverse the target sound in DAW.",
+          "critical": true,
+          "why": "Reversing applies reverb to buildup, mimicking time-reversed acoustics."
+        },
+        {
+          "step": "Apply reverb to reversed clip",
+          "details": "Reverb decay 2-5s, wet 100%, pre-delay 0ms.",
+          "critical": true,
+          "why": "Creates swelling tail; re-reversing puts echo before sound."
+        },
+        {
+          "step": "Reverse back and align",
+          "details": "Reverse processed clip again, align end of reverb to original start.",
+          "critical": true,
+          "why": "Positions pre-echo precisely."
+        }
+      ],
+      "plugin_chain_example": "Stock reverb on reversed audio → Reverse again → Fade in reverb tail",
+      "common_mistakes": [
+        "Misaligning, causing overlap or gap in timing",
+        "Too dry reverb, lacking ethereal swell"
+      ],
+      "reference_tracks": ["Led Zeppelin - Whole Lotta Love", "My Bloody Valentine - Only Shallow"],
+      "intensity_variations": {
+        "subtle": "Reverb decay 1s, wet 50% for light pre-echo",
+        "moderate": "Reverb decay 3s, wet 80% for standard build",
+        "extreme": "Reverb decay 7s, wet 100% with pitch modulation"
+      }
+    },
+    "haas_effect": {
+      "description": "Stereo widening using psychoacoustic timing differences. Creates immersive width without phase issues.",
+      "technical_steps": [
+        {
+          "step": "Duplicate track",
+          "details": "Create left and right duplicates, pan hard L/R.",
+          "critical": true,
+          "why": "Delays one side by 1-35ms, exploiting Haas precedence effect where brain perceives width from timing."
+        },
+        {
+          "step": "Delay one channel",
+          "details": "Delay right channel by 20-30ms, no feedback.",
+          "critical": true,
+          "why": "Under 35ms, sound fuses as one but wider; mimics interaural time difference."
+        },
+        {
+          "step": "EQ differently",
+          "details": "Cut highs >10kHz on delayed side by 3dB.",
+          "critical": false,
+          "why": "Prevents comb filtering artifacts, smoothing stereo image."
+        }
+      ],
+      "plugin_chain_example": "Stock delay on right duplicate (20ms) → Utility for panning → Mid/side EQ to boost sides",
+      "common_mistakes": [
+        "Delay over 40ms, creating echo instead of width",
+        "Applying to mono sources without checking phase cancellation"
+      ],
+      "reference_tracks": ["The Beatles - A Day in the Life", "Pink Floyd - Money"],
+      "intensity_variations": {
+        "subtle": "Delay 10ms for light widening",
+        "moderate": "Delay 25ms for standard Haas",
+        "extreme": "Delay 35ms with slight pitch shift ±5 cents"
+      }
+    },
+    "parallel_compression": {
+      "description": "New York compression - blending crushed compression with dry signal for punchy thickness without losing dynamics.",
+      "technical_steps": [
+        {
+          "step": "Duplicate or bus track",
+          "details": "Send to parallel bus at 0dB.",
+          "critical": true,
+          "why": "Allows blending compressed and dry signals for dynamic range preservation."
+        },
+        {
+          "step": "Heavy compression on parallel",
+          "details": "Threshold -40dB, ratio 10:1, attack 5ms, release 50ms, makeup +15dB.",
+          "critical": true,
+          "why": "Squashes transients hard, bringing up quiet details; blending adds body without losing punch."
+        },
+        {
+          "step": "Blend with dry",
+          "details": "Mix parallel at 20-50% wet.",
+          "critical": true,
+          "why": "Balances sustain and attack for fuller sound."
+        }
+      ],
+      "plugin_chain_example": "Stock compressor on parallel bus (high ratio) → EQ scoop mids 300-500Hz by 4dB → Blend fader",
+      "common_mistakes": [
+        "Over-blending, making mix too squashed and lifeless",
+        "No EQ on parallel, adding mud from boosted lows"
+      ],
+      "reference_tracks": ["Michael Jackson - Billie Jean", "Led Zeppelin - When the Levee Breaks"],
+      "intensity_variations": {
+        "subtle": "Ratio 4:1, blend 20% for light thickening",
+        "moderate": "Ratio 10:1, blend 40% for standard NY",
+        "extreme": "Ratio 20:1, blend 60% with distortion"
+      }
+    },
+    "vocal_doubling_adt": {
+      "description": "Artificial double tracking - recreating Beatles' thick vocals with layering and slight variation.",
+      "technical_steps": [
+        {
+          "step": "Duplicate vocal track",
+          "details": "Create two copies, pan one slightly left/right by 10-20%.",
+          "critical": true,
+          "why": "Simulates double takes; slight detune thickens via beat frequencies."
+        },
+        {
+          "step": "Delay and detune",
+          "details": "Delay one by 15-40ms, detune ±5-15 cents.",
+          "critical": true,
+          "why": "Short delay fuses as one voice, detune adds chorus-like richness from phase interference."
+        },
+        {
+          "step": "Modulate delay time",
+          "details": "LFO modulate delay by 5ms at 0.2Hz rate.",
+          "critical": false,
+          "why": "Emulates tape varispeed for organic variation."
+        }
+      ],
+      "plugin_chain_example": "Stock delay (20ms) on duplicate → Pitch shifter ±10 cents → Light reverb blend",
+      "common_mistakes": [
+        "Too much detune, sounding out-of-tune instead of doubled",
+        "No panning, keeping it mono and flat"
+      ],
+      "reference_tracks": ["The Beatles - Tomorrow Never Knows", "John Lennon - Imagine"],
+      "intensity_variations": {
+        "subtle": "Delay 10ms, detune ±5 cents for light double",
+        "moderate": "Delay 25ms, detune ±10 cents for Beatles standard",
+        "extreme": "Delay 40ms, detune ±20 cents with modulation"
+      }
+    },
+    "distorted_808": {
+      "description": "Gritty trap 808 bass with harmonic distortion for power and audibility on small speakers.",
+      "technical_steps": [
+        {
+          "step": "Insert distortion plugin",
+          "details": "Soft clip or tube distortion at 20-50% drive, bias 50%.",
+          "critical": true,
+          "why": "Adds harmonics to sub-bass, making it audible on small speakers via psychoacoustic missing fundamental."
+        },
+        {
+          "step": "EQ pre-distortion",
+          "details": "Boost 100-200Hz by 6dB, cut below 40Hz by 12dB/oct.",
+          "critical": true,
+          "why": "Shapes input for even distortion; prevents sub mud from clipping unevenly."
+        },
+        {
+          "step": "Compress post-distortion",
+          "details": "Threshold -20dB, ratio 4:1, attack 10ms, release 100ms.",
+          "critical": false,
+          "why": "Tames peaks, sustaining growl."
+        }
+      ],
+      "plugin_chain_example": "Stock EQ boost mids → Distortion (e.g., Soundtoys Decapitator) → Compressor for control",
+      "common_mistakes": [
+        "Over-distorting without EQ, creating harsh buzz instead of warmth",
+        "No low-cut, letting subs clip and distort unevenly"
+      ],
+      "reference_tracks": ["Travis Scott - Sicko Mode", "Future - Mask Off"],
+      "intensity_variations": {
+        "subtle": "Drive 20% for light harmonics",
+        "moderate": "Drive 40% for standard trap distortion",
+        "extreme": "Drive 70% with added overdrive for heavy fuzz"
+      }
+    },
+    "autotune_tpain": {
+      "description": "Fast pitch correction for robotic vocal effect. T-Pain signature auto-snap for iconic hooks.",
+      "technical_steps": [
+        {
+          "step": "Set autotune parameters",
+          "details": "Retune speed 0-10ms, humanize 0%, scale to song key (e.g., C major).",
+          "critical": true,
+          "why": "Fast correction snaps to notes, creating stepped pitch effect via digital quantization."
+        },
+        {
+          "step": "Adjust formant",
+          "details": "Shift formant -5 to -10 for robotic tone.",
+          "critical": true,
+          "why": "Alters vocal timbre without full pitch change, enhancing artificial feel."
+        },
+        {
+          "step": "Vibrato addition",
+          "details": "Add synthetic vibrato at 6Hz rate, 10% depth.",
+          "critical": false,
+          "why": "Mimics exaggerated auto-vibrato for expressive pop."
+        }
+      ],
+      "plugin_chain_example": "Stock autotune (e.g., Antares Auto-Tune) fast retune → Formant shifter → Light delay for thickness",
+      "common_mistakes": [
+        "Slow retune speed, sounding natural instead of robotic",
+        "Wrong scale key, causing off-note snaps"
+      ],
+      "reference_tracks": ["T-Pain - Buy U a Drank", "Kanye West - Heartless"],
+      "intensity_variations": {
+        "subtle": "Retune 50ms for light correction",
+        "moderate": "Retune 10ms for obvious T-Pain",
+        "extreme": "Retune 0ms with formant -20 for hyper-robotic"
+      }
+    }
   }
 }
 

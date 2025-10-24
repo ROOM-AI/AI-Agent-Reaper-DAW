@@ -1,0 +1,26 @@
+{
+  "summary": "",
+  "needs": [],
+  "filtering": {
+    "ref_character": "high_passed",
+    "target_character": "high_passed",
+    "needs_telephone": false,
+    "ref_high_pass": 215,
+    "ref_low_pass": 13242
+  },
+  "delay": {
+    "needs_delay": false,
+    "delay_time_ms": 0,
+    "feedback": 0,
+    "mix": 0
+  },
+  "reverb": {
+    "needs_reverb": false,
+    "decay_time": 2.31,
+    "mix": 50
+  },
+  "distortion": 4.463758656103451,
+  "compression": 4.78827261883184,
+  "brightness": 10.780191300469625,
+  "autotune": -0.026879981534734615
+}

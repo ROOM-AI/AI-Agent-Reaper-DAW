@@ -1,4 +1,2 @@
-🎚️ Track 0 FX#0 'VST3: Pro-Q 3 (FabFilter)' - Band 1 Frequency → 42% [288.66 Hz]
-🎚️ Track 0 FX#0 'VST3: Pro-Q 3 (FabFilter)' - Band 1 Gain → 45% [-3.00 dB]
-🎚️ Track 0 FX#0 'VST3: Pro-Q 3 (FabFilter)' - Band 2 Frequency → 82% [7099.7 Hz]
-🎚️ Track 0 FX#0 'VST3: Pro-Q 3 (FabFilter)' - Band 2 Gain → 53% [+1.80 dB]
+🎚️ Track 1 FX#0 'VST3: Pro-Q 3 (FabFilter)' - Band 1 Slope → 100% [Brickwall]
+🎚️ Track 1 FX#0 'VST3: Pro-Q 3 (FabFilter)' - Band 2 Slope → 100% [Brickwall]

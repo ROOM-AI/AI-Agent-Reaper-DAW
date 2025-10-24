@@ -1,0 +1,61 @@
+{
+  "audio_file": "C:\\Users\\moosb\\AIAGENT DAW\\temp_audio\\analyze_track_0_1761245870\\SLO.wav",
+  "timestamp": 1761245872.572492,
+  "effects": {
+    "filtering": {
+      "high_pass": 32,
+      "low_pass": 10379,
+      "character": "low_passed",
+      "confidence": 1.0
+    },
+    "delay": {
+      "present": true,
+      "delay_time_ms": 102,
+      "feedback": 100,
+      "mix": 19,
+      "note_value": "1/16",
+      "note_ms_target": 116
+    },
+    "reverb": {
+      "present": true,
+      "decay_time": 5.3,
+      "predelay_ms": 0.2,
+      "c50_db": -5.9,
+      "c80_db": -1.81,
+      "mix": 50,
+      "confidence": 1.0
+    }
+  },
+  "characteristics": {
+    "bpm": 129.19921875,
+    "distortion": 38.70933715819206,
+    "saturation": {
+      "even_odd_ratio": 0.7502686177820604,
+      "type_hint": "neutral"
+    },
+    "compression": 0.0,
+    "dynamic_range_db": 31.8,
+    "brightness": 34.817047741507125,
+    "spectral_indices": {
+      "mud": 100.0,
+      "boxiness": 81.27851486206055,
+      "presence": 1.6823387145996094,
+      "air": 14.814262390136719,
+      "flatness": 2.741537056863308,
+      "rolloff_hz": 7719.628320463671
+    },
+    "autotune": 0.057471869161697865
+  },
+  "summary": "Vocal: Low-passed at 10379Hz. Delay: 102ms with 100% feedback. Reverb: 5.3s decay. Moderate neutral saturation (39%). ",
+  "audio_type": "vocal",
+  "stereo_metrics": {
+    "lr_corr": 0.8394109183864923,
+    "ms_balance": 0.7554375281574716,
+    "width_low": 141.02435111999512,
+    "width_high": 12.068334966897964
+  },
+  "deessing_need": {
+    "need_score": 25.794976949691772,
+    "target_khz": 5.232568359375
+  }
+}

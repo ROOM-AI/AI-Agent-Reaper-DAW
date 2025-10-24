@@ -1,0 +1,43 @@
+{
+  "audio_file": "C:\\Users\\moosb\\AIAGENT DAW\\references\\1_The Weeknd - What You Need_(Vocals).wav",
+  "timestamp": 1760912224.5516875,
+  "effects": {
+    "filtering": {
+      "high_pass": 215,
+      "low_pass": 13242,
+      "character": "high_passed",
+      "confidence": 1.0
+    },
+    "delay": {
+      "present": false,
+      "delay_time_ms": 0,
+      "feedback": 0,
+      "mix": 0
+    },
+    "reverb": {
+      "present": true,
+      "decay_time": 2.31,
+      "predelay_ms": 0.0,
+      "c50_db": -5.27,
+      "c80_db": -0.59,
+      "mix": 50,
+      "confidence": 1.0
+    }
+  },
+  "characteristics": {
+    "bpm": 68.90625,
+    "distortion": 23.26473139180303,
+    "compression": 90.078572616211,
+    "brightness": 61.636324497903615,
+    "spectral_indices": {
+      "mud": 82.11427688598633,
+      "boxiness": 72.24227905273438,
+      "presence": 14.66339111328125,
+      "air": 16.73381805419922,
+      "flatness": 3.845188021659851,
+      "rolloff_hz": 11443.472469554228
+    },
+    "autotune": 0.036290340443440317
+  },
+  "summary": "High-passed at 215Hz. No delay. Reverb: 2.3s decay. Moderate distortion (23%). Heavily compressed (90%). "
+}

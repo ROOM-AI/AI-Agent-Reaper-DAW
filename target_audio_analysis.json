@@ -1,0 +1,45 @@
+{
+  "audio_file": "C:\\Users\\moosb\\AIAGENT DAW\\temp_audio\\track_1_1760912221\\SLO.wav",
+  "timestamp": 1760912242.8370953,
+  "effects": {
+    "filtering": {
+      "high_pass": 269,
+      "low_pass": 10152,
+      "character": "high_passed",
+      "confidence": 1.0
+    },
+    "delay": {
+      "present": true,
+      "delay_time_ms": 103,
+      "feedback": 30,
+      "mix": 16,
+      "note_value": "1/16",
+      "note_ms_target": 116
+    },
+    "reverb": {
+      "present": true,
+      "decay_time": 5.08,
+      "predelay_ms": 0.0,
+      "c50_db": -5.46,
+      "c80_db": -3.44,
+      "mix": 50,
+      "confidence": 1.0
+    }
+  },
+  "characteristics": {
+    "bpm": 129.19921875,
+    "distortion": 18.800972735699577,
+    "compression": 85.29029999737917,
+    "brightness": 50.85613319743399,
+    "spectral_indices": {
+      "mud": 100.0,
+      "boxiness": 100.0,
+      "presence": 0.0,
+      "air": 56.051273345947266,
+      "flatness": 11.359449476003647,
+      "rolloff_hz": 5102.260813993566
+    },
+    "autotune": 0.06317032197817493
+  },
+  "summary": "High-passed at 269Hz. Delay: 103ms with 30% feedback. Reverb: 5.1s decay. Heavily compressed (85%). "
+}
