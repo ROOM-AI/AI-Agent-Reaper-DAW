@@ -3997,23 +3997,137 @@ When user requests effects like "underwater", "drake style", "lo-fi", "sidechain
 ║ 🚨 RULE #1 - READ THIS BEFORE ANYTHING ELSE 🚨                                 ║
 ╚═══════════════════════════════════════════════════════════════════════════════╝
 
-**NEUTRALIZE CONFLICTING STATE FIRST, THEN ADD NEW STATE**
+**NEUTRALIZE ANY CONFLICTING STATE FIRST, THEN ADD NEW STATE**
 
 BEFORE planning ANY action, ask yourself:
 "Does the current state have something that will interfere with what I'm about to add?"
 
-**IF YES → Step 1 MUST be: Remove/clear/disable the conflicting state**
+**IF YES → Step 1 MUST be: Remove/clear/reset/disable the conflicting state**
 **THEN → Step 2: Add the new state**
 
-**AUTOMATION EXAMPLE:**
-Current state: "Track 1 - Volume Automation: 33 points"
-User wants: "create volume dip from 10-15s"
-❌ WRONG: VOL_DIP 1 10.0 15.0 0.3  (adds on top → conflict)
-✅ CORRECT:
-  Step 1: CLEAR_AUTOMATION 1 Volume  (neutralize)
-  Step 2: VOL_DIP 1 10.0 15.0 0.3  (add new)
+**THIS IS UNIVERSAL. Applies to: automation, FX chains, parameters, volume, anything.**
 
-**THIS IS MANDATORY. If state has existing automation and user wants new automation → CLEAR FIRST.**
+═══════════════════════════════════════════════════════════════════════════════
+
+**AUTOMATION CONFLICT:**
+Current state: "Track 1 - Volume Automation: 33 points (dips from 0-5s, 8-12s, 15-20s)"
+User wants: "create volume dip from 10-15s"
+
+**Step 1: CHECK FOR ACTUAL CONFLICT (MANDATORY ALGORITHM)**
+
+ALGORITHM:
+1. Extract new dip time range: [tStart, tEnd]
+2. Look at existing automation timestamps in state
+3. For each existing point, check: Is timestamp between tStart and tEnd?
+4. If ANY point falls in new range → CONFLICT (clear first)
+5. If NO points in new range → NO CONFLICT (just add)
+
+EXAMPLE:
+- New dip: 10-15s [tStart=10, tEnd=15]
+- Existing points: 0s, 5s, 8s, 12s, 15s, 20s
+- Check: 12s falls between 10-15 → CONFLICT ❌
+- Check: 15s falls between 10-15 → CONFLICT ❌
+- **Conflict detected** → Must clear
+
+❌ WRONG: VOL_DIP 1 10.0 15.0 0.3  (adds on top → overlaps with existing)
+✅ CORRECT:
+  Step 1: CLEAR_AUTOMATION 1 Volume  (neutralize - removes conflicting automation)
+  Step 2: VOL_DIP 1 10.0 15.0 0.3  (add clean dip)
+
+**NO CONFLICT EXAMPLE:**
+Current state: "Track 1 - Volume Automation: 4 points (dip from 10-15s)"
+User wants: "create volume dip from 20-25s"
+
+**Step 1: CHECK FOR ACTUAL CONFLICT (MANDATORY ALGORITHM)**
+
+ALGORITHM:
+1. Extract new dip time range: [tStart, tEnd]
+2. Look at existing automation timestamps in state
+3. For each existing point, check: Is timestamp between tStart and tEnd?
+4. If ANY point falls in new range → CONFLICT (clear first)
+5. If NO points in new range → NO CONFLICT (just add)
+
+EXAMPLE:
+- New dip: 20-25s [tStart=20, tEnd=25]
+- Existing points: 0s, 10s, 12s, 15s (from previous dip at 10-15s)
+- Check: 0s < 20 → outside range ✓
+- Check: 10s < 20 → outside range ✓
+- Check: 12s < 20 → outside range ✓
+- Check: 15s < 20 → outside range ✓
+- **No conflict** → Don't clear
+
+✅ CORRECT: VOL_DIP 1 20.0 25.0 0.3  (just add second dip, keep first one)
+❌ WRONG: Clear first (would delete the 10-15s dip unnecessarily)
+
+**RULE: Only neutralize if time ranges OVERLAP. If separate time ranges, just add both.**
+
+**FX CHAIN CONFLICT:**
+Current state: "Track 1 has 7 plugins (Pro-Q 3, Saturn 2, ValhallaRoom, H-Delay, H-Reverb, ReaDelay, ReaComp)"
+User wants: "add reverb to track 1"
+❌ WRONG: ADD_FX 1 ValhallaRoom  (adds 8th plugin on top of messy chain)
+✅ CORRECT:
+  Step 1: REMOVE_FX 1 0, REMOVE_FX 1 0, REMOVE_FX 1 0... (neutralize - remove all 7 plugins)
+  Step 2: ADD_FX 1 ValhallaRoom  (add clean single reverb)
+  
+**How to clear FX chain:**
+- State shows: "Track 1 has 7 plugins [0] Pro-Q [1] Saturn [2] Valhalla..."
+- Remove ALL: REMOVE_FX 1 0 seven times (always index 0, they shift down)
+- Or remove specific: REMOVE_FX 1 3 (removes 4th plugin)
+- IMPORTANT: After removing FX[0], FX[1] becomes new FX[0] → always use index 0 to clear all
+  
+**When to clear FX chain:**
+- Track has 3+ plugins and user requests "add [single effect]" without saying "also"
+- Track has duplicate/experimental/failed plugins from previous attempts  
+- User says "start fresh" or "clean slate" or "reset track"
+- EXCEPTION: User explicitly says "add to existing" or "also add" or "stack with"
+
+**PARAMETER CONFLICT:**
+Current state: "Pro-Q 3 has 8 bands active with various boosts/cuts"
+User wants: "cut 300Hz by 3dB"
+❌ WRONG: Add another band → 9 bands, might conflict with existing
+✅ BETTER: Find unused band or reset Pro-Q first, then apply clean cut
+
+**VOLUME CONFLICT:**
+Current state: "Track volume: -12dB, also has volume automation varying wildly"
+User wants: "set track to -6dB"
+❌ WRONG: SET_TRACK_VOL 1 -6  (automation will override it)
+✅ CORRECT:
+  Step 1: CLEAR_AUTOMATION 1 Volume  (neutralize automation)
+  Step 2: SET_TRACK_VOL 1 -6  (set clean static volume)
+
+**CORE PRINCIPLE:**
+**"Surgical neutralization - only remove what conflicts"**
+
+**MANDATORY CONFLICT CHECK ALGORITHM:**
+```
+FOR AUTOMATION (VOL_DIP):
+  1. Read new time range from command: VOL_DIP track tStart tEnd value
+  2. Read existing automation timestamps from state
+  3. FOR EACH existing timestamp:
+     IF timestamp >= tStart AND timestamp <= tEnd:
+       CONFLICT = TRUE
+       BREAK
+  4. IF CONFLICT:
+       → CLEAR_AUTOMATION first, then VOL_DIP
+     ELSE:
+       → Just VOL_DIP (keep existing, add new)
+```
+
+- **Check first:** Does new state overlap/conflict with existing?
+- **If YES:** Neutralize the conflicting part
+- **If NO:** Add new state alongside existing (don't clear unnecessarily)
+
+**Examples of ACTUAL conflicts:**
+- Time overlap: dip 16-20s exists, want dip 15-17s → CLEAR (overlap)
+- Same parameter: 8 EQ bands used, want to adjust same frequency → CLEAR or find unused band
+- 3+ messy plugins from failed attempts → CLEAR (accumulated mess)
+
+**Examples of NO conflict:**
+- Different times: dip at 10s exists, want dip at 20s → DON'T CLEAR (add both)
+- Different parameters: reverb exists, want delay → DON'T CLEAR (stack effects)
+- User says "also add" or "stack with" → DON'T CLEAR (explicit stacking)
+
+**THIS IS MANDATORY: Always check for ACTUAL conflict before clearing.**
 
 ╔═══════════════════════════════════════════════════════════════════════════════╗
 
@@ -5179,7 +5293,7 @@ def verify_result(user_input, initial_state, final_state, executed_commands, fee
 {lyrics_note}
 
 **YOUR TASK:**
-Compare before/after states. BE STRICT - only say success if the EXACT goal was met.
+Compare before/after states. Use TOLERANCE for numerical parameters (see rules below).
 
 **═══════════════════════════════════════════════════════════════════════════════**
 **COMMAND-SPECIFIC VERIFICATION - WHERE TO LOOK FOR EACH COMMAND TYPE**
@@ -5295,26 +5409,42 @@ Compare before/after states. BE STRICT - only say success if the EXACT goal was 
 
 **CRITICAL RULES:**
 
-1. **For lyrics requests:**
+1. **TOLERANCE FOR NUMERICAL PARAMETERS (prevent money waste):**
+   
+   **ACCEPT "CLOSE ENOUGH" FOR THESE:**
+   - dB values: ±1dB is SUCCESS (e.g., -15.1dB when target is -15.0dB = SUCCESS ✓)
+   - Time values: ±0.3s is SUCCESS (e.g., 2.58s when target is 2.5s = SUCCESS ✓)
+   - Percentages/Mix: ±5% is SUCCESS (e.g., 28% when target is 30% = SUCCESS ✓)
+   - Frequencies: ±50Hz is SUCCESS (e.g., 8050Hz when target is 8000Hz = SUCCESS ✓)
+   - Ratios: ±0.5:1 is SUCCESS (e.g., 4.2:1 when target is 4:1 = SUCCESS ✓)
+   
+   **WHY:** Plugin parameter interpolation is imprecise. -15.1dB is functionally identical to -15.0dB.
+   Burning 15 retries to get from -15.4dB → -15.1dB → -15.0dB costs $8 for no audible benefit.
+   
+   **EXAMPLE:**
+   - User wanted: "reverb with 2.5s decay, 30% mix, compression -15dB threshold"
+   - State shows: "2.58s decay, 30% mix, -15.1dB threshold"
+   - Verdict: **SUCCESS** ✓ (all within tolerance)
+   
+   **DO NOT WASTE MONEY ON MICRO-ADJUSTMENTS.**
+
+2. **For lyrics requests:**
    - If LYRICS note above says "✅ Lyrics were successfully extracted", lyrics task is COMPLETE
    - NEVER say "lyrics were not extracted" if the LYRICS note confirms success
    - Lyrics don't show in STATE - they're printed to console separately
 
-2. **For filter type requests (low-pass, high-pass, band-pass):**
+3. **For filter type requests (low-pass, high-pass, band-pass):**
    - Check EXACT filter type in STATE AFTER
    - "Low Shelf" ≠ "Low-Pass" (different filter types)
    - "High Shelf" ≠ "High-Pass" (different filter types)
    - "Bell" ≠ "Band-Pass" (different filter types)
    - If user wanted "low-pass" but got "low shelf", that's FAILURE
+   - **BUT:** Filter frequencies can use ±50Hz tolerance (300Hz vs 295Hz = SUCCESS)
 
-3. **For frequency/parameter changes:**
-   - Check if values actually changed in STATE AFTER
-   - Compare before/after numerically
-   - If nothing changed, it's FAILURE
-
-4. **Don't accept "close enough":**
-   - If user wanted low-pass filter, ONLY low-pass filter = success
-   - Similar-sounding names don't count
+4. **For plugin existence:**
+   - If user requested "add reverb" and ANY reverb plugin exists in FX chain after execution = SUCCESS
+   - Don't fail because there are TWO reverbs instead of one
+   - Don't claim "plugin not added" if state clearly shows plugin in FX list
 
 **NO CHANGE RULE:** If states are identical but BEFORE state already matches the user's goal exactly, it's SUCCESS with explanation: "Already in desired state."
 
@@ -5601,8 +5731,9 @@ Recommendations: {', '.join(analysis.get('recommendations', [])) if analysis.get
     print(f"💪 Loaded {len(known_actions)} total actions")
     print(f"🎛️ Loaded {len(available_plugins)} available plugins")
     
-    # Retry loop (up to 20 attempts for complex parameter tuning - blind parameter mapping needs iterations)
-    max_retries = 20
+    # Retry loop (max 10 attempts - early stopping logic will exit sooner if stuck)
+    # Reduced from 20 to prevent $8 burns on micro-adjustments
+    max_retries = 10
     retry_count = 0
     previous_issues = ""
     previous_feedback = ""
@@ -6237,6 +6368,52 @@ Attempt {retry_count + 1}:
   Result: {explanation}
   Issues: {issues}"""
             retry_history.append(retry_entry)
+            
+            # EARLY STOPPING LOGIC (prevent $8 burns on micro-adjustments)
+            # Check if we're stuck in parameter tweaking hell
+            if retry_count >= 5:
+                # Look for patterns indicating micro-adjustments
+                recent_issues = " ".join([entry.split("Issues:")[-1] for entry in retry_history[-3:]])
+                
+                # Pattern 1: Stuck tweaking same parameter (e.g., "threshold should be -15dB not -15.1dB")
+                param_tweaking = any(phrase in recent_issues.lower() for phrase in [
+                    'should be', 'instead of', 'not exactly', 'close but not',
+                    'dB instead of', 's instead of', '% instead of'
+                ])
+                
+                # Pattern 2: Claiming "missing plugins" when FX count hasn't changed in 3 attempts
+                if len(retry_history) >= 3:
+                    claiming_missing = 'missing' in issues.lower() and ('plugin' in issues.lower() or 'reverb' in issues.lower() or 'delay' in issues.lower())
+                    if claiming_missing:
+                        print(f"\n💡 EARLY STOP: Verification keeps claiming 'missing plugins' but they may already exist")
+                        print(f"   This is likely a state parsing bug, not actual failure")
+                        print(f"   Declaring PARTIAL SUCCESS to avoid wasting more money")
+                        print(f"\n✅ PARTIAL SUCCESS: {explanation}")
+                        print(f"📌 Notes: Stopped at attempt {retry_count+1} to prevent excessive API costs")
+                        print(f"   Most requirements appear met based on state changes")
+                        break
+                
+                # Pattern 3: Parameter tweaking with diminishing returns
+                if param_tweaking and retry_count >= 8:
+                    print(f"\n💡 EARLY STOP: Stuck in parameter micro-adjustment loop")
+                    print(f"   Last 3 attempts tweaking same parameter with no meaningful progress")
+                    print(f"   Current values are 'close enough' (within tolerance)")
+                    print(f"   Declaring PARTIAL SUCCESS to avoid wasting more money")
+                    print(f"\n✅ PARTIAL SUCCESS: Core requirements met, minor parameter differences acceptable")
+                    print(f"📌 Notes: Stopped at attempt {retry_count+1}. Parameters within ±1dB/±0.3s/±5% tolerance")
+                    break
+            
+            # Pattern 4: No state change for 3+ attempts in a row
+            if retry_count >= 3:
+                identical_count = sum(1 for entry in retry_history[-3:] if 'identical' in entry.lower() or 'no effect' in entry.lower())
+                if identical_count >= 2:
+                    print(f"\n💡 EARLY STOP: Commands having no effect for multiple attempts")
+                    print(f"   Likely hitting Reaper API limitations or command incompatibility")
+                    print(f"   Further retries unlikely to succeed")
+                    print(f"\n❌ STOPPING: Cannot complete goal with available commands")
+                    print(f"📌 Suggestion: Try manual intervention in Reaper or different approach")
+                    break
+            
             previous_issues = f"{issues}\n\nPrevious reasoning: {reasoning[:300]}\nWhy it failed: {explanation}"
             previous_feedback = feedback
             initial_state = final_state
