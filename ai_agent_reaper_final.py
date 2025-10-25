@@ -3678,6 +3678,8 @@ def smart_index_search(user_input, index_path=r"C:\Users\moosb\AIAGENT DAW\actio
         "split": ["cut", "slice"],
         "render": ["export", "bounce"],
         "normalize": ["normalise", "level"],
+        "duplicate": ["copy", "clone", "duplicates"],
+        "copy": ["duplicate", "clone"],
     }
     
     # Extract keywords and track number
@@ -3723,7 +3725,7 @@ def smart_index_search(user_input, index_path=r"C:\Users\moosb\AIAGENT DAW\actio
             matched_actions[action_id] = description
     
     # ALWAYS include essential actions regardless of search
-    essential_ids = ["1007", "1016", "1013", "40280", "40294", "40340", "40291"]
+    essential_ids = ["1007", "1016", "1013", "40280", "40294", "40340", "40291", "40062"]
     for key, action_data in index.items():
         if action_data['id'] in essential_ids:
             matched_actions[action_data['id']] = action_data['desc']
@@ -3764,6 +3766,7 @@ def filter_relevant_actions(user_input, all_actions, max_actions=50):
         "40297", "40296",  # Track: Toggle mute/solo (selected)
         "40340",  # Add FX to selected
         "40291", "40293",  # Track: View FX/routing
+        "40062",  # Track: Duplicate tracks
     ]
     
     relevant = {aid: desc for aid, desc in all_actions.items() if aid in essential_ids}
@@ -3830,10 +3833,32 @@ def plan_actions(user_input, state, known_actions, available_plugins, previous_i
     user_lower = user_input.lower()
     user_words = [w for w in user_lower.split() if len(w) > 2 and w not in ['open', 'add', 'and', 'the']]
     
+    # Check if user wants VSTi (virtual instrument) vs VST (effect)
+    wants_instrument = any(word in user_lower for word in ['instrument', 'vsti', 'virtual instrument', 'synth', 'synthesizer'])
+    
+    # Add instrument-specific guidance to prompt
+    instrument_guidance = ""
+    if wants_instrument:
+        instrument_guidance = """
+**IMPORTANT: User wants VIRTUAL INSTRUMENT**
+- Use ADD_INSTRUMENT command (not ADD_FX) for instruments
+- This creates instrument track with MIDI input, not FX chain
+- Example: ADD_INSTRUMENT 6 "VSTi: ElectraX (Tone2.com)"
+"""
+    
     scored_plugins = []
     for plugin in available_plugins:
         plugin_lower = plugin.lower()
         score = 0
+        
+        # VSTi vs VST preference based on user intent
+        if wants_instrument and 'vsti:' in plugin_lower:
+            score += 100  # Strong preference for VSTi when user wants instrument
+        elif wants_instrument and 'vst:' in plugin_lower:
+            score -= 50   # Penalty for VST when user wants instrument
+        elif not wants_instrument and 'vsti:' in plugin_lower:
+            score -= 20   # Slight penalty for VSTi when user wants effect
+        
         # Score by keyword matches (more matches = higher score)
         for word in user_words:
             if word in plugin_lower:
@@ -3993,6 +4018,45 @@ When user requests effects like "underwater", "drake style", "lo-fi", "sidechain
 """
 
     system_prompt = f"""
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║ 🚨 RULE #0 - SEMANTIC SAFETY (NEVER BREAK THIS) 🚨                             ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
+
+**NEVER USE DESTRUCTIVE ACTIONS FOR NON-DESTRUCTIVE REQUESTS**
+
+{instrument_guidance}
+
+SEMANTIC CATEGORIES:
+1. **AUTOMATION/MIXING** (non-destructive - volume, pan, FX params, etc.)
+   - Keywords: "fade in", "fade out", "volume dip", "automate", "swell"
+   - ONLY use: VOL_DIP, CLEAR_AUTOMATION, SET_FX_PARAM, FX_PARAM_AUTO
+   - NEVER use: Item editing actions (40xxx that modify/split/cut audio)
+
+2. **DESTRUCTIVE EDITING** (changes audio permanently)
+   - Keywords: "cut", "split", "trim", "delete audio", "remove section"
+   - Use: Item editing actions
+   - WARN USER before doing this!
+
+**FADE IN/FADE OUT = AUTOMATION ONLY, NEVER ITEM EDITING**
+- User says: "fade in from 0 to 5 seconds"
+- Meaning: Volume automation that gradually increases
+- WRONG: Using action 40508 "Fade items in" (splits/cuts audio!)
+- RIGHT: Volume automation with points at 0s (low) and 5s (high)
+
+**IF AUTOMATION COMMANDS FAIL, DON'T TRY ITEM EDITING!**
+- If VOL_DIP doesn't work for fades → ask user or suggest manual
+- NEVER pivot to item editing actions as "alternative approach"
+- Better to fail safely than destroy audio
+
+**BLACKLISTED ACTIONS (NEVER USE FOR AUTOMATION):**
+- 40508 "Item: Fade items in" → DESTRUCTIVE, cuts/splits audio
+- 40509 "Item: Fade items out" → DESTRUCTIVE
+- 40651 "Envelope: Insert 4 points at time selection" → Can split items
+- ANY action with "Item:" in description when user wants automation → NO!
+
+**IF YOU SEE YOURSELF ABOUT TO USE THESE ACTIONS FOR "FADE IN/OUT", STOP!**
+Ask user for manual intervention instead. Do NOT destroy their audio.
+
 ╔═══════════════════════════════════════════════════════════════════════════════╗
 ║ 🚨 RULE #1 - READ THIS BEFORE ANYTHING ELSE 🚨                                 ║
 ╚═══════════════════════════════════════════════════════════════════════════════╝
@@ -4170,6 +4234,37 @@ You are an AI controlling Reaper DAW. THINK STEP-BY-STEP and pick EXACT matches.
 - Examples: FabFilter Pro-Q 3, ReaEQ (Cockos), Waves SSL E-Channel
 - Choose based on availability - most EQs can do low-pass/high-pass/band-pass filtering
 
+**CRITICAL: PRO-Q 3 SLOPE/OCTAVE PARAMETER (DON'T FORGET THIS!):**
+
+When configuring Pro-Q 3 filters, ALWAYS consider the slope (dB/octave) parameter, not just frequency:
+
+**SLOPE SETTINGS (parameter typically around p8 for each band):**
+- **6 dB/oct**: Gentle, subtle - use for natural tonal shaping
+- **12 dB/oct**: Moderate - standard EQ corrections
+- **24 dB/oct**: Steep - noticeable filtering
+- **48 dB/oct**: Very steep - aggressive filtering
+- **96 dB/oct**: Brickwall - HARD cutoff, use for special effects
+
+**WHEN TO USE STEEP SLOPES (48-96 dB/oct):**
+- Telephone/phone call effects (300Hz-3kHz bandpass with brickwall)
+- Underwater effect (low-pass with steep slope)
+- AM radio / walkie-talkie (aggressive bandpass)
+- Removing problem frequencies completely
+- Creative filtering effects
+
+**WHEN TO USE GENTLE SLOPES (6-24 dB/oct):**
+- Natural high-pass for sub rumble cleanup
+- Gentle low-shelf for warmth
+- Surgical bell cuts for resonances
+- Transparent tonal adjustments
+
+**ALWAYS ASK YOURSELF:** "What slope should this filter have?" Not just "What frequency?"
+
+**PHONE CALL EXAMPLE:**
+- Frequency: 300Hz high-pass + 3kHz low-pass ✓
+- Slope: 96 dB/oct (brickwall) for both ← DON'T FORGET THIS!
+- Result: Aggressive boxed-in telephone sound
+
 **VISUALIZERS/ANALYZERS (ONLY show frequencies - CANNOT filter!):**
 - Names containing: "PAZ", "SPAN", "Spectrum", "Frequency Analyzer", "Meter"
 - **DO NOT USE THESE TO FIX PROBLEMS - THEY ARE READ-ONLY TOOLS!**
@@ -4222,6 +4317,7 @@ When user says "add Waves distortion", search for: Manny M, Kramer Tape, J37 Tap
   * Creates automation from tStart to tEnd at specified value (0.0 = silence, 1.0 = 0dB)
 - CLEAR_AUTOMATION <trackIdx> Volume - DELETE ALL automation points (USE THIS before VOL_DIP!)
 - SET_TRACK_VOL <trackIdx> <volumeDB> - Set track volume
+- SET_TRACK_PAN <trackIdx> <panValue> - Set track pan (-1.0=left, 0.0=center, 1.0=right)
 - GET_LYRICS <trackIdx> - Use OpenAI Whisper API to transcribe audio track and extract word-level timestamps
   * Exports track audio, sends to Whisper API for voice-to-text transcription
   * Returns timestamped lyrics (not copyrighted search results - actual audio transcription)
@@ -4244,6 +4340,10 @@ When user says "add Waves distortion", search for: Manny M, Kramer Tape, J37 Tap
   * Example: User says "open ssl channel" → Search list → Find "VST: SSLChannel Stereo (x86) (Waves)" → Use that exact name
   * Example: User says "add reverb" → Search list → Find "VST3: ValhallaRoom (Valhalla DSP, LLC)" or similar → Use exact name
   * If plugin already exists on track, it will just open it (no duplicate)
+- ADD_INSTRUMENT <trackIdx> <pluginName> - Add VSTi instrument to track (creates instrument track, not FX)
+  * Use for virtual instruments that produce sound from MIDI
+  * Example: ADD_INSTRUMENT 6 "VSTi: ElectraX (Tone2.com)" → Makes track 6 an instrument track
+  * Different from ADD_FX - this adds as instrument, not effect
 - REMOVE_FX <trackIdx> <fxIdx> - Remove FX plugin from track
   * Example: REMOVE_FX 0 1 (removes second plugin from track 0)
   * fxIdx: 0=first plugin, 1=second, 2=third, etc.
@@ -5095,9 +5195,15 @@ Examples of implicit knowledge:
 6. Read state BEFORE acting:
    - Is the track already in desired state? If yes, do nothing!
    
-7. For track-specific actions (NOT generic "selected tracks"):
-   - Do NOT use SELECT_TRACK first
-   - Use the direct track action ID
+7. Actions that say "selected tracks" NEED SELECT_TRACK first:
+   - 40062 (Duplicate tracks) - ALWAYS use SELECT_TRACK before this
+   - 40280 (Toggle solo) - needs SELECT_TRACK
+   - 40294 (Toggle mute) - needs SELECT_TRACK
+   - 40340 (Add FX) - needs SELECT_TRACK
+   - 40291 (Show FX chain) - needs SELECT_TRACK
+   
+8. Track-specific commands DON'T need SELECT_TRACK:
+   - SET_TRACK_VOL, SET_TRACK_PAN, ADD_FX, etc. - these take trackIdx directly
 
 **CRITICAL: CHECK IF ALREADY COMPLETE FIRST**
 BEFORE planning ANY actions, check if CURRENT STATE already has what user wants.
@@ -5127,6 +5233,19 @@ Rule: If your reasoning says "already at +3dB" or "already configured" → USE T
 }}
 
 If already_complete=true, reasoning must explain WHY (what state shows) and steps must be empty [].
+
+**EXAMPLE - DUPLICATE TRACK:**
+User: "duplicate track 11"
+State shows: Track 11 exists but is NOT currently selected
+Response:
+{{
+  "reasoning": "CHAIN OF THOUGHT: User wants to duplicate track 11. Action 40062 duplicates selected tracks, so I MUST select track 11 first.",
+  "already_complete": false,
+  "steps": [
+    {{"command": "SELECT_TRACK 11", "description": "Select track 11"}},
+    {{"command": "40062", "description": "Duplicate selected track"}}
+  ]
+}}
 
 CRITICAL: Return ONLY valid JSON. No text before or after."""
 
@@ -5220,7 +5339,7 @@ def extract_relevant_state_sections(state, commands):
     affected_tracks = set()
     for cmd in commands.split('\n'):
         # VOL_DIP, SET_TRACK_VOL, SELECT_TRACK, ADD_FX, etc.
-        track_match = re.search(r'(?:VOL_DIP|SET_TRACK_VOL|SELECT_TRACK|ADD_FX|REMOVE_FX|SET_FX_PARAM|FX_PARAM_AUTO)\s+(\d+)', cmd)
+        track_match = re.search(r'(?:VOL_DIP|SET_TRACK_VOL|SET_TRACK_PAN|SELECT_TRACK|ADD_FX|REMOVE_FX|SET_FX_PARAM|FX_PARAM_AUTO)\s+(\d+)', cmd)
         if track_match:
             affected_tracks.add(int(track_match.group(1)))
     
@@ -5457,6 +5576,7 @@ SET_FX_PARAM → Specific "pN:" value changes
 FX_PARAM_AUTO → "=== AUTOMATED PARAMETERS ===" section appears/updates
 SELECT_TRACK → "Selected: YES" on target track
 SET_TRACK_VOL → "Volume: X.XdB" line changes
+SET_TRACK_PAN → "Pan: XX%" line changes
 Action 40280 (solo) → "Solo: YES" appears
 Action 40294 (mute) → "Muted: YES" appears
 
@@ -5554,6 +5674,7 @@ Sub-goals:
 
 def execute_user_command(user_input):
     """Main agentic loop with Chain of Thought: Break into sub-goals → Execute each → Verify"""
+    import time
     
     print(f"\n🎤 User: {user_input}")
     
@@ -5667,7 +5788,8 @@ Recommendations: {', '.join(analysis.get('recommendations', [])) if analysis.get
 
 **Use this analysis to decide what plugins/settings to apply to fix the detected issues.**
 """
-                    print(f"✅ Analysis complete - {len(analysis['issues_detected'])} issues found")
+                    issues_count = len(analysis.get('issues_detected', []))
+                print(f"✅ Analysis complete - {issues_count} issues found")
                 
                 # Clean up
                 try:
@@ -6155,17 +6277,20 @@ Recommendations: {', '.join(analysis.get('recommendations', [])) if analysis.get
             success_count = feedback.count('✅') + feedback.count('🎛️') + feedback.count('🎚️') + feedback.count('🗑️')
             failure_count = feedback.count('❌')
             
-            # Check for specific automation success messages
+            # Check for specific success operations
             automation_success = 'Automated' in feedback and 'mix:' in feedback
             fx_added = 'Added FX' in feedback
+            track_duplicated = 'Action 40062 executed' in feedback  # Duplicate tracks action
             
             # If we see clear success indicators and no failures, we're done
-            if (success_count >= 2 and failure_count == 0) or (automation_success and fx_added):
+            if (success_count >= 2 and failure_count == 0) or (automation_success and fx_added) or track_duplicated:
                 print(f"\n✅ SUCCESS: Reaper feedback confirms {success_count} successful operations")
                 if automation_success:
                     print(f"   🎛️ Automation created on mix parameter")
                 if fx_added:
                     print(f"   🔌 Plugin added successfully")
+                if track_duplicated:
+                    print(f"   📋 Track duplicated successfully")
                 if lyrics_results and lyrics_already_displayed:
                     print(f"   📝 Lyrics extracted ({len(lyrics_results[0]['lyrics'])} words)")
                 break  # Don't even run verification - feedback is truth
@@ -6173,6 +6298,11 @@ Recommendations: {', '.join(analysis.get('recommendations', [])) if analysis.get
         # PHASE 3: VERIFY (only if feedback wasn't conclusive)
         print(f"\n🔍 Verifying results (attempt {retry_count + 1}/{max_retries})...")
         print(f"💭 Goal: {technical_input}")
+        
+        # Small delay for operations that need time to update (duplicate, render, etc.)
+        if any(word in user_input.lower() for word in ['duplicate', 'copy', 'render', 'freeze']):
+            time.sleep(0.3)  # 300ms for Reaper to update state
+        
         final_state = get_reaper_state()
         
         # Quick check: Did state change at all?

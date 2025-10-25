@@ -17,7 +17,7 @@ FEEDBACK_FILE = r"C:\Users\moosb\AIAGENT DAW\reaper_feedback.txt"
 ACTIONS_FILE = r"C:\Users\moosb\AIAGENT DAW\reaper_actions.txt"
 KNOWLEDGE_FILE = r"C:\Users\moosb\AIAGENT DAW\agent_knowledge.json"
 
-client = Anthropic(api_key="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")
+client = Anthropic(api_key="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")
 
 # ============================================================================
 # KNOWLEDGE BASE - What the agent learns

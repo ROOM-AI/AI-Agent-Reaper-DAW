@@ -274,6 +274,21 @@ function process_command(line)
             execute_with_feedback("VOL_DIP", false, string.format("Could not create volume envelope for track %d", trackIdx))
         end
         
+    elseif cmd == "SET_TRACK_PAN" then
+        -- SET_TRACK_PAN <trackIdx> <panValue>
+        local trackIdx = tonumber(parts[2]) or 0
+        local panValue = tonumber(parts[3]) or 0.0  -- -1.0 (left) to 1.0 (right)
+        
+        local track = reaper.GetTrack(0, trackIdx)
+        if track then
+            -- Select track first (required for some operations)
+            reaper.SetOnlyTrackSelected(track)
+            reaper.SetMediaTrackInfo_Value(track, "D_PAN", panValue)
+            execute_with_feedback("SET_TRACK_PAN", true, string.format("Track %d pan: %.0f%%", trackIdx, panValue*100))
+        else
+            execute_with_feedback("SET_TRACK_PAN", false, string.format("Track %d not found", trackIdx))
+        end
+        
     elseif cmd == "ADD_FX" then
         -- ADD_FX <trackIdx> <fxName>
         local trackIdx = tonumber(parts[2]) or 0

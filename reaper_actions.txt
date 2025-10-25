@@ -1,4 +1,4 @@
-40044|Transport: Play
+
 1007|Transport: Play
 1016|Transport: Stop
 1013|Transport: Record
@@ -17,13 +17,17 @@
 40271|Track: Add FX to selected tracks
 40340|Track: Show FX chain for selected tracks
 40281|Track: Solo/unsolo tracks
-6|Track: Toggle track volume envelope visible
-40406|Track: Toggle volume envelope visible
-40877|Track: Toggle pan envelope visible
-40285|Track: Duplicate tracks
+40407|Track: Toggle track pan envelope visible
+40062|Track: Duplicate tracks
+40296|Track: Select all tracks
+41110|Track: Select track under mouse
+40491|Track: Arm all tracks for recording
+40490|Track: Unarm all tracks for recording
+40495|Track: Cycle track record monitor
+40223|Track: Freeze tracks (render pre-fader)
+41644|Track: Unfreeze tracks
 
 42220|Envelope: Show envelope for last touched parameter
-40406|Envelope: Toggle volume envelope visible for selected tracks
 40070|Envelope: Insert automation item
 40071|Envelope: Delete automation items
 40330|Envelope: Set shape of selected envelope points to linear
@@ -48,38 +52,58 @@
 40206|Item: Remove items
 40362|Item: Glue items
 40289|Item: Unselect all items
+40182|Item: Select all items
+40034|Item: Group items
+40033|Item: Remove items from group
+40528|Item: Select item under mouse cursor
+40311|Item: Trim items to selected area
+40175|Item: Loop item source
+40601|Item: Render items to new take
+40630|Item: Move to start of time selection
+40631|Item: Move to end of time selection
+40548|Item: Heal splits in items
+40209|Item: Apply track/take FX to items
+40125|Take: Switch items to next take
+40126|Take: Switch items to previous take
 
 40029|Edit: Undo
 40030|Edit: Redo
-40421|Edit: Select all tracks
 40297|Edit: Unselect all tracks
 40290|Edit: Set time selection start point
 40222|Edit: Set time selection end point
-40020|Edit: Remove time selection
+40020|Time selection: Remove time selection
 40625|Edit: Go to start of project
 40626|Edit: Go to end of project
+40200|Time selection: Insert empty space at time selection
+40201|Time selection: Remove contents of time selection
+40718|Time selection: Select all items in time selection
 
 40104|FX: Read FX parameters from automation
 40105|FX: Toggle FX parameter automation write for last touched parameter
 40345|FX: Show/hide track envelope for last touched FX parameter
-40293|FX: Toggle FX bypass for selected tracks
-40340|FX: Show FX chain for selected tracks
-
-40100|View: Toggle master track visible
-40118|View: Move items/envelope points up one track
-40117|View: Move items/envelope points down one track
-40319|View: Nudge items/envelope points right by grid size
-40320|View: Nudge items/envelope points left by grid size
-40417|View: Show mixer
-40084|View: Toggle track zoom to maximum height
-40113|View: Zoom in horizontally
-40114|View: Zoom out horizontally
 
 40176|Marker: Insert marker at current position
+40171|Marker: Edit marker at current position
 40157|Marker: Insert region from time selection
 40174|Marker: Go to previous marker
 40173|Marker: Go to next marker
 
 40728|Routing: Show routing for selected tracks
 40360|Routing: Route selected tracks to new track
+
+40058|Track: Nudge track pan left
+40059|Track: Nudge track pan right
+
+40153|MIDI: Open in built-in MIDI editor
+40214|MIDI: Insert new MIDI item
+
+40026|File: Save project
+40022|File: Save project as...
+40015|File: Render project to disk
+
+40364|Options: Toggle metronome
+41195|Options: Enable default fade in/out
+1155|Options: Cycle ripple editing mode
+1157|Options: Toggle snapping
+40145|Options: Toggle grid lines
 

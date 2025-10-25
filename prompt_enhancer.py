@@ -5,7 +5,7 @@ Simple GPT wrapper that translates natural language to technical commands
 
 from anthropic import Anthropic
 
-client = Anthropic(api_key="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")
+client = Anthropic(api_key="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")
 
 def enhance_prompt(user_input, reaper_state=""):
     """

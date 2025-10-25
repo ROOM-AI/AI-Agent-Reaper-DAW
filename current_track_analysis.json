@@ -1,61 +1,59 @@
 {
-  "audio_file": "C:\\Users\\moosb\\AIAGENT DAW\\temp_audio\\analyze_track_0_1761245870\\SLO.wav",
-  "timestamp": 1761245872.572492,
+  "audio_file": "C:\\Users\\moosb\\AIAGENT DAW\\temp_audio\\analyze_track_1_1761343774\\SLO.wav",
+  "timestamp": 1761343776.8298557,
   "effects": {
     "filtering": {
-      "high_pass": 32,
-      "low_pass": 10379,
-      "character": "low_passed",
+      "high_pass": 226,
+      "low_pass": 12683,
+      "character": "high_passed",
       "confidence": 1.0
     },
     "delay": {
-      "present": true,
-      "delay_time_ms": 102,
-      "feedback": 100,
-      "mix": 19,
-      "note_value": "1/16",
-      "note_ms_target": 116
+      "present": false,
+      "delay_time_ms": 0,
+      "feedback": 0,
+      "mix": 0
     },
     "reverb": {
       "present": true,
-      "decay_time": 5.3,
-      "predelay_ms": 0.2,
-      "c50_db": -5.9,
-      "c80_db": -1.81,
+      "decay_time": 2.36,
+      "predelay_ms": 0.0,
+      "c50_db": -9.73,
+      "c80_db": -7.1,
       "mix": 50,
       "confidence": 1.0
     }
   },
   "characteristics": {
-    "bpm": 129.19921875,
-    "distortion": 38.70933715819206,
+    "bpm": 123.046875,
+    "distortion": 12.843564314473618,
     "saturation": {
-      "even_odd_ratio": 0.7502686177820604,
-      "type_hint": "neutral"
+      "even_odd_ratio": 0.6202674589708655,
+      "type_hint": "tape-like"
     },
     "compression": 0.0,
-    "dynamic_range_db": 31.8,
-    "brightness": 34.817047741507125,
+    "dynamic_range_db": 36.6,
+    "brightness": 11.363340830508756,
     "spectral_indices": {
       "mud": 100.0,
-      "boxiness": 81.27851486206055,
-      "presence": 1.6823387145996094,
-      "air": 14.814262390136719,
-      "flatness": 2.741537056863308,
-      "rolloff_hz": 7719.628320463671
+      "boxiness": 100.0,
+      "presence": 2.5599288940429688,
+      "air": 55.18848419189453,
+      "flatness": 34.31147634983063,
+      "rolloff_hz": 3479.212295012577
     },
-    "autotune": 0.057471869161697865
+    "autotune": 0.03874159798687458
   },
-  "summary": "Vocal: Low-passed at 10379Hz. Delay: 102ms with 100% feedback. Reverb: 5.3s decay. Moderate neutral saturation (39%). ",
+  "summary": "Vocal: High-passed at 226Hz. No delay. Reverb: 2.4s decay. Dark/warm sound. Harsh sibilance (de-ess at 8.6kHz). ",
   "audio_type": "vocal",
   "stereo_metrics": {
-    "lr_corr": 0.8394109183864923,
-    "ms_balance": 0.7554375281574716,
-    "width_low": 141.02435111999512,
-    "width_high": 12.068334966897964
+    "lr_corr": 0.9999993472991059,
+    "ms_balance": 0.9999177602788893,
+    "width_low": 1.1554720913409255e-05,
+    "width_high": 0.003696837302413769
   },
   "deessing_need": {
-    "need_score": 25.794976949691772,
-    "target_khz": 5.232568359375
+    "need_score": 58.00793766975403,
+    "target_khz": 8.591748046875
   }
 }

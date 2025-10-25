@@ -1,2 +1,1 @@
-🎚️ Track 1 FX#0 'VST3: Pro-Q 3 (FabFilter)' - Band 1 Slope → 100% [Brickwall]
-🎚️ Track 1 FX#0 'VST3: Pro-Q 3 (FabFilter)' - Band 2 Slope → 100% [Brickwall]
+✓ SELECT_TRACK: Selected track 11
