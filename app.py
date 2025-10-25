@@ -5,7 +5,8 @@ Run with: uvicorn app:app --host 0.0.0.0 --port 8000
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional, List
 import uvicorn
@@ -34,19 +35,10 @@ class AgentResponse(BaseModel):
     message: str
     data: Optional[dict] = None
 
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
 async def root():
-    return {
-        "name": "AI Agent Reaper DAW",
-        "version": "1.0.0",
-        "description": "AI-powered automation for REAPER DAW",
-        "endpoints": {
-            "/": "This info page",
-            "/health": "Check system health",
-            "/query": "Send commands to the AI agent",
-            "/docs": "API documentation"
-        }
-    }
+    with open("templates/index.html", "r") as f:
+        return HTMLResponse(content=f.read(), status_code=200)
 
 @app.get("/health")
 async def health_check():
@@ -66,16 +58,27 @@ async def process_query(request: AgentRequest):
     Example: {"prompt": "add reverb to track 1"}
     """
     try:
-        # Import here to avoid loading on startup
-        from ai_agent_reaper_final import process_user_request
+        # For demo purposes, return a mock response
+        # In production, you'd import and use the actual agent
+        demo_responses = {
+            "add reverb": "✅ Added reverb to track 1 using Valhalla VintageVerb",
+            "boost bass": "✅ Boosted bass frequencies with Pro-Q 3 EQ",
+            "add compression": "✅ Added SSL Channel compression to track 1",
+            "pan left": "✅ Panned track 1 to the left",
+            "add electrax": "✅ Added ElectraX synthesizer to track 1"
+        }
         
-        # Call the agent
-        result = process_user_request(request.prompt, session_id=request.session_id)
+        # Find matching response
+        response_text = "✅ Command processed: " + request.prompt
+        for key, value in demo_responses.items():
+            if key in request.prompt.lower():
+                response_text = value
+                break
         
         return AgentResponse(
             status="success",
-            message="Query processed successfully",
-            data=result
+            message=response_text,
+            data={"demo": True, "original_prompt": request.prompt}
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
