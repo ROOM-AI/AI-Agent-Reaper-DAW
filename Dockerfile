@@ -8,7 +8,6 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY main.py ./main.py
-COPY static ./static
 
 # Railway will set $PORT for us
 ENV PORT=8080
