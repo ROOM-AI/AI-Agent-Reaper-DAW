@@ -62,27 +62,64 @@ def public_events(since: Optional[float] = None, session_id: Optional[str] = Non
 @app.post("/api/chat")
 def api_chat(body: ChatIn):
     """
-    Replace the stub "plan" below with a call into your ai_agent_reaper_final.py
-    (e.g., import your planner and build step objects your Lua expects).
+    Use the real AI agent from ai_agent_reaper_final.py
     """
-    plan = {
-        "plan_id": f"plan-{int(time.time()*1000)}",
-        "steps": [
-            {"id":"s1","action":"ADD_FX","target":"Track 2","plugin":"FabFilter Pro-Q 3",
-             "params":{"band1":{"type":"HShelf","gain_db":0.8,"freq_hz":9000}}},
-            {"id":"s2","action":"SET_FX_PARAM","target":"Track 2","plugin":"ValhallaVintageVerb",
-             "params":{"mix":0.18,"decay_s":2.4}},
-            {"id":"s3","action":"VERIFY","checks":["LUFS","spectral_centroid","reverb_rt60"]}
-        ]
-    }
-    for step in plan["steps"]:
-        QUEUES[body.session_id].append({
-            "step_id": step["id"],
-            "session_id": body.session_id,
-            "command": step
-        })
-    add_event("plan_created", {"prompt": body.text, **plan}, session_id=body.session_id)
-    return {"reply": f"Queued {len(plan['steps'])} steps for {body.session_id}.", "plan": plan}
+    try:
+        # Import the real agent function
+        from ai_agent_reaper_final import execute_user_command
+        
+        # Create a mock print function to capture output
+        agent_output = []
+        original_print = print
+        
+        def capture_print(*args, **kwargs):
+            message = ' '.join(str(arg) for arg in args)
+            agent_output.append(message)
+            original_print(*args, **kwargs)  # Still print to console
+        
+        # Temporarily replace print to capture agent output
+        import builtins
+        builtins.print = capture_print
+        
+        try:
+            # Execute the real agent command
+            execute_user_command(body.text)
+        finally:
+            # Restore original print
+            builtins.print = original_print
+        
+        # Create a response from the agent output
+        agent_response = "\n".join(agent_output[-10:])  # Last 10 lines
+        
+        # For now, create a simple plan based on the agent's reasoning
+        plan = {
+            "plan_id": f"plan-{int(time.time()*1000)}",
+            "steps": [
+                {"id":"s1","action":"AI_AGENT_PROCESSING","target":"AI Agent","reasoning":agent_response}
+            ]
+        }
+        
+        # Add the plan to the queue
+        for step in plan["steps"]:
+            QUEUES[body.session_id].append({
+                "step_id": step["id"],
+                "session_id": body.session_id,
+                "command": step
+            })
+        
+        add_event("plan_created", {"prompt": body.text, **plan}, session_id=body.session_id)
+        return {"reply": f"AI Agent processed: {body.text}", "plan": plan, "agent_reasoning": agent_response}
+        
+    except Exception as e:
+        # Fallback to simple response if agent fails
+        plan = {
+            "plan_id": f"plan-{int(time.time()*1000)}",
+            "steps": [
+                {"id":"s1","action":"FALLBACK","target":"System","error":str(e)}
+            ]
+        }
+        add_event("plan_created", {"prompt": body.text, **plan}, session_id=body.session_id)
+        return {"reply": f"Agent processing failed: {str(e)}", "plan": plan}
 
 # -------------------- Lua client: pull next command --------------------
 @app.get("/v1/next")
@@ -119,64 +156,144 @@ def admin_queue(body: AdminCmd, x_api_key: Optional[str] = Header(default="")):
 @app.get("/", response_class=HTMLResponse)
 async def root():
     return HTMLResponse(content="""
-<!doctype html><meta charset="utf-8">
-<title>CursorDAW – Cloud Demo</title>
-<style>
-  body{font:14px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; max-width:840px; margin:32px auto; padding:0 16px}
-  #log{font-family:ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;border:1px solid #ddd;padding:12px;border-radius:8px;height:360px;overflow:auto;background:#f9f9f9}
-  .row{display:flex;gap:8px;margin:8px 0}
-  input,button{padding:8px 10px;border-radius:4px;border:1px solid #ddd}
-  button{background:#007bff;color:white;border:none;cursor:pointer}
-  button:hover{background:#0056b3}
-</style>
-<h1>🎵 CursorDAW – Cloud</h1>
-<div class="row">
-  <label>Session:</label>
-  <input id="sid" value="demo">
-</div>
-<div class="row">
-  <input id="msg" placeholder="Tell the agent what to do…" style="flex:1">
-  <button onclick="send()">Send</button>
-</div>
-<div id="log"></div>
-<script>
-const log = document.getElementById('log');
-const sid = document.getElementById('sid');
-const msg = document.getElementById('msg');
-let since = null;
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CursorDAW Cloud</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background: #1a1a1a; color: #fff; }
+        .container { max-width: 1000px; margin: 0 auto; }
+        .header { text-align: center; margin-bottom: 30px; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .card { background: #2a2a2a; border: 1px solid #444; border-radius: 8px; padding: 20px; }
+        .input-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; color: #ccc; }
+        input, textarea, button { 
+            width: 100%; padding: 10px; border: 1px solid #555; border-radius: 4px; 
+            background: #333; color: #fff; margin-bottom: 10px;
+        }
+        button { background: #007bff; border: none; cursor: pointer; }
+        button:hover { background: #0056b3; }
+        .status { text-align: center; padding: 10px; background: #333; border-radius: 4px; margin-bottom: 20px; }
+        .messages { height: 300px; overflow-y: auto; border: 1px solid #555; padding: 10px; background: #222; }
+        .message { margin-bottom: 10px; padding: 8px; border-radius: 4px; }
+        .user { background: #007bff; }
+        .agent { background: #28a745; }
+        .events { height: 300px; overflow-y: auto; border: 1px solid #555; padding: 10px; background: #222; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎵 CursorDAW Cloud</h1>
+            <div class="status" id="status">Connecting...</div>
+        </div>
+        
+        <div class="grid">
+            <div class="card">
+                <h3>Chat</h3>
+                <div class="messages" id="messages"></div>
+                <div class="input-group">
+                    <textarea id="messageInput" placeholder="Type your message..." rows="3"></textarea>
+                    <button onclick="sendMessage()">Send</button>
+                </div>
+            </div>
+            
+            <div class="card">
+                <h3>Events</h3>
+                <div class="events" id="events"></div>
+            </div>
+        </div>
+    </div>
 
-function line(s){ log.textContent += s + "\n"; log.scrollTop = log.scrollHeight; }
-
-async function send(){
-  const session_id = sid.value.trim() || "demo";
-  const text = msg.value.trim(); if(!text) return;
-  msg.value = "";
-  try{
-    const r = await fetch('/api/chat', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({session_id, text})
-    });
-    const j = await r.json();
-    line(`> ${text}`);
-    line(JSON.stringify(j.plan, null, 2));
-  }catch(e){ line("ERR: " + e); }
-}
-
-async function tick(){
-  const session_id = sid.value.trim() || "demo";
-  try{
-    const url = since ? `/public/events?session_id=${encodeURIComponent(session_id)}&since=${since}` :
-                        `/public/events?session_id=${encodeURIComponent(session_id)}`;
-    const r = await fetch(url); const arr = await r.json();
-    if(arr.length){ since = arr[arr.length-1].t; for(const e of arr){
-      const t = new Date(e.t*1000).toLocaleTimeString();
-      line(`[${t}] ${e.kind}: ${JSON.stringify(e.data)}`);
-    }}
-  }catch(e){/* ignore */}
-  setTimeout(tick, 900);
-}
-tick();
-
-msg.addEventListener('keypress', e => { if(e.key === 'Enter') send(); });
-</script>
+    <script>
+        let isConnected = false;
+        
+        function updateStatus(message, connected = false) {
+            document.getElementById('status').textContent = message;
+            isConnected = connected;
+        }
+        
+        function addMessage(text, type = 'user') {
+            const messagesDiv = document.getElementById('messages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message ' + type;
+            messageDiv.textContent = text;
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+        
+        function addEvent(text) {
+            const eventsDiv = document.getElementById('events');
+            const eventDiv = document.createElement('div');
+            eventDiv.textContent = new Date().toLocaleTimeString() + ': ' + text;
+            eventsDiv.appendChild(eventDiv);
+            eventsDiv.scrollTop = eventsDiv.scrollHeight;
+        }
+        
+        async function checkConnection() {
+            try {
+                const response = await fetch('/health');
+                if (response.ok) {
+                    const data = await response.json();
+                    updateStatus('Connected - ' + new Date(data.ts * 1000).toLocaleTimeString(), true);
+                    return true;
+                }
+            } catch (error) {
+                updateStatus('Disconnected', false);
+            }
+            return false;
+        }
+        
+        async function sendMessage() {
+            const input = document.getElementById('messageInput');
+            const message = input.value.trim();
+            if (!message) return;
+            
+            addMessage(message, 'user');
+            input.value = '';
+            
+            if (!isConnected) {
+                addMessage('Not connected to server', 'agent');
+                return;
+            }
+            
+            try {
+                const response = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: 'demo', text: message })
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    addMessage('Queued ' + (data.plan?.steps?.length || 0) + ' steps', 'agent');
+                    
+                    // Show agent reasoning if available
+                    if (data.agent_reasoning) {
+                        addMessage('Agent reasoning: ' + data.agent_reasoning, 'agent');
+                    }
+                    
+                    addEvent('Message sent: ' + message);
+                } else {
+                    addMessage('Error: ' + response.status, 'agent');
+                }
+            } catch (error) {
+                addMessage('Network error: ' + error.message, 'agent');
+            }
+        }
+        
+        // Check connection on load
+        checkConnection();
+        
+        // Enter key support
+        document.getElementById('messageInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+    </script>
+</body>
+</html>
 """, status_code=200)
