@@ -6,14 +6,11 @@ Run with: uvicorn app:app --host 0.0.0.0 --port 8000
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional, List
 import uvicorn
-import subprocess
 import json
 import os
-from pathlib import Path
 
 app = FastAPI(title="AI Agent Reaper DAW", version="1.0.0")
 
