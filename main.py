@@ -107,6 +107,10 @@ def api_chat(body: ChatIn):
                 "command": step
             })
         
+        # Also queue for Reaper (with session)
+        if REAPER_SESSIONS.get(body.session_id):
+            REAPER_SESSIONS[body.session_id].append(f"AI_COMMAND: {body.text}")
+        
         add_event("plan_created", {"prompt": body.text, **plan}, session_id=body.session_id)
         return {"reply": f"AI Agent processed: {body.text}", "plan": plan, "agent_reasoning": agent_response}
         
@@ -153,14 +157,17 @@ def admin_queue(body: AdminCmd, x_api_key: Optional[str] = Header(default="")):
     return {"queued": True}
 
 # -------------------- Reaper Cloud Connection --------------------
-REAPER_COMMANDS = []
+REAPER_SESSIONS = {}  # session_id -> [commands]
 
 @app.get("/api/reaper/poll")
-def reaper_poll():
+def reaper_poll(session_id: str = "default"):
     """Lua script polls this for commands"""
-    if REAPER_COMMANDS:
-        cmd = REAPER_COMMANDS.pop(0)
-        add_event("command_sent_to_reaper", {"command": cmd}, session_id="reaper")
+    if session_id not in REAPER_SESSIONS:
+        REAPER_SESSIONS[session_id] = []
+    
+    if REAPER_SESSIONS[session_id]:
+        cmd = REAPER_SESSIONS[session_id].pop(0)
+        add_event("command_sent_to_reaper", {"command": cmd, "session_id": session_id}, session_id="reaper")
         return cmd
     return ""  # Empty = no command
 
@@ -168,10 +175,14 @@ def reaper_poll():
 def reaper_execute(cmd: dict):
     """AI agent calls this to queue commands for Reaper"""
     command = cmd.get("command", "")
+    session_id = cmd.get("session_id", "default")
+    
     if command:
-        REAPER_COMMANDS.append(command)
-        add_event("command_queued_for_reaper", {"command": command}, session_id="reaper")
-    return {"status": "queued", "command": command}
+        if session_id not in REAPER_SESSIONS:
+            REAPER_SESSIONS[session_id] = []
+        REAPER_SESSIONS[session_id].append(command)
+        add_event("command_queued_for_reaper", {"command": command, "session_id": session_id}, session_id="reaper")
+    return {"status": "queued", "command": command, "session_id": session_id}
 
 @app.post("/api/reaper/state")
 def reaper_state(state: dict):
