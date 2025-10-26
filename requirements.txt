@@ -1,14 +1,1 @@
-fastapi
-uvicorn[standard]
-pydantic
-anthropic
-openai
-numpy
-scipy
-librosa
-soundfile
-essentia
-panns-inference
-torch
-pyperclip
-
+requests
