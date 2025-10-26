@@ -14,8 +14,10 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application
-COPY . .
+# Copy the application files
+COPY main.py .
+COPY ai_agent_reaper_final.py .
+COPY prompt_enhancer.py .
 
 # Expose port
 EXPOSE 8080

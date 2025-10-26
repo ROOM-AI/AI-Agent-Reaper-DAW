@@ -732,7 +732,7 @@ def sanity_check_actions(user_goal, planned_steps, known_actions):
     
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-5-20250929",
             max_tokens=1000,
             temperature=0,
             messages=[{"role": "user", "content": prompt}]
@@ -5251,7 +5251,7 @@ CRITICAL: Return ONLY valid JSON. No text before or after."""
 
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-5-20250929",
             max_tokens=8000,
             messages=[{"role": "user", "content": system_prompt}]
         ).content[0].text.strip()
@@ -5307,7 +5307,7 @@ CRITICAL: Return ONLY valid JSON."""
 
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-5-20250929",
             max_tokens=3000,
             messages=[{"role": "user", "content": system_prompt}]
         ).content[0].text.strip()
@@ -5595,7 +5595,7 @@ Action 40294 (mute) → "Muted: YES" appears
 
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-5-20250929",
             max_tokens=2000,
             temperature=0,
             messages=[{"role": "user", "content": system_prompt}]
@@ -5654,7 +5654,7 @@ Sub-goals:
     
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-5-20250929",
             max_tokens=1000,
             temperature=0,
             messages=[{"role": "user", "content": prompt}]

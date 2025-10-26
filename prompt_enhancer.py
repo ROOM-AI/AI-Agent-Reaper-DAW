@@ -188,7 +188,7 @@ DO NOT completely replace user's words with pure technical jargon. KEEP their in
 **Enhanced prompt:**"""
     
     response = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-sonnet-4-5-20250929",
         max_tokens=1500,
         temperature=0,
         messages=[{"role": "user", "content": prompt}]

@@ -58,67 +58,112 @@ def public_events(since: Optional[float] = None, session_id: Optional[str] = Non
         arr = [e for e in arr if e["t"] > since]
     return arr[-200:]
 
-# -------------------- Cloud AI Agent (simplified for cloud) --------------------
+# -------------------- Cloud AI Agent (REAL Claude AI) --------------------
+from anthropic import Anthropic
+
+# Initialize Claude with your API key
+claude_client = Anthropic(api_key="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")
+
 def cloud_ai_agent(user_prompt: str) -> List[str]:
     """
-    Cloud-based AI agent that generates Reaper commands using Claude.
+    Cloud-based AI agent that uses REAL Claude to generate Reaper commands.
     Returns list of command strings that bridge will write to reaper_commands.txt
     """
     try:
-        # Use Claude to reason about what commands are needed
-        # For now, simple command mapping - you can enhance with actual Claude API
+        # Build prompt for Claude
+        system_prompt = f"""You are an AI assistant for REAPER DAW. Generate commands to execute the user's request.
+
+**AVAILABLE COMMANDS:**
+- ADD_FX:Track <num>:<FX name> - Add an effect to a track
+- SET_TRACK_VOL <track_idx> <volumeDB> - Set track volume
+- SELECT_TRACK <track_idx> - Select a track
+- GOTO <seconds> - Move playhead to time
+- play / stop / record - Transport controls
+
+**COMMON PLUGINS:**
+- ReaVerb, ReaComp, ReaEQ (built-in)
+- Pro-Q 3, Saturn 2 (FabFilter)
+- ValhallaRoom, VintageVerb (Valhalla)
+
+**USER REQUEST:** {user_prompt}
+
+**INSTRUCTIONS:**
+1. Analyze what the user wants
+2. Generate the appropriate commands
+3. Return ONLY the commands, one per line
+4. No explanations, just commands
+
+**EXAMPLES:**
+User: "add reverb to track 1"
+Output:
+ADD_FX:Track 1:ReaVerb
+
+User: "boost bass on track 2"
+Output:
+ADD_FX:Track 2:Pro-Q 3
+
+User: "play the song"
+Output:
+play
+
+Now generate commands for the user's request above. Return ONLY commands, no explanations."""
+
+        # Call Claude API
+        response = claude_client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=500,
+            temperature=0,
+            messages=[{"role": "user", "content": system_prompt}]
+        ).content[0].text.strip()
         
-        prompt_lower = user_prompt.lower()
-        commands = []
+        # Parse response into command list
+        commands = [line.strip() for line in response.split('\n') if line.strip() and not line.strip().startswith('#')]
         
-        # Simple pattern matching for common commands
-        # You can replace this with Claude API calls for better reasoning
+        if not commands:
+            commands = [f"AI_MESSAGE:{user_prompt}"]
         
-        if "add reverb" in prompt_lower or "reverb" in prompt_lower:
-            track_num = 1  # Extract from prompt
-            commands.append(f"ADD_FX:Track {track_num}:ReaVerb")
-            commands.append(f"SET_PARAM:ReaVerb:Wet:0.3")
-            
-        elif "add eq" in prompt_lower or "eq" in prompt_lower:
-            track_num = 1
-            commands.append(f"ADD_FX:Track {track_num}:ReaEQ")
-            
-        elif "boost bass" in prompt_lower:
-            track_num = 1
-            commands.append(f"ADD_FX:Track {track_num}:ReaEQ")
-            commands.append(f"SET_PARAM:ReaEQ:Band1_Gain:6.0")
-            
-        elif "add compression" in prompt_lower or "compress" in prompt_lower:
-            track_num = 1
-            commands.append(f"ADD_FX:Track {track_num}:ReaComp")
-            commands.append(f"SET_PARAM:ReaComp:Ratio:4.0")
-            
-        else:
-            # Generic response for unrecognized commands
-            commands.append(f"AI_MESSAGE:{user_prompt}")
-            
         return commands
         
     except Exception as e:
-        return [f"ERROR:{str(e)}"]
+        print(f"❌ Cloud AI Error: {e}")
+        return [f"AI_MESSAGE:Error processing request: {str(e)}"]
 
 # -------------------- Chat → plan → queue --------------------
 @app.post("/api/chat")
 def api_chat(body: ChatIn):
     """
-    Cloud AI agent - generates commands and queues them for local bridge to pick up
+    Cloud AI agent - uses FULL agent logic with Claude reasoning
     """
     try:
-        # Use cloud AI agent to generate commands
-        commands = cloud_ai_agent(body.text)
+        # Import YOUR FULL REAL AGENT + PROMPT ENHANCER
+        import ai_agent_reaper_final
+        from prompt_enhancer import enhance_prompt
         
-        # Queue commands for Reaper
-        if body.session_id not in REAPER_SESSIONS:
-            REAPER_SESSIONS[body.session_id] = []
+        # Step 1: Enhance vague prompt to be specific/technical
+        reaper_state = REAPER_STATE.get(body.session_id, {})
+        state_str = json.dumps(reaper_state) if reaper_state else ""
+        enhanced_prompt = enhance_prompt(body.text, state_str)
         
-        # Queue each command
-        for cmd in commands:
-            REAPER_SESSIONS[body.session_id].append(cmd)
+        print(f"📝 Original: {body.text}")
+        print(f"✨ Enhanced: {enhanced_prompt}")
+        
+        # Step 2: Monkey-patch file I/O to use memory
+        def mock_send_reaper_commands(commands):
+            """Override to queue in memory instead of writing to file"""
+            if body.session_id not in REAPER_SESSIONS:
+                REAPER_SESSIONS[body.session_id] = []
+            for cmd in commands:
+                REAPER_SESSIONS[body.session_id].append(cmd)
+            return True
+        
+        # Replace the agent's file writing function
+        ai_agent_reaper_final.send_reaper_commands = mock_send_reaper_commands
+        
+        # Step 3: Call the real agent with enhanced prompt
+        ai_agent_reaper_final.execute_user_command(enhanced_prompt)
+        
+        # Get commands that were queued
+        commands = REAPER_SESSIONS.get(body.session_id, [])
         
         # Create plan for UI
         plan = {
@@ -133,9 +178,10 @@ def api_chat(body: ChatIn):
         add_event("command_queued_for_reaper", {"commands": commands, "session_id": body.session_id}, session_id="reaper")
         
         return {
-            "reply": f"✅ Queued {len(commands)} command(s) for Reaper",
+            "reply": f"✅ {result['message']}",
             "plan": plan,
-            "commands": commands
+            "commands": commands,
+            "status": result["status"]
         }
         
     except Exception as e:
@@ -147,7 +193,7 @@ def api_chat(body: ChatIn):
             ]
         }
         add_event("error", {"prompt": body.text, "error": str(e)}, session_id=body.session_id)
-        return {"reply": f"❌ Error: {str(e)}", "plan": plan}
+        return {"reply": f"❌ Error: {str(e)}", "plan": plan, "status": "error"}
 
 # -------------------- Lua client: pull next command --------------------
 @app.get("/v1/next")
