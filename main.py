@@ -108,8 +108,10 @@ def api_chat(body: ChatIn):
             })
         
         # Also queue for Reaper (with session)
-        if REAPER_SESSIONS.get(body.session_id):
-            REAPER_SESSIONS[body.session_id].append(f"AI_COMMAND: {body.text}")
+        if body.session_id not in REAPER_SESSIONS:
+            REAPER_SESSIONS[body.session_id] = []
+        REAPER_SESSIONS[body.session_id].append(f"AI_COMMAND: {body.text}")
+        add_event("command_queued_for_reaper", {"command": f"AI_COMMAND: {body.text}", "session_id": body.session_id}, session_id="reaper")
         
         add_event("plan_created", {"prompt": body.text, **plan}, session_id=body.session_id)
         return {"reply": f"AI Agent processed: {body.text}", "plan": plan, "agent_reasoning": agent_response}
