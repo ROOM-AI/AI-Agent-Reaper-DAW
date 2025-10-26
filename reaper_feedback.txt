@@ -1,2 +1,0 @@
-✓ SELECT_TRACK: Selected track 3
-✓ Action 40062 executed

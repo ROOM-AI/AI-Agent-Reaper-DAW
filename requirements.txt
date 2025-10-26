@@ -1,1 +1,8 @@
+fastapi
+uvicorn[standard]
+pydantic
+anthropic
+openai
+numpy
+scipy
 requests
