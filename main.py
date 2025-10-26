@@ -152,6 +152,33 @@ def admin_queue(body: AdminCmd, x_api_key: Optional[str] = Header(default="")):
     add_event("command_queued", cmd, session_id=body.session_id)
     return {"queued": True}
 
+# -------------------- Reaper Cloud Connection --------------------
+REAPER_COMMANDS = []
+
+@app.get("/api/reaper/poll")
+def reaper_poll():
+    """Lua script polls this for commands"""
+    if REAPER_COMMANDS:
+        cmd = REAPER_COMMANDS.pop(0)
+        add_event("command_sent_to_reaper", {"command": cmd}, session_id="reaper")
+        return cmd
+    return ""  # Empty = no command
+
+@app.post("/api/reaper/execute")
+def reaper_execute(cmd: dict):
+    """AI agent calls this to queue commands for Reaper"""
+    command = cmd.get("command", "")
+    if command:
+        REAPER_COMMANDS.append(command)
+        add_event("command_queued_for_reaper", {"command": command}, session_id="reaper")
+    return {"status": "queued", "command": command}
+
+@app.post("/api/reaper/state")
+def reaper_state(state: dict):
+    """Reaper sends state updates here"""
+    add_event("reaper_state_update", state, session_id="reaper")
+    return {"status": "received"}
+
 # -------------------- Static UI for investors --------------------
 @app.get("/", response_class=HTMLResponse)
 async def root():
