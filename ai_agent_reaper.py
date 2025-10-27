@@ -2,9 +2,10 @@ import json
 import time
 import os
 from openai import OpenAI
+import os
 
 # Initialize OpenAI
-client = OpenAI(api_key="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")
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY", ""))
 
 COMMAND_FILE = r"C:\Users\moosb\AIAGENT DAW\reaper_commands.txt"
 STATE_FILE = r"C:\Users\moosb\AIAGENT DAW\reaper_state.txt"

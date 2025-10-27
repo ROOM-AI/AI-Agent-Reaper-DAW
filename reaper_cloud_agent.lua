@@ -1,9 +1,35 @@
 -- reaper_cloud_agent.lua
 -- Drop this into Reaper and it connects to your cloud automatically!
 
-local CLOUD_URL = "https://feelings36lex36slo-97692729550.europe-west1.run.app"
-local COMMAND_FILE = "C:\\Users\\moosb\\AIAGENT DAW\\reaper_commands.txt"
-local STATE_FILE = "C:\\Users\\moosb\\AIAGENT DAW\\reaper_state.json"
+-- Load configuration from JSON file
+local config_file = "C:\\Users\\moosb\\AIAGENT DAW\\reaper_config.json"
+local config = {}
+
+-- Try to read config file
+local file = io.open(config_file, "r")
+if file then
+    local content = file:read("*all")
+    file:close()
+    
+    -- Simple JSON parsing for our config
+    local CLOUD_URL = content:match('"CLOUD_URL":%s*"([^"]*)"')
+    local COMMAND_FILE = content:match('"COMMAND_FILE":%s*"([^"]*)"')
+    local STATE_FILE = content:match('"STATE_FILE":%s*"([^"]*)"')
+    local SESSION_ID = content:match('"SESSION_ID":%s*"([^"]*)"')
+    
+    if CLOUD_URL and COMMAND_FILE and STATE_FILE and SESSION_ID then
+        config.CLOUD_URL = CLOUD_URL
+        config.COMMAND_FILE = COMMAND_FILE
+        config.STATE_FILE = STATE_FILE
+        config.SESSION_ID = SESSION_ID
+    end
+end
+
+-- Fallback to hardcoded values if config file not found or invalid
+local CLOUD_URL = config.CLOUD_URL or "https://feelings36lex36slo14moossolo-97692729550.europe-west1.run.app"
+local COMMAND_FILE = config.COMMAND_FILE or "C:\\Users\\moosb\\AIAGENT DAW\\reaper_commands.txt"
+local STATE_FILE = config.STATE_FILE or "C:\\Users\\moosb\\AIAGENT DAW\\reaper_state.txt"
+local SESSION_ID = config.SESSION_ID or "demo"
 
 -- Simple HTTP client using Reaper's built-in functions
 function http_request(url, method, data)

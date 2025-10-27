@@ -1,11 +1,17 @@
 import json
 import time
 from openai import OpenAI
+import os
+from pathlib import Path
 
 # Initialize OpenAI
-client = OpenAI(api_key="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")
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY", ""))
 
-COMMAND_FILE = r"C:\Users\moosb\AIAGENT DAW\fl_commands.json"
+# Portable command file path
+BASE_DIR = Path(os.getenv("REAPER_AGENT_DIR", str(Path.home() / "AIAGENT_DAW")))
+BASE_DIR.mkdir(parents=True, exist_ok=True)
+COMMAND_FILE = str(BASE_DIR / "fl_commands.json")
+
 
 def send_fl_command(command):
     """Send command to FL Studio by writing to file"""
@@ -18,9 +24,10 @@ def send_fl_command(command):
         print(f"Error sending command: {e}")
         return False
 
+
 def ask_ai(user_input):
     """Ask OpenAI to interpret user's intent for FL Studio"""
-    
+
     system_prompt = """You are an AI that controls FL Studio DAW.
 
 Available commands:
@@ -70,18 +77,19 @@ Only respond with valid JSON. No explanation."""
             {"role": "user", "content": user_input}
         ]
     )
-    
+
     return response.choices[0].message.content.strip()
+
 
 def execute_user_command(user_input):
     """Main function: take user input, get AI decision, execute commands"""
     print(f"\n🎤 User: {user_input}")
-    
+
     # Ask AI what to do
     print("🤖 Asking AI...")
     ai_response = ask_ai(user_input)
     print(f"💭 AI response: {ai_response}")
-    
+
     # Parse AI response
     try:
         response_data = json.loads(ai_response)
@@ -89,7 +97,7 @@ def execute_user_command(user_input):
     except json.JSONDecodeError:
         print("❌ AI didn't return valid JSON")
         return
-    
+
     # Execute each command
     print(f"\n⚡ Executing {len(commands)} command(s)...")
     for i, command in enumerate(commands, 1):
@@ -101,8 +109,9 @@ def execute_user_command(user_input):
         else:
             print(f"     ❌ Failed")
         time.sleep(0.2)  # Small delay between commands
-    
+
     print("\n✨ Done!\n")
+
 
 # Run it
 if __name__ == "__main__":
@@ -114,10 +123,10 @@ if __name__ == "__main__":
     print("2. fl_studio_controller.py is installed in FL Studio")
     print("3. FL Studio has been restarted after installing the script")
     print("=" * 60)
-    
+
     # Test command
     execute_user_command("start playing the track")
-    
+
     # Uncomment to make it interactive:
     # while True:
     #     user_input = input("\n💬 You: ")

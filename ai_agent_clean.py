@@ -9,6 +9,7 @@ import json
 import time
 from pathlib import Path
 from anthropic import Anthropic
+import os
 
 # Files
 COMMAND_FILE = r"C:\Users\moosb\AIAGENT DAW\reaper_commands.txt"
@@ -17,7 +18,7 @@ FEEDBACK_FILE = r"C:\Users\moosb\AIAGENT DAW\reaper_feedback.txt"
 ACTIONS_FILE = r"C:\Users\moosb\AIAGENT DAW\reaper_actions.txt"
 KNOWLEDGE_FILE = r"C:\Users\moosb\AIAGENT DAW\agent_knowledge.json"
 
-client = Anthropic(api_key="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")
+client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
 
 # ============================================================================
 # KNOWLEDGE BASE - What the agent learns

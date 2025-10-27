@@ -2,9 +2,16 @@
 -- Load once: Actions → Show action list → New action → Load ReaScript → select this file → Run
 -- Keep running in background
 
-local COMMAND_FILE = [[C:\Users\moosb\AIAGENT DAW\reaper_commands.txt]]
-local STATE_FILE = [[C:\Users\moosb\AIAGENT DAW\reaper_state.txt]]
-local FEEDBACK_FILE = [[C:\Users\moosb\AIAGENT DAW\reaper_feedback.txt]]
+-- Portable base dir using REAPER_AGENT_DIR or ~/AIAGENT_DAW
+local sep = package.config:sub(1,1)
+local base = os.getenv("REAPER_AGENT_DIR")
+if not base or base == "" then
+  local home = os.getenv(sep == "\\" and "USERPROFILE" or "HOME") or "."
+  base = home .. sep .. "AIAGENT_DAW"
+end
+local COMMAND_FILE = base .. sep .. "reaper_commands.txt"
+local STATE_FILE   = base .. sep .. "reaper_state.txt"
+local FEEDBACK_FILE= base .. sep .. "reaper_feedback.txt"
 local last_check = reaper.time_precise()
 
 function msg(s) reaper.ShowConsoleMsg(tostring(s).."\n") end

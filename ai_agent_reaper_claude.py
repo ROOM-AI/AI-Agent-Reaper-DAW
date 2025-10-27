@@ -2,9 +2,10 @@ import json
 import time
 import os
 from anthropic import Anthropic
+import os
 
 # Initialize Anthropic Claude
-client = Anthropic(api_key="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")
+client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
 
 COMMAND_FILE = r"C:\Users\moosb\AIAGENT DAW\reaper_commands.txt"
 STATE_FILE = r"C:\Users\moosb\AIAGENT DAW\reaper_state.txt"

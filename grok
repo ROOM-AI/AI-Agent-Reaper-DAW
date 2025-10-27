@@ -2,16 +2,21 @@ import json
 import time
 import os
 from anthropic import Anthropic
+from pathlib import Path
 
-# Initialize Anthropic Claude
-client = Anthropic(api_key="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")
+# Initialize Anthropic Claude via env
+client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
 
-COMMAND_FILE = r"C:\Users\moosb\AIAGENT DAW\reaper_commands.txt"
-STATE_FILE = r"C:\Users\moosb\AIAGENT DAW\reaper_state.txt"
-MEMORY_FILE = r"C:\Users\moosb\AIAGENT DAW\agent_memory.txt"
-FEEDBACK_FILE = r"C:\Users\moosb\AIAGENT DAW\reaper_feedback.txt"
-DEBUG_LOG_FILE = r"C:\Users\moosb\AIAGENT DAW\agent_debug.log"
+# Portable paths
+BASE_DIR = Path(os.getenv("REAPER_AGENT_DIR", str(Path.home() / "AIAGENT_DAW")))
+BASE_DIR.mkdir(parents=True, exist_ok=True)
+COMMAND_FILE = str(BASE_DIR / "reaper_commands.txt")
+STATE_FILE = str(BASE_DIR / "reaper_state.txt")
+MEMORY_FILE = str(BASE_DIR / "agent_memory.txt")
+FEEDBACK_FILE = str(BASE_DIR / "reaper_feedback.txt")
+DEBUG_LOG_FILE = str(BASE_DIR / "agent_debug.log")
 
+# Conversation history for context
 conversation_history = []
 
 def log_debug(message):
@@ -22,117 +27,137 @@ def log_debug(message):
         print(f"⚠️ Debug log error: {e}")
 
 def load_memory():
+    """Load persistent conversation history from file"""
     global conversation_history
     try:
         with open(MEMORY_FILE, "r", encoding="utf-8") as f:
             conversation_history = [line.strip() for line in f if line.strip()]
-        log_debug(f"Loaded {len(conversation_history)} past interactions")
         print(f"📚 Loaded {len(conversation_history)} past interactions from memory")
-    except Exception as e:
-        log_debug(f"Memory load error: {e}")
+    except:
         print("📚 Starting fresh memory")
         conversation_history = []
 
 def save_memory():
+    """Save conversation history to file (keep last 50 interactions)"""
     try:
         with open(MEMORY_FILE, "w", encoding="utf-8") as f:
             for entry in conversation_history[-50:]:
                 f.write(entry + "\n")
     except Exception as e:
-        log_debug(f"Memory save error: {e}")
         print(f"⚠️ Couldn't save memory: {e}")
 
 def send_reaper_commands(commands):
+    """Send commands to Reaper by writing to file"""
     try:
         with open(COMMAND_FILE, 'w') as f:
             for cmd in commands:
                 f.write(cmd + '\n')
         time.sleep(0.3)
-        log_debug(f"Sent commands: {commands}")
         return True
     except Exception as e:
-        log_debug(f"Command send error: {e}")
         print(f"Error sending commands: {e}")
         return False
 
 def get_reaper_state():
-    if not send_reaper_commands(["GET_STATE"]):
-        return "State unavailable - command failed"
+    """Get current Reaper project state"""
+    send_reaper_commands(["GET_STATE"])
     time.sleep(0.3)
     try:
         with open(STATE_FILE, "r") as f:
-            state = f.read()
-            log_debug("State retrieved")
-            return state
-    except Exception as e:
-        log_debug(f"State read error: {e}")
+            return f.read()
+    except:
         return "State unavailable"
 
 def load_action_list():
+    """Load Reaper action IDs from the list"""
     known_actions = {}
-    files = ["reaper_actions_synthetic.txt", "reaper_actions.txt", "reaper_actions_full.txt"]  # Added full
-    for file in files:
-        try:
-            with open(file, "r") as f:
-                for line in f:
-                    if "|" in line and not line.startswith("#"):
-                        action_id, description = line.strip().split("|", 1)
+    try:
+        with open("reaper_actions.txt", "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("REAPER") or line.startswith("Format:") or line.startswith("Generated:"):
+                    continue
+                if "|" in line:
+                    parts = line.split("|", 1)
+                    if len(parts) == 2:
+                        action_id = parts[0].strip()
+                        description = parts[1].strip()
                         known_actions[action_id] = description
-            log_debug(f"Loaded actions from {file}")
-        except Exception as e:
-            log_debug(f"Action load error for {file}: {e}")
+        print(f"✅ Loaded action database: {len(known_actions)} actions!")
+    except Exception as e:
+        print(f"❌ Error loading action list: {e}")
     return known_actions
 
-def plan_actions(user_input, state, known_actions, previous_issues=""):
-    actions_text = "\n".join([f"{aid}: {desc}" for aid, desc in known_actions.items()])
-    
+def filter_relevant_actions(user_input, all_actions, max_actions=100):
+    """Filter actions relevant to user's request to reduce token usage"""
+    keywords = user_input.lower().split()
+
+    essential_ids = ["1007", "1016", "1013", "40280", "40281", "40339", "40340", "40075", "40289"]
+    relevant = {aid: desc for aid, desc in all_actions.items() if aid in essential_ids}
+
+    scored = []
+    for aid, desc in all_actions.items():
+        if aid in relevant:
+            continue
+        desc_lower = desc.lower()
+        score = sum(1 for kw in keywords if kw in desc_lower)
+        if score > 0:
+            scored.append((score, aid, desc))
+
+    scored.sort(reverse=True)
+    for score, aid, desc in scored[:max_actions - len(relevant)]:
+        relevant[aid] = desc
+
+    return relevant
+
+def plan_actions(user_input, state, known_actions):
+    """Phase 1: Plan what actions to take (chain of thought)"""
+    relevant_actions = filter_relevant_actions(user_input, known_actions, max_actions=150)
+    actions_text = "\n".join([f"{aid}: {desc}" for aid, desc in relevant_actions.items()])
+
+    print(f"🔍 Filtered to {len(relevant_actions)} relevant actions from {len(known_actions)} total")
+
     system_prompt = f"""You are an AI that controls Reaper DAW. You can see the complete project state and must PLAN actions before executing.
 
 **CURRENT PROJECT STATE:**
 {state}
 
-**AVAILABLE ACTIONS:**
+**AVAILABLE ACTIONS (filtered for relevance):**
 {actions_text}
 
 **CUSTOM COMMANDS:**
-- SELECT_TRACK <trackIdx> - select track (ALWAYS use before track-specific actions like mute/solo)
+- SELECT_TRACK <trackIdx> - select track
 - VOL_DIP <trackIdx> <tStart> <tEnd> <value0-1> - volume automation
 - SET_TRACK_VOL <trackIdx> <volumeDB> - set track volume
 - ADD_FX <trackIdx> <pluginName> - add FX plugin
 - SET_FX_PARAM <trackIdx> <fxIdx> <paramIdx> <value0-1> - set FX parameter
 - GOTO <seconds> - jump to position
 
-**PREVIOUS ISSUES (if any, fix in this plan):**
-{previous_issues}
-
 **YOUR TASK:**
 1. Read the user's request: "{user_input}"
 2. Analyze the current state
-3. ALWAYS start with SELECT_TRACK if action affects a track (e.g., before 40281 solo)
-4. Create a step-by-step plan using exact IDs/customs
-5. Output ONLY a JSON object:
+3. Create a step-by-step plan
+4. Output ONLY a JSON object with this format:
 
 {{
   "reasoning": "Brief explanation of what you need to do and why",
   "steps": [
     {{"command": "SELECT_TRACK 4", "description": "Select track 4"}},
-    {{"command": "40281", "description": "Toggle solo for selected track"}}
+    {{"command": "40280", "description": "Toggle solo for selected track"}}
   ]
 }}
 
-Be precise. Use exact action IDs. Consider current state (don't toggle if already in desired state). CRITICAL: Return ONLY the JSON object. Start with {{ and end with }}."""
+Be precise. Use exact action IDs. Consider current state (don't toggle if already in desired state).
 
-    try:
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=2000,
-            messages=[{"role": "user", "content": system_prompt}]
-        ).content[0].text.strip()
-        log_debug(f"Plan response: {response}")
-        return response
-    except Exception as e:
-        log_debug(f"Plan error: {e}")
-        return "{}"
+CRITICAL: Return ONLY the JSON object. No explanation before or after. Start your response with {{ and end with }}."""
+
+    response = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=2000,
+        messages=[{"role": "user", "content": system_prompt}]
+    )
+
+    return response.content[0].text.strip()
 
 def verify_result(user_input, initial_state, final_state, executed_commands):
     system_prompt = f"""You executed commands in Reaper DAW. Verify if the goal was achieved.
@@ -183,7 +208,7 @@ def execute_user_command(user_input):
     
     while retry_count < max_retries:
         print("\n🧠 Planning actions..." if retry_count == 0 else f"\n🧠 Replanning (attempt {retry_count+1})...")
-        plan_response = plan_actions(user_input, initial_state, known_actions, previous_issues)
+        plan_response = plan_actions(user_input, initial_state, known_actions)
         print(f"📋 Plan: {plan_response}")
         
         try:

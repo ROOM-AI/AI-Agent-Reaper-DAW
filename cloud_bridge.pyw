@@ -3,14 +3,18 @@ import requests
 import time
 import os
 import sys
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Suppress all output (no console)
 sys.stdout = open(os.devnull, 'w')
 sys.stderr = open(os.devnull, 'w')
 
-CLOUD_URL = "https://feelings36lex36slo14moos-97692729550.europe-west1.run.app"
-COMMAND_FILE = r"C:\Users\moosb\AIAGENT DAW\reaper_commands.txt"
-SESSION_ID = "demo"
+CLOUD_URL = os.getenv("CLOUD_URL", "https://feelings36lex36slo14moossolo-97692729550.europe-west1.run.app")
+COMMAND_FILE = os.getenv("COMMAND_FILE", r"C:\Users\moosb\AIAGENT DAW\reaper_commands.txt")
+SESSION_ID = os.getenv("SESSION_ID", "demo")
 
 while True:
     try:

@@ -10,6 +10,22 @@ from contextlib import contextmanager
 from anthropic import Anthropic
 from openai import OpenAI
 from scipy.spatial.distance import cosine, euclidean
+from dotenv import load_dotenv
+import requests
+
+# Load environment variables
+load_dotenv()
+
+# Portable base directory and cloud bridge config
+REPO_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(os.getenv("REAPER_AGENT_DIR", str(Path.home() / "AIAGENT_DAW")))
+BASE_DIR.mkdir(parents=True, exist_ok=True)
+
+USE_CLOUD = bool(os.getenv("REAPER_AGENT_SERVER"))
+SERVER = os.getenv("REAPER_AGENT_SERVER", "").rstrip("/")
+TOKEN = os.getenv("AGENT_AUTH_TOKEN", "")
+CLIENT_ID = os.getenv("AGENT_CLIENT_ID", "server")
+HEADERS = {"Authorization": f"Bearer {TOKEN}"} if TOKEN else {}
 
 # Clipboard for auto-copying enhanced prompts
 try:
@@ -79,10 +95,10 @@ CLAP_AVAILABLE = False
 MERT_AVAILABLE = False
 
 # Initialize Anthropic Claude
-client = Anthropic(api_key="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")
+client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 # Initialize OpenAI for Whisper
-openai_client = OpenAI(api_key="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")
+openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Parameter conversion helpers
 def db_to_normalized(target_db, min_db=-30, max_db=30):
@@ -93,18 +109,18 @@ def normalized_to_db(normalized, min_db=-30, max_db=30):
     """Convert normalized 0-1 value to dB"""
     return min_db + (normalized * (max_db - min_db))
 
-COMMAND_FILE = r"C:\Users\moosb\AIAGENT DAW\reaper_commands.txt"
-STATE_FILE = r"C:\Users\moosb\AIAGENT DAW\reaper_state.txt"
-MEMORY_FILE = r"C:\Users\moosb\AIAGENT DAW\agent_memory.txt"
-FEEDBACK_FILE = r"C:\Users\moosb\AIAGENT DAW\reaper_feedback.txt"
-DEBUG_LOG_FILE = r"C:\Users\moosb\AIAGENT DAW\agent_debug.log"
-KNOWLEDGE_BASE_FILE = r"C:\Users\moosb\AIAGENT DAW\sound_knowledge_base.json"
-USER_PREFERENCES_FILE = r"C:\Users\moosb\AIAGENT DAW\user_preferences.json"
-LYRICS_CACHE_DIR = r"C:\Users\moosb\AIAGENT DAW\lyrics_cache"
-TEMP_AUDIO_DIR = r"C:\Users\moosb\AIAGENT DAW\temp_audio"
-STATE_HISTORY_FILE = r"C:\Users\moosb\AIAGENT DAW\state_history.json"
-REFERENCE_AUDIO_DIR = r"C:\Users\moosb\AIAGENT DAW\references"
-STRUCTURED_MEMORY_FILE = r"C:\Users\moosb\AIAGENT DAW\structured_memory.json"
+COMMAND_FILE = str(BASE_DIR / "reaper_commands.txt")
+STATE_FILE = str(BASE_DIR / "reaper_state.txt")
+MEMORY_FILE = str(BASE_DIR / "agent_memory.txt")
+FEEDBACK_FILE = str(BASE_DIR / "reaper_feedback.txt")
+DEBUG_LOG_FILE = str(BASE_DIR / "agent_debug.log")
+KNOWLEDGE_BASE_FILE = str((REPO_DIR / "sound_knowledge_base.json"))
+USER_PREFERENCES_FILE = str(BASE_DIR / "user_preferences.json")
+LYRICS_CACHE_DIR = str(BASE_DIR / "lyrics_cache")
+TEMP_AUDIO_DIR = str(BASE_DIR / "temp_audio")
+STATE_HISTORY_FILE = str(BASE_DIR / "state_history.json")
+REFERENCE_AUDIO_DIR = str(BASE_DIR / "references")
+STRUCTURED_MEMORY_FILE = str(BASE_DIR / "structured_memory.json")
 
 # Production terms for CLAP semantic matching
 PRODUCTION_TERMS = [
@@ -632,27 +648,61 @@ def parse_fx_list(state):
     return fx_list
 
 def send_reaper_commands(commands):
-    """Send commands to Reaper"""
+    """Send commands to Reaper.
+    - In cloud mode, push over HTTP to connected client via cloud server
+    - Locally, write to command file for Lua to consume
+    """
     try:
-        with open(COMMAND_FILE, 'w') as f:
+        if not isinstance(commands, list):
+            commands = [commands]
+
+        if USE_CLOUD and SERVER:
+            try:
+                payload = {"type": "cloud_cmd", "commands": commands}
+                r = requests.post(f"{SERVER}/send/{CLIENT_ID}", headers=HEADERS, json=payload, timeout=15)
+                ok = r.ok
+            except Exception as http_err:
+                log_debug(f"HTTP send error: {http_err}")
+                ok = False
+            if ok:
+                log_debug(f"Sent to cloud: {commands}")
+                return True
+            # fall back to local if HTTP failed
+
+        with open(COMMAND_FILE, 'w', encoding='utf-8') as f:
             for cmd in commands:
                 f.write(cmd + '\n')
         time.sleep(0.3)
-        log_debug(f"Sent: {commands}")
+        log_debug(f"Sent local: {commands}")
         return True
     except Exception as e:
         log_debug(f"Send error: {e}")
         return False
 
 def get_reaper_state():
-    """Get current Reaper state"""
+    """Get current Reaper state.
+    - In cloud mode, read state via server
+    - Locally, request and read from file
+    """
+    if USE_CLOUD and SERVER:
+        try:
+            r = requests.get(f"{SERVER}/state/{CLIENT_ID}", headers=HEADERS, timeout=10)
+            if r.ok:
+                data = r.json() or {}
+                state = data.get("state")
+                if state:
+                    return state
+        except Exception as http_err:
+            log_debug(f"HTTP state error: {http_err}")
+        # continue to local fallback below
+
     if not send_reaper_commands(["GET_STATE"]):
         return "State unavailable"
     time.sleep(0.3)
     try:
-        with open(STATE_FILE, "r") as f:
+        with open(STATE_FILE, "r", encoding='utf-8') as f:
             return f.read()
-    except:
+    except Exception:
         return "State unavailable"
 
 def get_reaper_feedback():
@@ -781,7 +831,7 @@ def load_action_list():
     """Load complete action database (6,309 actions!)"""
     known_actions = {}
     try:
-        with open(r"C:\Users\moosb\AIAGENT DAW\reaper_actions.txt", "r", encoding="utf-8") as f:
+        with open(str(REPO_DIR / "reaper_actions.txt"), "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line or line.startswith("REAPER") or line.startswith("Format:") or line.startswith("Generated:"):
@@ -802,7 +852,7 @@ def load_plugin_list():
     """Load available plugins from Reaper"""
     plugins = []
     try:
-        with open(r"C:\Users\moosb\AIAGENT DAW\reaper_plugins_list.txt", "r", encoding="utf-8") as f:
+        with open(str(REPO_DIR / "reaper_plugins_list.txt"), "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line or line.startswith("===") or line in ["Video processor", "Container"]:

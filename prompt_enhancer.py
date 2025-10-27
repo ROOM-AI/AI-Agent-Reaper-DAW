@@ -3,9 +3,14 @@ Prompt Enhancer - Makes vague prompts clear for the agent
 Simple GPT wrapper that translates natural language to technical commands
 """
 
+import os
 from anthropic import Anthropic
+from dotenv import load_dotenv
 
-client = Anthropic(api_key="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")
+# Load environment variables
+load_dotenv()
+
+client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY_ENHANCER"))
 
 def enhance_prompt(user_input, reaper_state=""):
     """

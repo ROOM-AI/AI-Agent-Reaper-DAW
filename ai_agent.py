@@ -1,9 +1,11 @@
 import requests
 import json
 from openai import OpenAI
+import os
 
 # Initialize OpenAI
-client = OpenAI(api_key="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")
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY", ""))
+
 
 def load_reaper_actions():
     """Load all available Reaper actions from file"""
@@ -15,6 +17,7 @@ def load_reaper_actions():
                 actions[action_id] = description
     return actions
 
+
 def send_reaper_command(action_id):
     """Send command to Reaper via web API"""
     try:
@@ -23,6 +26,7 @@ def send_reaper_command(action_id):
     except Exception as e:
         print(f"Error sending command {action_id}: {e}")
         return False
+
 
 def send_reaper_api_command(command):
     """Send raw API command to Reaper (like SET/TRACK/1/VOL/0.5)"""
@@ -34,12 +38,13 @@ def send_reaper_api_command(command):
         print(f"Error sending API command {command}: {e}")
         return False
 
+
 def ask_ai(user_input, actions_list):
     """Ask OpenAI to figure out which Reaper actions to execute"""
-    
+
     # Format actions for AI
     actions_text = "\n".join([f"{aid}: {desc}" for aid, desc in actions_list.items()])
-    
+
     system_prompt = f"""You are an AI that controls Reaper DAW. 
 
 Available Reaper actions:
@@ -82,22 +87,23 @@ Only respond with valid JSON. No explanation."""
             {"role": "user", "content": user_input}
         ]
     )
-    
+
     return response.choices[0].message.content.strip()
+
 
 def execute_user_command(user_input):
     """Main function: take user input, get AI decision, execute actions"""
     print(f"\n🎤 User: {user_input}")
-    
+
     # Load available actions
     actions = load_reaper_actions()
     print(f"📚 Loaded {len(actions)} Reaper actions")
-    
+
     # Ask AI what to do
     print("🤖 Asking AI...")
     ai_response = ask_ai(user_input, actions)
     print(f"💭 AI response: {ai_response}")
-    
+
     # Parse AI response
     try:
         response_data = json.loads(ai_response)
@@ -113,12 +119,12 @@ def execute_user_command(user_input):
     except json.JSONDecodeError:
         print("❌ AI didn't return valid JSON")
         return
-    
+
     # Execute each step
     print(f"\n⚡ Executing {len(steps)} step(s)...")
     for i, step in enumerate(steps, 1):
         step_type = step.get("type", "action")
-        
+
         if step_type == "action":
             action_id = str(step.get("id", ""))
             if action_id in actions:
@@ -131,7 +137,7 @@ def execute_user_command(user_input):
                     print(f"     ❌ Failed")
             else:
                 print(f"  {i}. ⚠️  Unknown action ID: {action_id}")
-        
+
         elif step_type == "api":
             command = step.get("command", "")
             print(f"  {i}. API command: {command}")
@@ -140,17 +146,18 @@ def execute_user_command(user_input):
                 print(f"     ✅ Success")
             else:
                 print(f"     ❌ Failed")
-        
+
         else:
             print(f"  {i}. ⚠️  Unknown step type: {step_type}")
-    
+
     print("\n✨ Done!\n")
+
 
 # Run it
 if __name__ == "__main__":
     # Test command - automation
     execute_user_command("drop the volume to 50% from second 16 to 32")
-    
+
     # Uncomment to make it interactive:
     # while True:
     #     user_input = input("\n💬 You: ")
