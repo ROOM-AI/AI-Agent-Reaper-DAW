@@ -27,6 +27,41 @@ TOKEN = os.getenv("AGENT_AUTH_TOKEN", "")
 CLIENT_ID = os.getenv("AGENT_CLIENT_ID", "server")
 HEADERS = {"Authorization": f"Bearer {TOKEN}"} if TOKEN else {}
 
+# -------------------- Cloud hook support --------------------
+# Minimal, opt-in hooks so the real agent can run in cloud without wrappers.
+# When hooks are set (or CLOUD_MODE=true), I/O is redirected to server-provided functions.
+CLOUD_MODE = str(os.getenv("CLOUD_MODE", "false")).lower() in ("1", "true", "yes", "on")
+
+_CLOUD_STATE_PROVIDER = None  # callable(session_id) -> str state_text
+_CLOUD_COMMAND_SINK = None    # callable(commands: List[str] | str, session_id) -> bool
+_CLOUD_FEEDBACK_PROVIDER = None  # callable(session_id) -> str
+_CLOUD_MEMORY_LOAD = None     # callable(session_id) -> dict
+_CLOUD_MEMORY_SAVE = None     # callable(session_id, data: dict) -> bool
+_CURRENT_SESSION_ID = "demo"
+
+def set_cloud_hooks(
+    state_provider=None,
+    command_sink=None,
+    feedback_provider=None,
+    memory_load=None,
+    memory_save=None,
+):
+    """Inject cloud I/O hooks so the real agent can run in server context.
+    Any hook left as None will keep default local behavior for that function.
+    """
+    global _CLOUD_STATE_PROVIDER, _CLOUD_COMMAND_SINK, _CLOUD_FEEDBACK_PROVIDER
+    global _CLOUD_MEMORY_LOAD, _CLOUD_MEMORY_SAVE
+    _CLOUD_STATE_PROVIDER = state_provider or _CLOUD_STATE_PROVIDER
+    _CLOUD_COMMAND_SINK = command_sink or _CLOUD_COMMAND_SINK
+    _CLOUD_FEEDBACK_PROVIDER = feedback_provider or _CLOUD_FEEDBACK_PROVIDER
+    _CLOUD_MEMORY_LOAD = memory_load or _CLOUD_MEMORY_LOAD
+    _CLOUD_MEMORY_SAVE = memory_save or _CLOUD_MEMORY_SAVE
+
+def set_current_session(session_id: str):
+    """Set the active session id for cloud hook calls."""
+    global _CURRENT_SESSION_ID
+    _CURRENT_SESSION_ID = session_id or "demo"
+
 # Clipboard for auto-copying enhanced prompts
 try:
     import pyperclip
@@ -653,6 +688,19 @@ def send_reaper_commands(commands):
     - Locally, write to command file for Lua to consume
     """
     try:
+        # Cloud hook path: send via injected command sink if available
+        if (CLOUD_MODE or _CLOUD_COMMAND_SINK) and _CLOUD_COMMAND_SINK is not None:
+            if not isinstance(commands, list):
+                commands = [commands]
+            ok = False
+            try:
+                ok = bool(_CLOUD_COMMAND_SINK(commands, _CURRENT_SESSION_ID))
+            except Exception:
+                ok = False
+            if ok:
+                log_debug(f"Sent via cloud sink: {commands}")
+                return True
+
         if not isinstance(commands, list):
             commands = [commands]
 
@@ -684,6 +732,15 @@ def get_reaper_state():
     - In cloud mode, read state via server
     - Locally, request and read from file
     """
+    # Cloud hook path: read from injected state provider if available
+    if (CLOUD_MODE or _CLOUD_STATE_PROVIDER) and _CLOUD_STATE_PROVIDER is not None:
+        try:
+            state_text = _CLOUD_STATE_PROVIDER(_CURRENT_SESSION_ID)
+            # Mirror local behavior: proceed even if missing
+            return state_text if isinstance(state_text, str) else str(state_text)
+        except Exception:
+            return "State unavailable"
+
     if USE_CLOUD and SERVER:
         try:
             r = requests.get(f"{SERVER}/state/{CLIENT_ID}", headers=HEADERS, timeout=10)
@@ -707,6 +764,17 @@ def get_reaper_state():
 
 def get_reaper_feedback():
     """Read feedback from Reaper about last command execution"""
+    # Cloud hook path: read from injected feedback provider if available
+    if (CLOUD_MODE or _CLOUD_FEEDBACK_PROVIDER) and _CLOUD_FEEDBACK_PROVIDER is not None:
+        try:
+            fb = _CLOUD_FEEDBACK_PROVIDER(_CURRENT_SESSION_ID)
+            if fb:
+                log_debug(f"Feedback: {fb}")
+                return fb
+            return "No feedback available"
+        except Exception:
+            return "No feedback available"
+
     try:
         with open(FEEDBACK_FILE, "r") as f:
             feedback = f.read().strip()
@@ -725,6 +793,36 @@ def clear_reaper_feedback():
         log_debug("Cleared feedback file")
     except Exception as e:
         log_debug(f"Failed to clear feedback: {e}")
+
+# Optional cloud memory indirection for save/load if hooks provided
+def save_memory(data):
+    try:
+        if (CLOUD_MODE or _CLOUD_MEMORY_SAVE) and _CLOUD_MEMORY_SAVE is not None:
+            return bool(_CLOUD_MEMORY_SAVE(_CURRENT_SESSION_ID, data))
+    except Exception:
+        pass
+    # Fall back to local file save
+    try:
+        with open(STRUCTURED_MEMORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        return True
+    except Exception:
+        return False
+
+def load_memory():
+    try:
+        if (CLOUD_MODE or _CLOUD_MEMORY_LOAD) and _CLOUD_MEMORY_LOAD is not None:
+            mem = _CLOUD_MEMORY_LOAD(_CURRENT_SESSION_ID)
+            return mem if isinstance(mem, dict) else {}
+    except Exception:
+        pass
+    try:
+        if os.path.exists(STRUCTURED_MEMORY_FILE):
+            with open(STRUCTURED_MEMORY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
 
 def sanity_check_actions(user_goal, planned_steps, known_actions):
     """

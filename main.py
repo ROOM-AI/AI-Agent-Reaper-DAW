@@ -128,6 +128,52 @@ def api_chat(body: ChatIn):
         add_event("error", {"prompt": body.text, "error": str(e)}, session_id=body.session_id)
         return {"reply": f"❌ Error: {str(e)}", "plan": plan, "status": "error"}
 
+# -------------------- Chat (RAW) → real agent, no enhancer --------------------
+@app.post("/api/chat_raw")
+def api_chat_raw(body: ChatIn):
+    try:
+        # Directly run the FULL agent with the raw user text
+        result = execute_user_command_cloud(
+            user_input=body.text,
+            session_id=body.session_id,
+            reaper_state_dict=WRAP_STATE,
+            reaper_sessions_dict=WRAP_SESSIONS
+        )
+
+        # Pull commands and mirror to bridge queue
+        commands = get_queued_commands(body.session_id)
+        if commands:
+            if body.session_id not in REAPER_SESSIONS:
+                REAPER_SESSIONS[body.session_id] = []
+            REAPER_SESSIONS[body.session_id].extend(commands)
+
+        plan = {
+            "plan_id": f"plan-{int(time.time()*1000)}",
+            "steps": [
+                {"id": f"s{i}", "action": "REAPER_COMMAND", "command": cmd}
+                for i, cmd in enumerate(commands)
+            ]
+        }
+
+        add_event("plan_created", {"prompt": body.text, **plan}, session_id=body.session_id)
+        add_event("command_queued_for_reaper", {"commands": commands, "session_id": body.session_id}, session_id="reaper")
+
+        return {
+            "reply": f"✅ {result['message']}",
+            "plan": plan,
+            "commands": commands,
+            "status": result["status"]
+        }
+    except Exception as e:
+        plan = {
+            "plan_id": f"plan-{int(time.time()*1000)}",
+            "steps": [
+                {"id": "s1", "action": "ERROR", "error": str(e)}
+            ]
+        }
+        add_event("error", {"prompt": body.text, "error": str(e)}, session_id=body.session_id)
+        return {"reply": f"❌ Error: {str(e)}", "plan": plan, "status": "error"}
+
 # -------------------- Lua client: pull next command --------------------
 @app.get("/v1/next")
 def v1_next(session_id: str, x_api_key: Optional[str] = Header(default="")):
@@ -313,7 +359,7 @@ async def root():
             }
             
             try {
-                const response = await fetch('/api/chat', {
+                const response = await fetch('/api/chat_raw', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ session_id: 'demo', text: message })
