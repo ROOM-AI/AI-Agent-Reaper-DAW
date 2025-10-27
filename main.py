@@ -1,10 +1,14 @@
-import os, time
+import os, time, json
 from collections import defaultdict, deque
 from typing import Optional, Dict, Any, List
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # -------------------- App & CORS --------------------
 app = FastAPI(title="CursorDAW Cloud")
@@ -58,76 +62,6 @@ def public_events(since: Optional[float] = None, session_id: Optional[str] = Non
         arr = [e for e in arr if e["t"] > since]
     return arr[-200:]
 
-# -------------------- Cloud AI Agent (REAL Claude AI) --------------------
-from anthropic import Anthropic
-
-# Initialize Claude with your API key
-claude_client = Anthropic(api_key="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")
-
-def cloud_ai_agent(user_prompt: str) -> List[str]:
-    """
-    Cloud-based AI agent that uses REAL Claude to generate Reaper commands.
-    Returns list of command strings that bridge will write to reaper_commands.txt
-    """
-    try:
-        # Build prompt for Claude
-        system_prompt = f"""You are an AI assistant for REAPER DAW. Generate commands to execute the user's request.
-
-**AVAILABLE COMMANDS:**
-- ADD_FX:Track <num>:<FX name> - Add an effect to a track
-- SET_TRACK_VOL <track_idx> <volumeDB> - Set track volume
-- SELECT_TRACK <track_idx> - Select a track
-- GOTO <seconds> - Move playhead to time
-- play / stop / record - Transport controls
-
-**COMMON PLUGINS:**
-- ReaVerb, ReaComp, ReaEQ (built-in)
-- Pro-Q 3, Saturn 2 (FabFilter)
-- ValhallaRoom, VintageVerb (Valhalla)
-
-**USER REQUEST:** {user_prompt}
-
-**INSTRUCTIONS:**
-1. Analyze what the user wants
-2. Generate the appropriate commands
-3. Return ONLY the commands, one per line
-4. No explanations, just commands
-
-**EXAMPLES:**
-User: "add reverb to track 1"
-Output:
-ADD_FX:Track 1:ReaVerb
-
-User: "boost bass on track 2"
-Output:
-ADD_FX:Track 2:Pro-Q 3
-
-User: "play the song"
-Output:
-play
-
-Now generate commands for the user's request above. Return ONLY commands, no explanations."""
-
-        # Call Claude API
-        response = claude_client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=500,
-            temperature=0,
-            messages=[{"role": "user", "content": system_prompt}]
-        ).content[0].text.strip()
-        
-        # Parse response into command list
-        commands = [line.strip() for line in response.split('\n') if line.strip() and not line.strip().startswith('#')]
-        
-        if not commands:
-            commands = [f"AI_MESSAGE:{user_prompt}"]
-        
-        return commands
-        
-    except Exception as e:
-        print(f"❌ Cloud AI Error: {e}")
-        return [f"AI_MESSAGE:Error processing request: {str(e)}"]
-
 # -------------------- Chat → plan → queue --------------------
 @app.post("/api/chat")
 def api_chat(body: ChatIn):
@@ -135,35 +69,27 @@ def api_chat(body: ChatIn):
     Cloud AI agent - uses FULL agent logic with Claude reasoning
     """
     try:
-        # Import YOUR FULL REAL AGENT + PROMPT ENHANCER
-        import ai_agent_reaper_final
+        # Import prompt enhancer
         from prompt_enhancer import enhance_prompt
         
         # Step 1: Enhance vague prompt to be specific/technical
-        reaper_state = REAPER_STATE.get(body.session_id, {})
+        reaper_state = WRAP_STATE.get(body.session_id, {})
         state_str = json.dumps(reaper_state) if reaper_state else ""
         enhanced_prompt = enhance_prompt(body.text, state_str)
         
         print(f"📝 Original: {body.text}")
         print(f"✨ Enhanced: {enhanced_prompt}")
         
-        # Step 2: Monkey-patch file I/O to use memory
-        def mock_send_reaper_commands(commands):
-            """Override to queue in memory instead of writing to file"""
-            if body.session_id not in REAPER_SESSIONS:
-                REAPER_SESSIONS[body.session_id] = []
-            for cmd in commands:
-                REAPER_SESSIONS[body.session_id].append(cmd)
-            return True
-        
-        # Replace the agent's file writing function
-        ai_agent_reaper_final.send_reaper_commands = mock_send_reaper_commands
-        
-        # Step 3: Call the real agent with enhanced prompt
-        ai_agent_reaper_final.execute_user_command(enhanced_prompt)
+        # Step 2: Execute using cloud wrapper (keeps your 6k line agent intact)
+        result = execute_user_command_cloud(
+            user_input=enhanced_prompt,
+            session_id=body.session_id,
+            reaper_state_dict=WRAP_STATE,
+            reaper_sessions_dict=WRAP_SESSIONS
+        )
         
         # Get commands that were queued
-        commands = REAPER_SESSIONS.get(body.session_id, [])
+        commands = get_queued_commands(body.session_id)
         
         # Create plan for UI
         plan = {
@@ -228,6 +154,17 @@ def admin_queue(body: AdminCmd, x_api_key: Optional[str] = Header(default="")):
 
 # -------------------- Reaper Cloud Connection --------------------
 REAPER_SESSIONS = {}  # session_id -> [commands]
+REAPER_STATE = {}  # session_id -> state dict
+
+# Import the cloud wrapper
+from cloud_agent_wrapper import (
+    execute_user_command_cloud,
+    update_reaper_state,
+    get_queued_commands,
+    clear_commands,
+    REAPER_STATE as WRAP_STATE,
+    REAPER_SESSIONS as WRAP_SESSIONS,
+)
 
 @app.get("/api/reaper/poll")
 def reaper_poll(session_id: str = "default"):
@@ -257,7 +194,9 @@ def reaper_execute(cmd: dict):
 @app.post("/api/reaper/state")
 def reaper_state(state: dict):
     """Reaper sends state updates here"""
-    add_event("reaper_state_update", state, session_id="reaper")
+    session_id = state.get("session_id", "demo")
+    update_reaper_state(session_id, state)
+    add_event("reaper_state_update", state, session_id=session_id)
     return {"status": "received"}
 
 # -------------------- Static UI for investors --------------------

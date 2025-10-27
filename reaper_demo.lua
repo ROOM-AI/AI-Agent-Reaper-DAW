@@ -1,7 +1,14 @@
 -- CursorDAW Cloud Demo - Bidirectional cloud sync with full command support
 
-local COMMAND_FILE = "C:\\Users\\moosb\\AIAGENT DAW\\reaper_commands.txt"
-local STATE_FILE = "C:\\Users\\moosb\\AIAGENT DAW\\reaper_state.json"
+-- Portable base dir using REAPER_AGENT_DIR or ~/AIAGENT_DAW (match robust agent)
+local sep = package.config:sub(1,1)
+local base = os.getenv("REAPER_AGENT_DIR")
+if not base or base == "" then
+  local home = os.getenv(sep == "\\" and "USERPROFILE" or "HOME") or "."
+  base = home .. sep .. "AIAGENT_DAW"
+end
+local COMMAND_FILE = base .. sep .. "reaper_commands.txt"
+local STATE_FILE   = base .. sep .. "reaper_state.txt"
 local state_counter = 0
 
 reaper.ShowConsoleMsg("☁️ CursorDAW Cloud Demo\n")
@@ -29,6 +36,13 @@ function execute_command(cmd)
     
     local command = parts[1]
     
+    -- Numeric action IDs (allow direct commands like 1007 for Play)
+    if cmd:match("^%d+$") then
+        reaper.Main_OnCommand(tonumber(cmd), 0)
+        msg("✅ Executed action ID " .. cmd)
+        return
+    end
+
     -- Parse structured commands from cloud AI
     if cmd:match("^ADD_FX:") then
         -- ADD_FX:Track 1:ReaVerb
@@ -108,6 +122,56 @@ function execute_command(cmd)
             end
         end
         
+    -- Space-based variants (match robust agent commands)
+    elseif command == "ADD_FX" then
+        -- ADD_FX <trackIdx> <fxName>
+        local trackIdx = tonumber(parts[2]) or 0
+        local fxName = table.concat(parts, " ", 3)
+        local track = reaper.GetTrack(0, trackIdx)
+        if track and fxName ~= "" then
+            -- Try a few common variations
+            local namesToTry = {
+                fxName,
+                "VST3: " .. fxName,
+                "VST: " .. fxName,
+                "VST3: " .. fxName .. " (Cockos)",
+                "VST: " .. fxName .. " (Cockos)"
+            }
+            local fxIdx = -1
+            for _, tryName in ipairs(namesToTry) do
+                fxIdx = reaper.TrackFX_AddByName(track, tryName, false, -1)
+                if fxIdx >= 0 then break end
+            end
+            if fxIdx >= 0 then
+                reaper.TrackFX_Show(track, fxIdx, 3)
+                msg(string.format("✅ Added/Opened '%s' on track %d", fxName, trackIdx))
+            else
+                msg(string.format("⚠️ Could not find FX: %s", fxName))
+            end
+        else
+            msg("⚠️ ADD_FX usage: ADD_FX <trackIdx> <fxName>")
+        end
+
+    elseif command == "SET_FX_PARAM" then
+        -- SET_FX_PARAM <trackIdx> <fxIdx> <paramIdx> <value0-1>
+        local trackIdx = tonumber(parts[2]) or 0
+        local fxIdx = tonumber(parts[3]) or 0
+        local paramIdx = tonumber(parts[4]) or 0
+        local value = tonumber(parts[5]) or 0.5
+        local track = reaper.GetTrack(0, trackIdx)
+        if track then
+            local numFX = reaper.TrackFX_GetCount(track)
+            if fxIdx < numFX then
+                reaper.TrackFX_SetParam(track, fxIdx, paramIdx, value)
+                local _, fxName = reaper.TrackFX_GetFXName(track, fxIdx, "")
+                local _, paramName = reaper.TrackFX_GetParamName(track, fxIdx, paramIdx, "")
+                local _, displayValue = reaper.TrackFX_GetFormattedParamValue(track, fxIdx, paramIdx, "")
+                msg(string.format("🎚️ %s - %s → %.0f%% [%s]", fxName, paramName, value*100, displayValue))
+            else
+                msg(string.format("⚠️ Track %d has only %d FX (asked FX#%d)", trackIdx, numFX, fxIdx))
+            end
+        end
+
     elseif cmd:match("^AI_MESSAGE:") then
         local message = cmd:match("^AI_MESSAGE:(.+)$")
         msg("💬 AI: " .. message)

@@ -16,11 +16,18 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the application files
 COPY main.py .
+COPY cloud_server.py .
 COPY ai_agent_reaper_final.py .
+COPY cloud_agent_wrapper.py .
 COPY prompt_enhancer.py .
+COPY local_bridge.pyw .
+
+COPY reaper_all_actions.txt .
+COPY sound_knowledge_base.json .
+COPY action_index.json .
 
 # Expose port
 EXPOSE 8080
 
-# Run the application
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+# Run the application (main site + agent API)
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--proxy-headers"]
