@@ -209,14 +209,49 @@ def admin_queue(body: AdminCmd, x_api_key: Optional[str] = Header(default="")):
 REAPER_SESSIONS = {}  # session_id -> [commands]
 REAPER_STATE = {}  # session_id -> state dict
 
-# Import the cloud wrapper
-from cloud_agent_wrapper import (
-    execute_user_command_cloud,
-    update_reaper_state,
-    get_queued_commands,
-    clear_commands,
-    REAPER_STATE as WRAP_STATE,
-    REAPER_SESSIONS as WRAP_SESSIONS,
+# Wire the REAL agent with cloud hooks (no wrapper)
+import ai_agent_reaper_final as agent
+
+def _state_provider(session_id: str) -> str:
+    state = REAPER_STATE.get(session_id, {})
+    # Prefer raw text dump if present
+    if isinstance(state, dict) and isinstance(state.get("state_text"), str):
+        return state["state_text"]
+    try:
+        return json.dumps(state) if state else ""
+    except Exception:
+        return ""
+
+def _command_sink(commands, session_id: str) -> bool:
+    try:
+        if not isinstance(commands, list):
+            commands = [commands]
+        if session_id not in REAPER_SESSIONS:
+            REAPER_SESSIONS[session_id] = []
+        REAPER_SESSIONS[session_id].extend(commands)
+        return True
+    except Exception:
+        return False
+
+def _feedback_provider(session_id: str) -> str:
+    # Optional: implement feedback loop later
+    return ""
+
+_MEMORY = {}
+def _memory_load(session_id: str):
+    return _MEMORY.get(session_id, {})
+
+def _memory_save(session_id: str, data: Dict[str, Any]) -> bool:
+    _MEMORY[session_id] = data or {}
+    return True
+
+# Inject hooks once on startup
+agent.set_cloud_hooks(
+    state_provider=_state_provider,
+    command_sink=_command_sink,
+    feedback_provider=_feedback_provider,
+    memory_load=_memory_load,
+    memory_save=_memory_save,
 )
 
 @app.get("/api/reaper/poll")
@@ -248,7 +283,7 @@ def reaper_execute(cmd: dict):
 def reaper_state(state: dict):
     """Reaper sends state updates here"""
     session_id = state.get("session_id", "demo")
-    update_reaper_state(session_id, state)
+    REAPER_STATE[session_id] = state
     add_event("reaper_state_update", state, session_id=session_id)
     return {"status": "received"}
 
