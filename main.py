@@ -88,8 +88,14 @@ def api_chat(body: ChatIn):
             reaper_sessions_dict=WRAP_SESSIONS
         )
         
-        # Get commands that were queued
+        # Get commands that were queued by the agent (wrapper sessions)
         commands = get_queued_commands(body.session_id)
+
+        # Also forward those commands into the bridge queue used by /api/reaper/poll
+        if commands:
+            if body.session_id not in REAPER_SESSIONS:
+                REAPER_SESSIONS[body.session_id] = []
+            REAPER_SESSIONS[body.session_id].extend(commands)
         
         # Create plan for UI
         plan = {
@@ -107,7 +113,8 @@ def api_chat(body: ChatIn):
             "reply": f"✅ {result['message']}",
             "plan": plan,
             "commands": commands,
-            "status": result["status"]
+            "status": result["status"],
+            "agent_reasoning": enhanced_prompt
         }
         
     except Exception as e:
