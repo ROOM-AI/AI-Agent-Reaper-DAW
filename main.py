@@ -68,13 +68,21 @@ def api_chat(body: ChatIn):
     """
     Cloud AI agent - uses FULL agent logic with Claude reasoning
     """
-    import io
     import sys
     
-    # Capture all output from the agent
-    output_capture = io.StringIO()
-    old_stdout = sys.stdout
-    sys.stdout = output_capture
+    # Create a list to capture all output
+    output_lines = []
+    
+    # Create a custom print function that captures output
+    def capture_print(*args, **kwargs):
+        line = " ".join(str(arg) for arg in args)
+        output_lines.append(line)
+        # Also write to actual stdout for logs
+        print(line, file=sys.__stdout__)
+    
+    # Temporarily replace print
+    original_print = __builtins__['print']
+    __builtins__['print'] = capture_print
     
     try:
         # Import prompt enhancer
@@ -99,8 +107,8 @@ def api_chat(body: ChatIn):
             "message": f"Generated {len(commands)} command(s)"
         }
         
-        # Get all the agent output
-        agent_output = output_capture.getvalue()
+        # Get all the captured output
+        agent_output = "\n".join(output_lines)
         
         # Create plan for UI
         plan = {
@@ -114,7 +122,7 @@ def api_chat(body: ChatIn):
         add_event("plan_created", {"prompt": body.text, **plan}, session_id=body.session_id)
         add_event("command_queued_for_reaper", {"commands": commands, "session_id": body.session_id}, session_id="reaper")
         
-        sys.stdout = old_stdout
+        __builtins__['print'] = original_print
         
         return {
             "reply": agent_output if agent_output else f"✅ {result['message']}",
@@ -126,8 +134,8 @@ def api_chat(body: ChatIn):
         }
         
     except Exception as e:
-        sys.stdout = old_stdout
-        error_output = output_capture.getvalue()
+        __builtins__['print'] = original_print
+        error_output = "\n".join(output_lines)
         
         # Fallback response
         plan = {
@@ -144,11 +152,21 @@ def api_chat(body: ChatIn):
 def api_chat_raw(body: ChatIn):
     import io
     import sys
+    import logging
     
-    # Capture all output from the agent
-    output_capture = io.StringIO()
-    old_stdout = sys.stdout
-    sys.stdout = output_capture
+    # Create a list to capture all output
+    output_lines = []
+    
+    # Create a custom print function that captures output
+    def capture_print(*args, **kwargs):
+        line = " ".join(str(arg) for arg in args)
+        output_lines.append(line)
+        # Also write to actual stdout for logs
+        print(line, file=sys.__stdout__)
+    
+    # Temporarily replace print
+    original_print = __builtins__['print']
+    __builtins__['print'] = capture_print
     
     try:
         # Directly run the FULL agent with the raw user text
@@ -162,8 +180,8 @@ def api_chat_raw(body: ChatIn):
             "message": f"Generated {len(commands)} command(s)"
         }
         
-        # Get all the agent output
-        agent_output = output_capture.getvalue()
+        # Get all the captured output
+        agent_output = "\n".join(output_lines)
 
         plan = {
             "plan_id": f"plan-{int(time.time()*1000)}",
@@ -176,7 +194,7 @@ def api_chat_raw(body: ChatIn):
         add_event("plan_created", {"prompt": body.text, **plan}, session_id=body.session_id)
         add_event("command_queued_for_reaper", {"commands": commands, "session_id": body.session_id}, session_id="reaper")
 
-        sys.stdout = old_stdout
+        __builtins__['print'] = original_print
 
         return {
             "reply": agent_output if agent_output else f"✅ {result['message']}",
@@ -186,8 +204,8 @@ def api_chat_raw(body: ChatIn):
             "full_output": agent_output
         }
     except Exception as e:
-        sys.stdout = old_stdout
-        error_output = output_capture.getvalue()
+        __builtins__['print'] = original_print
+        error_output = "\n".join(output_lines)
         
         plan = {
             "plan_id": f"plan-{int(time.time()*1000)}",
