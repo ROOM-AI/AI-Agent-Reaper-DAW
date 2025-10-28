@@ -429,7 +429,7 @@ def load_memory():
         print("📚 Starting fresh memory")
         conversation_history = []
 
-def save_memory():
+def save_conversation_history():
     try:
         with open(MEMORY_FILE, "w", encoding="utf-8") as f:
             for entry in conversation_history[-50:]:
@@ -6703,7 +6703,7 @@ Attempt {retry_count + 1}:
     
     history_entry = f"User: '{user_input}' → {reasoning}"
     conversation_history.append(history_entry)
-    save_memory()
+    save_conversation_history()
     
     save_structured_memory_entry(
         goal=user_input,

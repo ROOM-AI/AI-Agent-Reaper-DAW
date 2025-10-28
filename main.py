@@ -68,6 +68,14 @@ def api_chat(body: ChatIn):
     """
     Cloud AI agent - uses FULL agent logic with Claude reasoning
     """
+    import io
+    import sys
+    
+    # Capture all output from the agent
+    output_capture = io.StringIO()
+    old_stdout = sys.stdout
+    sys.stdout = output_capture
+    
     try:
         # Import prompt enhancer
         from prompt_enhancer import enhance_prompt
@@ -91,6 +99,9 @@ def api_chat(body: ChatIn):
             "message": f"Generated {len(commands)} command(s)"
         }
         
+        # Get all the agent output
+        agent_output = output_capture.getvalue()
+        
         # Create plan for UI
         plan = {
             "plan_id": f"plan-{int(time.time()*1000)}",
@@ -103,15 +114,21 @@ def api_chat(body: ChatIn):
         add_event("plan_created", {"prompt": body.text, **plan}, session_id=body.session_id)
         add_event("command_queued_for_reaper", {"commands": commands, "session_id": body.session_id}, session_id="reaper")
         
+        sys.stdout = old_stdout
+        
         return {
-            "reply": f"✅ {result['message']}",
+            "reply": agent_output if agent_output else f"✅ {result['message']}",
             "plan": plan,
             "commands": commands,
             "status": result["status"],
-            "agent_reasoning": enhanced_prompt
+            "agent_reasoning": enhanced_prompt,
+            "full_output": agent_output
         }
         
     except Exception as e:
+        sys.stdout = old_stdout
+        error_output = output_capture.getvalue()
+        
         # Fallback response
         plan = {
             "plan_id": f"plan-{int(time.time()*1000)}",
@@ -120,11 +137,19 @@ def api_chat(body: ChatIn):
             ]
         }
         add_event("error", {"prompt": body.text, "error": str(e)}, session_id=body.session_id)
-        return {"reply": f"❌ Error: {str(e)}", "plan": plan, "status": "error"}
+        return {"reply": f"❌ Error: {str(e)}\n\n{error_output}", "plan": plan, "status": "error"}
 
 # -------------------- Chat (RAW) → real agent, no enhancer --------------------
 @app.post("/api/chat_raw")
 def api_chat_raw(body: ChatIn):
+    import io
+    import sys
+    
+    # Capture all output from the agent
+    output_capture = io.StringIO()
+    old_stdout = sys.stdout
+    sys.stdout = output_capture
+    
     try:
         # Directly run the FULL agent with the raw user text
         agent._CURRENT_SESSION_ID = body.session_id
@@ -136,6 +161,9 @@ def api_chat_raw(body: ChatIn):
             "status": "success",
             "message": f"Generated {len(commands)} command(s)"
         }
+        
+        # Get all the agent output
+        agent_output = output_capture.getvalue()
 
         plan = {
             "plan_id": f"plan-{int(time.time()*1000)}",
@@ -148,13 +176,19 @@ def api_chat_raw(body: ChatIn):
         add_event("plan_created", {"prompt": body.text, **plan}, session_id=body.session_id)
         add_event("command_queued_for_reaper", {"commands": commands, "session_id": body.session_id}, session_id="reaper")
 
+        sys.stdout = old_stdout
+
         return {
-            "reply": f"✅ {result['message']}",
+            "reply": agent_output if agent_output else f"✅ {result['message']}",
             "plan": plan,
             "commands": commands,
-            "status": result["status"]
+            "status": result["status"],
+            "full_output": agent_output
         }
     except Exception as e:
+        sys.stdout = old_stdout
+        error_output = output_capture.getvalue()
+        
         plan = {
             "plan_id": f"plan-{int(time.time()*1000)}",
             "steps": [
@@ -162,7 +196,7 @@ def api_chat_raw(body: ChatIn):
             ]
         }
         add_event("error", {"prompt": body.text, "error": str(e)}, session_id=body.session_id)
-        return {"reply": f"❌ Error: {str(e)}", "plan": plan, "status": "error"}
+        return {"reply": f"❌ Error: {str(e)}\n\n{error_output}", "plan": plan, "status": "error"}
 
 # -------------------- Lua client: pull next command --------------------
 @app.get("/v1/next")
@@ -300,10 +334,10 @@ async def root():
         button { background: #007bff; border: none; cursor: pointer; }
         button:hover { background: #0056b3; }
         .status { text-align: center; padding: 10px; background: #333; border-radius: 4px; margin-bottom: 20px; }
-        .messages { height: 300px; overflow-y: auto; border: 1px solid #555; padding: 10px; background: #222; }
-        .message { margin-bottom: 10px; padding: 8px; border-radius: 4px; }
+        .messages { height: 500px; overflow-y: auto; border: 1px solid #555; padding: 10px; background: #222; }
+        .message { margin-bottom: 10px; padding: 12px; border-radius: 4px; }
         .user { background: #007bff; }
-        .agent { background: #28a745; }
+        .agent { background: #28a745; max-width: 100%; overflow-x: auto; }
         .events { height: 300px; overflow-y: auto; border: 1px solid #555; padding: 10px; background: #222; }
     </style>
 </head>
@@ -319,7 +353,7 @@ async def root():
                 <h3>Chat</h3>
                 <div class="messages" id="messages"></div>
                 <div class="input-group">
-                    <textarea id="messageInput" placeholder="Type your message..." rows="3"></textarea>
+                    <textarea id="messageInput" placeholder="Type your message... (add /e to enhance vague prompts)" rows="3"></textarea>
                     <button onclick="sendMessage()">Send</button>
                 </div>
             </div>
@@ -343,7 +377,16 @@ async def root():
             const messagesDiv = document.getElementById('messages');
             const messageDiv = document.createElement('div');
             messageDiv.className = 'message ' + type;
-            messageDiv.textContent = text;
+            
+            // Use pre tag to preserve formatting/line breaks
+            const preElement = document.createElement('pre');
+            preElement.style.whiteSpace = 'pre-wrap';
+            preElement.style.margin = '0';
+            preElement.style.fontFamily = 'inherit';
+            preElement.style.fontSize = '14px';
+            preElement.textContent = text;
+            
+            messageDiv.appendChild(preElement);
             messagesDiv.appendChild(messageDiv);
             messagesDiv.scrollTop = messagesDiv.scrollHeight;
         }
@@ -372,10 +415,20 @@ async def root():
         
         async function sendMessage() {
             const input = document.getElementById('messageInput');
-            const message = input.value.trim();
+            let message = input.value.trim();
             if (!message) return;
             
-            addMessage(message, 'user');
+            // Check if user wants prompt enhancement (ends with /e)
+            const useEnhancer = message.endsWith('/e') || message.endsWith(' /e');
+            let displayMessage = message;
+            
+            if (useEnhancer) {
+                // Remove /e flag
+                message = message.replace(/\s*\/e\s*$/, '').trim();
+                displayMessage = message + ' ✨ (enhancing)';
+            }
+            
+            addMessage(displayMessage, 'user');
             input.value = '';
             
             if (!isConnected) {
@@ -384,7 +437,10 @@ async def root():
             }
             
             try {
-                const response = await fetch('/api/chat_raw', {
+                // Use /api/chat (with enhancer) if /e flag, otherwise /api/chat_raw
+                const endpoint = useEnhancer ? '/api/chat' : '/api/chat_raw';
+                
+                const response = await fetch(endpoint, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ session_id: 'demo', text: message })
@@ -392,14 +448,20 @@ async def root():
                 
                 if (response.ok) {
                     const data = await response.json();
-                    addMessage('Queued ' + (data.plan?.steps?.length || 0) + ' steps', 'agent');
                     
-                    // Show agent reasoning if available
-                    if (data.agent_reasoning) {
-                        addMessage('Agent reasoning: ' + data.agent_reasoning, 'agent');
+                    // Show the full agent output (all reasoning, logs, everything)
+                    if (data.full_output && data.full_output.trim()) {
+                        addMessage(data.full_output, 'agent');
+                    } else if (data.reply) {
+                        addMessage(data.reply, 'agent');
+                    } else {
+                        addMessage('Queued ' + (data.plan?.steps?.length || 0) + ' steps', 'agent');
                     }
                     
-                    addEvent('Message sent: ' + message);
+                    const eventMsg = useEnhancer ? 
+                        'Enhanced: ' + message + ' → ' + (data.plan?.steps?.length || 0) + ' commands' :
+                        'Message sent: ' + message + ' → ' + (data.plan?.steps?.length || 0) + ' commands';
+                    addEvent(eventMsg);
                 } else {
                     addMessage('Error: ' + response.status, 'agent');
                 }

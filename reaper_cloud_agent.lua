@@ -79,10 +79,22 @@ end
 
 -- Execute a single command
 function execute_command(cmd)
-    -- Parse command format: ADD_FX:Track 1:ReaVerb
-    -- or SET_PARAM:ReaVerb:Wet:0.3
-    -- or AI_MESSAGE:text
+    -- Parse command format: 
+    -- Numeric action ID: "40175" or "40293"
+    -- ADD_FX:Track 1:ReaVerb
+    -- SET_PARAM:ReaVerb:Wet:0.3
+    -- AI_MESSAGE:text
     
+    -- Check if it's a numeric action ID (most common from AI agent)
+    local action_id = cmd:match("^(%d+)$")
+    if action_id then
+        local command_id = tonumber(action_id)
+        reaper.Main_OnCommand(command_id, 0)
+        reaper.ShowConsoleMsg("✅ Executed action: " .. action_id .. "\n")
+        return
+    end
+    
+    -- Check for custom command formats
     if cmd:match("^ADD_FX:") then
         -- ADD_FX:Track 1:ReaVerb
         local track_str, fx_name = cmd:match("^ADD_FX:(.+):(.+)$")
@@ -130,10 +142,8 @@ function CloudAgent()
     poll_commands()
     send_state()
     
-    -- Loop every 1 second
-    reaper.defer(function() 
-        reaper.runloop(CloudAgent)
-    end)
+    -- Loop continuously (defer calls this function again)
+    reaper.defer(CloudAgent)
 end
 
 -- Start the cloud agent
