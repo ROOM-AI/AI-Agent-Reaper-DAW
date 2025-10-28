@@ -10,7 +10,7 @@ from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
-CLOUD_URL = "https://feelings36lex36slo-97692729550.europe-west1.run.app"
+CLOUD_URL = "https://feelings36lex36slo14moossolo-97692729550.europe-west1.run.app"
 SESSION_ID = "demo"
 
 # Local files that Lua reads/writes - MUST match Lua script paths!
@@ -64,6 +64,7 @@ class StateFileHandler(FileSystemEventHandler):
 
 def poll_commands():
     """Poll cloud for commands and write to local file"""
+    print(f"Starting polling loop...")
     while True:
         try:
             r = requests.get(
@@ -78,6 +79,8 @@ def poll_commands():
                     # Write command to file for Lua to read
                     COMMAND_FILE.write_text(response)
                     print(f"← Received command: {response[:80]}")
+        except KeyboardInterrupt:
+            raise  # Let Ctrl+C work
         except Exception as e:
             print(f"⚠️ Poll error: {e}")
         time.sleep(1.0)
