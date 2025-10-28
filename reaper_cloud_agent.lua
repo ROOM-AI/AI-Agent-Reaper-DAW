@@ -1,24 +1,13 @@
--- Reaper Cloud Agent - Full command processor for cloud
--- Uses file-based bridge to communicate with cloud
+-- Reaper Cloud Agent - File-based bridge (NO CMD, NO HTTP)
+-- Python bridge handles all cloud communication
+-- This script ONLY reads/writes local files
+
 local COMMAND_FILE = [[C:\Users\moosb\AIAGENT DAW\reaper_commands.txt]]
 local STATE_FILE = [[C:\Users\moosb\AIAGENT DAW\reaper_state.txt]]
 local FEEDBACK_FILE = [[C:\Users\moosb\AIAGENT DAW\reaper_feedback.txt]]
-local state_counter = 0
+local last_check = reaper.time_precise()
 
 function msg(s) reaper.ShowConsoleMsg(tostring(s).."\n") end
-
--- Parameter conversion helpers
-function db_to_normalized(target_db, min_db, max_db)
-    min_db = min_db or -30
-    max_db = max_db or 30
-    return (target_db - min_db) / (max_db - min_db)
-end
-
-function normalized_to_db(normalized, min_db, max_db)
-    min_db = min_db or -30
-    max_db = max_db or 30
-    return min_db + (normalized * (max_db - min_db))
-end
 
 -- Feedback buffer to report back to Python
 local feedback_buffer = {}
@@ -30,11 +19,11 @@ end
 function write_feedback()
     if #feedback_buffer > 0 then
         local file = io.open(FEEDBACK_FILE, "w")
-if file then
+        if file then
             for _, msg in ipairs(feedback_buffer) do
                 file:write(msg .. "\n")
             end
-    file:close()
+            file:close()
         end
         feedback_buffer = {}
     end
@@ -55,7 +44,7 @@ function execute_with_feedback(command_name, success, message)
 end
 
 function export_state()
-    -- Export FULL state (compact version for cloud)
+    -- Export state to file (bridge will send to cloud)
     local stateFile = io.open(STATE_FILE, "w")
     if not stateFile then return end
     
@@ -64,8 +53,13 @@ function export_state()
     local cursorPos = reaper.GetCursorPosition()
     local _, tempo = reaper.GetProjectTimeSignature2(0)
     
-    stateFile:write(string.format("Tracks: %d | Playing: %s | Pos: %.2fs | Tempo: %.1f BPM\n",
-        numTracks, playState == 1 and "Yes" or "No", cursorPos, tempo))
+    stateFile:write("=== PROJECT STATE ===\n")
+    stateFile:write(string.format("Playing: %s\n", playState == 1 and "Yes" or "No"))
+    stateFile:write(string.format("Cursor Position: %.2fs\n", cursorPos))
+    stateFile:write(string.format("Tempo: %.1f BPM\n", tempo))
+    stateFile:write(string.format("Total Tracks: %d\n", numTracks))
+    
+    stateFile:write("\n=== TRACKS ===\n")
     
     for i = 0, numTracks - 1 do
         local track = reaper.GetTrack(0, i)
@@ -73,15 +67,19 @@ function export_state()
         local volume = reaper.GetMediaTrackInfo_Value(track, "D_VOL")
         local numFX = reaper.TrackFX_GetCount(track)
         
-        stateFile:write(string.format("Track %d (%s): %.1fdB, %d FX\n", 
-            i, trackName, 20*math.log(volume, 10), numFX))
+        stateFile:write(string.format("\n--- Track %d: %s ---\n", i, trackName))
+        stateFile:write(string.format("  Volume: %.1f dB\n", 20*math.log(volume, 10)))
         
-        for j = 0, numFX - 1 do
-            local _, fxName = reaper.TrackFX_GetFXName(track, j, "")
-            stateFile:write(string.format("  [%d] %s\n", j, fxName))
+        if numFX > 0 then
+            stateFile:write(string.format("  FX Chain (%d plugins):\n", numFX))
+            for j = 0, numFX - 1 do
+                local _, fxName = reaper.TrackFX_GetFXName(track, j, "")
+                stateFile:write(string.format("    [%d] %s\n", j, fxName))
+            end
         end
     end
     
+    stateFile:write("\n=== END STATE ===\n")
     stateFile:close()
 end
 
@@ -93,14 +91,13 @@ function process_command(line)
     
     local cmd = parts[1]
     
-    -- Export state command
     if cmd == "GET_STATE" then
         export_state()
-        msg("📤 State exported")
+        msg("📊 State exported")
         return
     end
     
-    -- Check if cmd is a numeric action ID
+    -- Numeric action IDs
     local actionID = tonumber(cmd)
     if actionID then
         reaper.Main_OnCommand(actionID, 0)
@@ -109,7 +106,7 @@ function process_command(line)
         return
     end
     
-    -- FULL COMMAND SET FROM LOCAL AGENT
+    -- All custom commands from local agent
     if cmd == "VOL_DIP" then
         local trackIdx = tonumber(parts[2]) or 0
         local tStart = tonumber(parts[3]) or 16
@@ -139,9 +136,7 @@ function process_command(line)
             reaper.InsertEnvelopePoint(env, tEnd+0.0005, val_after, 0, 0.0, true, false)
             
             reaper.Envelope_SortPoints(env)
-            execute_with_feedback("VOL_DIP", true, string.format("Track %d: %.1fs→%.1fs at %.0f%%", trackIdx, tStart, tEnd, value*100))
-        else
-            execute_with_feedback("VOL_DIP", false, "Could not create volume envelope")
+            execute_with_feedback("VOL_DIP", true, string.format("Track %d: %.1fs→%.1fs", trackIdx, tStart, tEnd))
         end
         
     elseif cmd == "SET_TRACK_PAN" then
@@ -153,8 +148,6 @@ function process_command(line)
             reaper.SetOnlyTrackSelected(track)
             reaper.SetMediaTrackInfo_Value(track, "D_PAN", panValue)
             execute_with_feedback("SET_TRACK_PAN", true, string.format("Track %d pan: %.0f%%", trackIdx, panValue*100))
-        else
-            execute_with_feedback("SET_TRACK_PAN", false, string.format("Track %d not found", trackIdx))
         end
         
     elseif cmd == "ADD_FX" then
@@ -163,7 +156,6 @@ function process_command(line)
        
         local track = reaper.GetTrack(0, trackIdx)
         if track then
-            -- Check if plugin already exists
             local numFX = reaper.TrackFX_GetCount(track)
             local existingIdx = -1
             for i = 0, numFX - 1 do
@@ -178,11 +170,9 @@ function process_command(line)
             
             if existingIdx >= 0 then
                 reaper.TrackFX_Show(track, existingIdx, 3)
-                local _, existingName = reaper.TrackFX_GetFXName(track, existingIdx, "")
-                msg("✅ Opened existing FX: " .. existingName)
-                add_feedback("✅ Opened existing FX: " .. existingName)
+                msg("✅ Opened existing FX: " .. fxName)
+                add_feedback("✅ Opened FX")
             else
-                -- Try to add plugin
                 local namesToTry = {fxName}
                 local vendors = {"FabFilter", "Waves", "Cockos", "iZotope"}
                 for _, vendor in ipairs(vendors) do
@@ -192,23 +182,18 @@ function process_command(line)
                 table.insert(namesToTry, "VST3: " .. fxName)
                 table.insert(namesToTry, "VST: " .. fxName)
                 
-                local matchedName = nil
                 local fxIdx = -1
                 for _, tryName in ipairs(namesToTry) do
                     fxIdx = reaper.TrackFX_AddByName(track, tryName, false, -1)
-                    if fxIdx >= 0 then
-                        matchedName = tryName
-                        break
-                    end
+                    if fxIdx >= 0 then break end
                 end
                 
                 if fxIdx >= 0 then
                     reaper.TrackFX_Show(track, fxIdx, 3)
                     msg("✅ Added FX: " .. fxName)
-                    add_feedback("✅ Added FX: " .. fxName)
+                    add_feedback("✅ Added FX")
                 else
                     msg("❌ Could not find FX: " .. fxName)
-                    add_feedback("❌ Could not find FX: " .. fxName)
                 end
             end
         end
@@ -227,9 +212,6 @@ function process_command(line)
                 local _, fxName = reaper.TrackFX_GetFXName(track, fxIdx, "")
                 local _, paramName = reaper.TrackFX_GetParamName(track, fxIdx, paramIdx, "")
                 msg(string.format("✅ %s > %s → %.0f%%", fxName, paramName, value*100))
-                add_feedback(string.format("✅ Set param on %s", fxName))
-            else
-                msg(string.format("❌ Track %d only has %d FX", trackIdx, numFX))
             end
         end
         
@@ -244,10 +226,9 @@ function process_command(line)
                 local _, fxName = reaper.TrackFX_GetFXName(track, fxIdx, "")
                 reaper.TrackFX_Delete(track, fxIdx)
                 msg("✅ Removed FX: " .. fxName)
-                add_feedback("✅ Removed FX: " .. fxName)
-    end
-end
-
+            end
+        end
+        
     elseif cmd == "SELECT_TRACK" then
         local trackIdx = tonumber(parts[2]) or 0
         
@@ -261,9 +242,7 @@ end
             reaper.SetTrackSelected(track, true)
             local currentVol = reaper.GetMediaTrackInfo_Value(track, "D_VOL")
             reaper.SetMediaTrackInfo_Value(track, "D_VOL", currentVol)
-            execute_with_feedback("SELECT_TRACK", true, string.format("Selected track %d", trackIdx))
-        else
-            execute_with_feedback("SELECT_TRACK", false, string.format("Track %d not found", trackIdx))
+            execute_with_feedback("SELECT_TRACK", true, "Selected track " .. trackIdx)
         end
         
     elseif cmd == "SET_TRACK_VOL" then
@@ -275,8 +254,6 @@ end
             local volume = 10^(volDB/20)
             reaper.SetMediaTrackInfo_Value(track, "D_VOL", volume)
             execute_with_feedback("SET_TRACK_VOL", true, string.format("Track %d → %.1fdB", trackIdx, volDB))
-        else
-            execute_with_feedback("SET_TRACK_VOL", false, string.format("Track %d not found", trackIdx))
         end
         
     elseif cmd == "CLEAR_AUTOMATION" then
@@ -284,7 +261,7 @@ end
         local envName = parts[3] or "Volume"
         
         local track = reaper.GetTrack(0, trackIdx)
-                if track then
+        if track then
             local env = reaper.GetTrackEnvelopeByName(track, envName)
             if env then
                 local numPoints = reaper.CountEnvelopePoints(env)
@@ -305,16 +282,10 @@ end
         local endValue = tonumber(parts[8]) or 1
         
         local track = reaper.GetTrack(0, trackIdx)
-        if not track then
-            msg("❌ Track not found")
-            return
-        end
+        if not track then return end
         
         local env = reaper.GetFXEnvelope(track, fxIdx, paramIdx, true)
-        if not env then
-            msg("❌ Could not get envelope")
-            return
-        end
+        if not env then return end
         
         local _, val_before = reaper.Envelope_Evaluate(env, tStart - 0.001, 0, 0)
         local _, val_after = reaper.Envelope_Evaluate(env, tEnd + 0.001, 0, 0)
@@ -338,11 +309,15 @@ end
 end
 
 function check_for_commands()
+    local now = reaper.time_precise()
+    if now - last_check < 0.1 then return end
+    last_check = now
+    
     local file = io.open(COMMAND_FILE, "r")
     if not file then return end
     
     local content = file:read("*all")
-        file:close()
+    file:close()
     
     if not content or content == "" then return end
     
@@ -352,30 +327,20 @@ function check_for_commands()
     -- Process each line
     for line in content:gmatch("[^\r\n]+") do
         if line:match("%S") then
-            msg("📥 " .. line)
             process_command(line)
         end
     end
     
-    -- Write feedback
     write_feedback()
 end
 
-function main()
+function loop()
     check_for_commands()
-    
-    -- Export state every ~2 seconds (40 defers)
-    state_counter = state_counter + 1
-    if state_counter >= 40 then
-        export_state()
-        state_counter = 0
-    end
-    
-    reaper.defer(main)
+    reaper.defer(loop)
 end
 
-msg("☁️ Reaper Cloud Agent Started")
+msg("☁️ Reaper Cloud Agent Started (File-based)")
 msg("📁 Commands: "..COMMAND_FILE)
 msg("📁 State: "..STATE_FILE)
-msg("✅ Watching for cloud commands...")
-main()
+msg("✅ Bridge handles HTTP - NO CMD popups!")
+loop()
