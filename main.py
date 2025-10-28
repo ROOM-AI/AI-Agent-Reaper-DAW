@@ -73,29 +73,23 @@ def api_chat(body: ChatIn):
         from prompt_enhancer import enhance_prompt
         
         # Step 1: Enhance vague prompt to be specific/technical
-        reaper_state = WRAP_STATE.get(body.session_id, {})
+        reaper_state = REAPER_STATE.get(body.session_id, {})
         state_str = json.dumps(reaper_state) if reaper_state else ""
         enhanced_prompt = enhance_prompt(body.text, state_str)
         
         print(f"📝 Original: {body.text}")
         print(f"✨ Enhanced: {enhanced_prompt}")
         
-        # Step 2: Execute using cloud wrapper (keeps your 6k line agent intact)
-        result = execute_user_command_cloud(
-            user_input=enhanced_prompt,
-            session_id=body.session_id,
-            reaper_state_dict=WRAP_STATE,
-            reaper_sessions_dict=WRAP_SESSIONS
-        )
+        # Step 2: Execute using REAL agent with cloud hooks
+        agent._CURRENT_SESSION_ID = body.session_id
+        agent.execute_user_command(enhanced_prompt)
         
-        # Get commands that were queued by the agent (wrapper sessions)
-        commands = get_queued_commands(body.session_id)
-
-        # Also forward those commands into the bridge queue used by /api/reaper/poll
-        if commands:
-            if body.session_id not in REAPER_SESSIONS:
-                REAPER_SESSIONS[body.session_id] = []
-            REAPER_SESSIONS[body.session_id].extend(commands)
+        # Get commands that were queued by the agent (via hooks)
+        commands = REAPER_SESSIONS.get(body.session_id, [])
+        result = {
+            "status": "success",
+            "message": f"Generated {len(commands)} command(s)"
+        }
         
         # Create plan for UI
         plan = {
@@ -133,19 +127,15 @@ def api_chat(body: ChatIn):
 def api_chat_raw(body: ChatIn):
     try:
         # Directly run the FULL agent with the raw user text
-        result = execute_user_command_cloud(
-            user_input=body.text,
-            session_id=body.session_id,
-            reaper_state_dict=WRAP_STATE,
-            reaper_sessions_dict=WRAP_SESSIONS
-        )
-
-        # Pull commands and mirror to bridge queue
-        commands = get_queued_commands(body.session_id)
-        if commands:
-            if body.session_id not in REAPER_SESSIONS:
-                REAPER_SESSIONS[body.session_id] = []
-            REAPER_SESSIONS[body.session_id].extend(commands)
+        agent._CURRENT_SESSION_ID = body.session_id
+        agent.execute_user_command(body.text)
+        
+        # Get commands that were queued by the agent (via hooks)
+        commands = REAPER_SESSIONS.get(body.session_id, [])
+        result = {
+            "status": "success",
+            "message": f"Generated {len(commands)} command(s)"
+        }
 
         plan = {
             "plan_id": f"plan-{int(time.time()*1000)}",

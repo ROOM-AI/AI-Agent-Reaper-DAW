@@ -9,6 +9,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 CLOUD_URL = os.getenv("CLOUD_URL", "https://feelings36lex36slo14moossolo-97692729550.europe-west1.run.app")
+# Strip any leading @ and trailing spaces from URL
+CLOUD_URL = CLOUD_URL.strip().lstrip('@')
 COMMAND_FILE = os.getenv("COMMAND_FILE", r"C:\Users\moosb\AIAGENT DAW\reaper_commands.txt")
 STATE_FILE = r"C:\Users\moosb\AIAGENT_DAW\reaper_state.txt"
 SESSION_ID = os.getenv("SESSION_ID", "demo")
