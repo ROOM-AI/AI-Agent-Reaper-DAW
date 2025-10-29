@@ -30,18 +30,29 @@ print("=" * 50)
 print()
 
 _last_state_sent = ""
+_last_send_ts = 0.0
+MIN_SEND_INTERVAL = 1.5  # seconds, to avoid spam on partial writes
 
 # Ensure files exist
 COMMAND_FILE.touch(exist_ok=True)
 STATE_FILE.touch(exist_ok=True)
 
-def _send_state_if_changed():
+def _send_state_if_changed(force: bool = False):
     global _last_state_sent
+    global _last_send_ts
     try:
         if not STATE_FILE.exists():
             return
+        # Let file writes settle briefly to avoid reading partial content
+        time.sleep(0.05)
+
+        # Basic rate limit unless forced
+        now_ts = time.time()
+        if not force and (now_ts - _last_send_ts) < MIN_SEND_INTERVAL:
+            return
+
         content = STATE_FILE.read_text()
-        if content and content != _last_state_sent:
+        if content and (force or content != _last_state_sent):
             # Prefer raw text as 'state_text' so server can display it
             try:
                 data = json.loads(content)
@@ -56,6 +67,7 @@ def _send_state_if_changed():
                 timeout=3,
             )
             _last_state_sent = content
+            _last_send_ts = now_ts
             print(f"→ Sent state to cloud (session: {SESSION_ID})")
     except Exception as e:
         print(f"⚠️ State send error: {e}")
@@ -63,11 +75,19 @@ def _send_state_if_changed():
 class StateFileHandler(FileSystemEventHandler):
     """Watch for state file changes and send to cloud"""
     def on_modified(self, event):
-        # Any file change in BASE_DIR triggers a check; internal de-dupe prevents spam
-        _send_state_if_changed()
+        # Only react to the state file, ignore other changes in BASE_DIR
+        try:
+            if Path(event.src_path).resolve() == STATE_FILE.resolve():
+                _send_state_if_changed()
+        except Exception:
+            _send_state_if_changed()
 
     def on_created(self, event):
-        _send_state_if_changed()
+        try:
+            if Path(event.src_path).resolve() == STATE_FILE.resolve():
+                _send_state_if_changed()
+        except Exception:
+            _send_state_if_changed()
 
 def poll_commands():
     """Poll cloud for commands and write to local file (with simple de-dupe)"""
@@ -112,6 +132,12 @@ def poll_commands():
                         print(f"← Received command: {cmd_text.strip()[:80]}")
                         last_cmd_text = cmd_text
                         last_cmd_time = now_ts
+
+                        # If cloud requested a state refresh, force-send after Lua writes it
+                        if cmd_text.strip().upper() == "GET_STATE":
+                            # Give Lua a short window to export
+                            time.sleep(0.4)
+                            _send_state_if_changed(force=True)
         except KeyboardInterrupt:
             raise  # Let Ctrl+C work
         except Exception as e:
@@ -122,7 +148,7 @@ def state_pump():
     """Periodic fallback to push state even if FS events are missed"""
     while True:
         _send_state_if_changed()
-        time.sleep(1.0)
+        time.sleep(2.0)
 
 if __name__ == "__main__":
     # Start watching state file
@@ -133,6 +159,20 @@ if __name__ == "__main__":
     
     # Start periodic state pump fallback
     threading.Thread(target=state_pump, daemon=True).start()
+    
+    # Kick an initial state to the cloud: request export if file is empty, otherwise force-send
+    def _kick_initial_state():
+        try:
+            time.sleep(0.2)  # allow observer/thread startup
+            content = STATE_FILE.read_text() if STATE_FILE.exists() else ""
+            if not content.strip():
+                COMMAND_FILE.write_text("GET_STATE\n")
+                print("→ Requested initial GET_STATE")
+                time.sleep(0.5)  # wait for Lua to export
+            _send_state_if_changed(force=True)
+        except Exception as e:
+            print(f"⚠️ Initial state kick error: {e}")
+    threading.Thread(target=_kick_initial_state, daemon=True).start()
     
     # Start polling for commands
     print("✓ Polling cloud for commands")

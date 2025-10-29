@@ -14,6 +14,7 @@ local STATE_FILE   = base .. sep .. "reaper_state.txt"
 local FEEDBACK_FILE= base .. sep .. "reaper_feedback.txt"
 local last_check = reaper.time_precise()
 local last_state_export = reaper.time_precise()
+local state_export_counter = 0
 
 function msg(s) reaper.ShowConsoleMsg(tostring(s).."\n") end
 
@@ -71,6 +72,9 @@ function export_state()
     local stateFile = io.open(STATE_FILE, "w")
     if not stateFile then return end
     
+    state_export_counter = state_export_counter + 1
+    local precise_time = reaper.time_precise()
+    
     local numTracks = reaper.CountTracks(0)
     local playState = reaper.GetPlayState()
     local cursorPos = reaper.GetCursorPosition()
@@ -79,6 +83,8 @@ function export_state()
     -- Project-level info
     stateFile:write("=== PROJECT STATE ===\n")
     stateFile:write(string.format("Timestamp: %d\n", os.time()))
+    stateFile:write(string.format("Export Counter: %d\n", state_export_counter))
+    stateFile:write(string.format("Precise Time: %.6f\n", precise_time))
     stateFile:write(string.format("Playing: %s\n", ((playState & 1) ~= 0) and "Yes" or "No"))
     stateFile:write(string.format("Cursor Position: %.2fs\n", cursorPos))
     stateFile:write(string.format("Tempo: %.1f BPM\n", tempo))
