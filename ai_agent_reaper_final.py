@@ -748,6 +748,9 @@ def get_reaper_state():
                 data = r.json() or {}
                 state = data.get("state")
                 if state:
+                    # If state is a dict with state_text, extract the text string
+                    if isinstance(state, dict) and "state_text" in state:
+                        return state["state_text"]
                     return state
         except Exception as http_err:
             log_debug(f"HTTP state error: {http_err}")
