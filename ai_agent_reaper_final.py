@@ -930,23 +930,53 @@ def load_action_list():
     known_actions = {}
     # Explicit disallow list for problematic small IDs that cause ambiguity
     disallowed_ids = {"7", "11", "47"}
-    try:
-        with open(str(REPO_DIR / "reaper_actions.txt"), "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("REAPER") or line.startswith("Format:") or line.startswith("Generated:"):
-                    continue
-                if "|" in line:
-                    parts = line.split("|", 1)
-                    if len(parts) == 2:
-                        action_id = parts[0].strip()
-                        description = parts[1].strip()
-                        if action_id in disallowed_ids:
-                            continue
-                        known_actions[action_id] = description
-        log_debug(f"Loaded {len(known_actions)} actions")
-    except Exception as e:
-        log_debug(f"Action load error: {e}")
+    # Try multiple candidate paths (Cloud Run sometimes changes cwd)
+    candidate_paths = [
+        str(REPO_DIR / "reaper_actions.txt"),
+        "reaper_actions.txt",
+        "/workspace/reaper_actions.txt",
+    ]
+    last_err = None
+    for p in candidate_paths:
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("REAPER") or line.startswith("Format:") or line.startswith("Generated:"):
+                        continue
+                    if "|" in line:
+                        parts = line.split("|", 1)
+                        if len(parts) == 2:
+                            action_id = parts[0].strip()
+                            description = parts[1].strip()
+                            if action_id in disallowed_ids:
+                                continue
+                            known_actions[action_id] = description
+            if known_actions:
+                log_debug(f"Loaded {len(known_actions)} actions from {p}")
+                break
+        except Exception as e:
+            last_err = e
+            continue
+
+    # Fallback: minimal core set so cloud never has 0 actions
+    if not known_actions:
+        if last_err:
+            log_debug(f"Action load error (will use fallback): {last_err}")
+        core = {
+            "1007": "Transport: Play",
+            "1016": "Transport: Stop",
+            "1013": "Transport: Record",
+            "40280": "Track: Toggle solo for selected tracks",
+            "40281": "Track: Toggle mute for selected tracks",
+            "40339": "Track: Unmute all tracks",
+            "40340": "Track: Unsolo all tracks",
+            "40062": "Track: Duplicate tracks",
+            "40210": "Track: Copy tracks",
+            "40058": "Track: Paste tracks/items",
+        }
+        known_actions.update(core)
+        log_debug(f"Loaded fallback action set: {len(known_actions)} actions")
     
     return known_actions
 
