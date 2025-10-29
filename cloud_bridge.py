@@ -46,7 +46,8 @@ class StateFileHandler(FileSystemEventHandler):
                     try:
                         state_data = json.loads(content) if content else {}
                     except:
-                        state_data = {"raw_state": content}
+                        # Send as plain text so server can use directly
+                        state_data = {"state_text": content}
                     
                     # Add session_id to the body (not as query param)
                     state_data["session_id"] = SESSION_ID

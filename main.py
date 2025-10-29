@@ -362,6 +362,7 @@ async def root():
                 <div class="input-group">
                     <textarea id="messageInput" placeholder="Type your message... (add /e to enhance vague prompts)" rows="3"></textarea>
                     <button onclick="sendMessage()">Send</button>
+                    <button onclick="syncState()" style="margin-left:8px;background:#6c757d">Sync state</button>
                 </div>
             </div>
             
@@ -474,6 +475,23 @@ async def root():
                 }
             } catch (error) {
                 addMessage('Network error: ' + error.message, 'agent');
+            }
+        }
+
+        async function syncState() {
+            try {
+                const res = await fetch('/api/reaper/execute', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ command: 'GET_STATE', session_id: 'demo' })
+                });
+                if (res.ok) {
+                    addEvent('Forced state sync queued');
+                } else {
+                    addEvent('State sync failed: ' + res.status);
+                }
+            } catch (e) {
+                addEvent('State sync error: ' + e.message);
             }
         }
         

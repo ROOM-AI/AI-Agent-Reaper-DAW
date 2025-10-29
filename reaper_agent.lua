@@ -13,6 +13,7 @@ local COMMAND_FILE = base .. sep .. "reaper_commands.txt"
 local STATE_FILE   = base .. sep .. "reaper_state.txt"
 local FEEDBACK_FILE= base .. sep .. "reaper_feedback.txt"
 local last_check = reaper.time_precise()
+local last_state_export = reaper.time_precise()
 
 function msg(s) reaper.ShowConsoleMsg(tostring(s).."\n") end
 
@@ -629,6 +630,12 @@ end
 
 function loop()
     check_for_commands()
+    -- Periodically export state so the bridge can send live updates
+    local now = reaper.time_precise()
+    if now - last_state_export >= 1.0 then
+        export_state()
+        last_state_export = now
+    end
     reaper.defer(loop)
 end
 
