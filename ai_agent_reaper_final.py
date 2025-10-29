@@ -928,6 +928,8 @@ def sanity_check_actions(user_goal, planned_steps, known_actions):
 def load_action_list():
     """Load complete action database (6,309 actions!)"""
     known_actions = {}
+    # Explicit disallow list for problematic small IDs that cause ambiguity
+    disallowed_ids = {"7", "11", "47"}
     try:
         with open(str(REPO_DIR / "reaper_actions.txt"), "r", encoding="utf-8") as f:
             for line in f:
@@ -939,6 +941,8 @@ def load_action_list():
                     if len(parts) == 2:
                         action_id = parts[0].strip()
                         description = parts[1].strip()
+                        if action_id in disallowed_ids:
+                            continue
                         known_actions[action_id] = description
         log_debug(f"Loaded {len(known_actions)} actions")
     except Exception as e:
@@ -3973,15 +3977,11 @@ def filter_relevant_actions(user_input, all_actions, max_actions=50):
 def plan_actions(user_input, state, known_actions, available_plugins, previous_issues="", feedback="", lyric_context="", analysis_context="", retry_history=[], conversation_history=[], failed_commands=set()):
     """Phase 1: AI Plans what to do"""
     
-    # Use smart index search, then RESTRICT to the curated action list (cloud uses only reaper_actions.txt)
-    relevant_actions = smart_index_search(user_input, max_results=100)
-    if known_actions:
-        allowed_ids = set(known_actions.keys())
-        relevant_actions = {aid: desc for aid, desc in relevant_actions.items() if aid in allowed_ids}
-        # Fallback: if index returns nothing in allowed set, use text-based fallback over known_actions
-        if not relevant_actions:
-            fallback = filter_relevant_actions(user_input, known_actions, max_actions=50)
-            relevant_actions = fallback
+    # Curated-only: use only actions from reaper_actions.txt (no index)
+    relevant_actions = filter_relevant_actions(user_input, known_actions, max_actions=50)
+    if not relevant_actions:
+        core_ids = {"1007", "1016", "1013", "40280", "40294", "40340", "40062", "40210", "40058"}
+        relevant_actions = {aid: desc for aid, desc in known_actions.items() if aid in core_ids}
     
     # If this is a retry, force-add any suggested actions from previous_issues
     if previous_issues:
