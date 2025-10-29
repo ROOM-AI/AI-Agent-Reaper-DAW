@@ -915,29 +915,44 @@ def desired_flag_for(verb):
 
 def maybe_execute_direct_intent(user_input, initial_state, known_actions):
     """Fast path: deterministic + retrieval with guardrails for solo/mute/select intents.
-    Returns True if handled (success or terminal failure), else False to continue with LLM.
+    Returns True always if intent matched (blocks LLM fallback to prevent random action spam).
     """
     verb, track_idx = parse_basic_intent(user_input)
     if not verb or not track_idx:
         return False
-    # Build command plan
-    plan = []
-    # Optional safety: unselect all to avoid acting on wrong track
-    plan.append("40297")
-    plan.append(f"SELECT_TRACK {track_idx}")
+
+    # LOCKED: canonical action only, no alternatives
     action_id = choose_action_with_guardrails(verb, known_actions)
+    if not action_id and verb not in ("select",):
+        print(f"❌ No safe action found for '{verb}' in action list")
+        return True  # handled; do not fall back to LLM guessing
+
+    # Build minimal plan
+    plan = [f"SELECT_TRACK {track_idx}"]
     if action_id:
         plan.append(action_id)
 
-    # If it's pure select, action_id is None
     print("🧭 Deterministic path:", ", ".join(plan))
+
+    # Record baseline state signature before execution
+    baseline_sig = hash(initial_state) if initial_state else 0
+
     if not send_reaper_commands(plan):
         print("❌ Failed to send commands (deterministic path)")
-        return False
+        return True
 
-    # Wait briefly and verify
-    time.sleep(0.6)
-    final_state = get_reaper_state()
+    # Wait for a FRESH state (not the old cached one)
+    def wait_fresh(baseline, timeout=2.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            time.sleep(0.15)
+            new_state = get_reaper_state()
+            if hash(new_state) != baseline:
+                return new_state
+        return get_reaper_state()  # timeout fallback
+
+    final_state = wait_fresh(baseline_sig, timeout=2.0)
+
     section = extract_track_section(final_state, track_idx)
     flag_name, want = desired_flag_for(verb)
     if flag_name:
@@ -945,37 +960,36 @@ def maybe_execute_direct_intent(user_input, initial_state, known_actions):
         if got == want:
             print(f"✅ {verb.title()} OK on track {track_idx}")
             return True
-        # Retry once with a clean selection
-        retry_plan = ["40297", f"SELECT_TRACK {track_idx}"]
-        if action_id:
-            retry_plan.append(action_id)
-        if send_reaper_commands(retry_plan):
-            time.sleep(0.6)
-            final_state2 = get_reaper_state()
+
+        # ONE retry with SAME plan
+        baseline_sig2 = hash(final_state)
+        if send_reaper_commands(plan):  # exact same plan
+            final_state2 = wait_fresh(baseline_sig2, timeout=2.0)
             section2 = extract_track_section(final_state2, track_idx)
             got2 = read_flag(section2, flag_name)
             if got2 == want:
                 print(f"✅ {verb.title()} OK on retry for track {track_idx}")
                 return True
-        print(f"❌ {verb.title()} failed to reach {flag_name}: {want} on track {track_idx}")
-        # Fall through to LLM for broader strategies
-        return False
+
+        print(f"❌ {verb.title()} failed: {flag_name} is '{got2 or got}', wanted '{want}' on track {track_idx}")
+        return True  # handled; avoid LLM spamming unrelated actions
     else:
         # Select case: ensure Selected: YES
         selected = read_flag(section, "Selected")
         if selected == "YES":
             print(f"✅ Selected track {track_idx}")
             return True
-        # Retry select only once
-        if send_reaper_commands(["40297", f"SELECT_TRACK {track_idx}"]):
-            time.sleep(0.4)
-            final_state2 = get_reaper_state()
+
+        baseline_sig2 = hash(final_state)
+        if send_reaper_commands(plan):  # same plan
+            final_state2 = wait_fresh(baseline_sig2, timeout=2.0)
             section2 = extract_track_section(final_state2, track_idx)
             if read_flag(section2, "Selected") == "YES":
                 print(f"✅ Selected track {track_idx} (retry)")
                 return True
+
         print(f"❌ Could not select track {track_idx}")
-        return False
+        return True  # handled
 
 def sanity_check_actions(user_goal, planned_steps, known_actions):
     """
