@@ -68,21 +68,15 @@ def api_chat(body: ChatIn):
     """
     Cloud AI agent - uses FULL agent logic with Claude reasoning
     """
+    import io
     import sys
     
-    # Create a list to capture all output
-    output_lines = []
-    
-    # Create a custom print function that captures output
-    def capture_print(*args, **kwargs):
-        line = " ".join(str(arg) for arg in args)
-        output_lines.append(line)
-        # Also write to actual stdout for logs
-        print(line, file=sys.__stdout__)
-    
-    # Temporarily replace print
-    original_print = __builtins__['print']
-    __builtins__['print'] = capture_print
+    # Capture stdout with StringIO
+    output_capture = io.StringIO()
+    old_stdout = sys.stdout
+    old_stderr = sys.stderr
+    sys.stdout = output_capture
+    sys.stderr = output_capture
     
     try:
         # Import prompt enhancer
@@ -107,8 +101,10 @@ def api_chat(body: ChatIn):
             "message": f"Generated {len(commands)} command(s)"
         }
         
-        # Get all the captured output
-        agent_output = "\n".join(output_lines)
+        # Restore stdout and get captured output
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
+        agent_output = output_capture.getvalue()
         
         # Create plan for UI
         plan = {
@@ -122,8 +118,6 @@ def api_chat(body: ChatIn):
         add_event("plan_created", {"prompt": body.text, **plan}, session_id=body.session_id)
         add_event("command_queued_for_reaper", {"commands": commands, "session_id": body.session_id}, session_id="reaper")
         
-        __builtins__['print'] = original_print
-        
         return {
             "reply": agent_output if agent_output else f"✅ {result['message']}",
             "plan": plan,
@@ -134,8 +128,9 @@ def api_chat(body: ChatIn):
         }
         
     except Exception as e:
-        __builtins__['print'] = original_print
-        error_output = "\n".join(output_lines)
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
+        error_output = output_capture.getvalue()
         
         # Fallback response
         plan = {
@@ -154,19 +149,12 @@ def api_chat_raw(body: ChatIn):
     import sys
     import logging
     
-    # Create a list to capture all output
-    output_lines = []
-    
-    # Create a custom print function that captures output
-    def capture_print(*args, **kwargs):
-        line = " ".join(str(arg) for arg in args)
-        output_lines.append(line)
-        # Also write to actual stdout for logs
-        print(line, file=sys.__stdout__)
-    
-    # Temporarily replace print
-    original_print = __builtins__['print']
-    __builtins__['print'] = capture_print
+    # Capture stdout with StringIO (simpler approach)
+    output_capture = io.StringIO()
+    old_stdout = sys.stdout
+    old_stderr = sys.stderr
+    sys.stdout = output_capture
+    sys.stderr = output_capture
     
     try:
         # Directly run the FULL agent with the raw user text
@@ -180,8 +168,10 @@ def api_chat_raw(body: ChatIn):
             "message": f"Generated {len(commands)} command(s)"
         }
         
-        # Get all the captured output
-        agent_output = "\n".join(output_lines)
+        # Restore stdout and get captured output
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
+        agent_output = output_capture.getvalue()
 
         plan = {
             "plan_id": f"plan-{int(time.time()*1000)}",
@@ -194,8 +184,6 @@ def api_chat_raw(body: ChatIn):
         add_event("plan_created", {"prompt": body.text, **plan}, session_id=body.session_id)
         add_event("command_queued_for_reaper", {"commands": commands, "session_id": body.session_id}, session_id="reaper")
 
-        __builtins__['print'] = original_print
-
         return {
             "reply": agent_output if agent_output else f"✅ {result['message']}",
             "plan": plan,
@@ -204,8 +192,9 @@ def api_chat_raw(body: ChatIn):
             "full_output": agent_output
         }
     except Exception as e:
-        __builtins__['print'] = original_print
-        error_output = "\n".join(output_lines)
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
+        error_output = output_capture.getvalue()
         
         plan = {
             "plan_id": f"plan-{int(time.time()*1000)}",
