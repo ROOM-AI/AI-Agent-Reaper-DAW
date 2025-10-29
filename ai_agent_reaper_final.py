@@ -824,187 +824,6 @@ def load_memory():
         pass
     return {}
 
-INTENT_REGEX = re.compile(r'(?i)\b(solo|un[- ]?solo|mute|un[- ]?mute|select)\b.*?\b(?:track|trk|tr)\s*[#:]?\s*(\d+)\b')
-
-ALLOWED_ACTION_IDS = {"40280", "40294", "40297"}
-
-def parse_basic_intent(user_input):
-    """Parse simple intents like 'solo track 3', returns (verb, track_idx) or (None, None)."""
-    m = INTENT_REGEX.search(user_input or "")
-    if not m:
-        return None, None
-    verb_raw = m.group(1).lower()
-    verb = verb_raw.replace(" ", "").replace("-", "")  # normalize un-solo → unsolo
-    try:
-        track_idx = int(m.group(2))
-    except Exception:
-        return None, None
-    return verb, track_idx
-
-def choose_action_with_guardrails(verb, known_actions):
-    """Return the best action id for the verb using token scoring over the full list.
-    No hard deny list; we rely on semantics and post-execution verification.
-    """
-    # Prefer canonical ids if available
-    if verb in ("solo", "unsolo") and "40280" in known_actions:
-        return "40280"
-    if verb in ("mute", "unmute") and "40294" in known_actions:
-        return "40294"
-
-    if verb == "select":
-        return None
-
-    best_id = None
-    best_score = -10
-
-    for aid, desc in (known_actions or {}).items():
-        dl = (desc or "").lower()
-        score = 0
-        if verb in ("solo", "unsolo"):
-            if "solo" in dl: score += 6
-            if "toggle" in dl: score += 3
-            if "selected tracks" in dl: score += 6
-            if "selected" in dl and "track" in dl: score += 3
-            if "mute" in dl: score -= 8
-            if "all tracks" in dl: score -= 2
-        elif verb in ("mute", "unmute"):
-            if "mute" in dl: score += 6
-            if "toggle" in dl: score += 3
-            if "selected tracks" in dl: score += 6
-            if "selected" in dl and "track" in dl: score += 3
-            if "solo" in dl: score -= 8
-            if "all tracks" in dl: score -= 2
-
-        if score > best_score:
-            best_id = aid
-            best_score = score
-
-    return best_id if best_score >= 3 else None
-
-def extract_track_section(state_text, track_idx):
-    """Return the text section for the given 1-based track index from the state text."""
-    if not state_text:
-        return ""
-    try:
-        pattern = rf"--- Track {track_idx}: .*?\n(.*?)(?=\n--- Track |\n=== END STATE ===|\Z)"
-        m = re.search(pattern, state_text, re.S)
-        return m.group(0) if m else ""
-    except Exception:
-        return ""
-
-def read_flag(section_text, flag_name):
-    """Read a YES/no style flag from a track section, returns 'YES', 'no', or ''."""
-    try:
-        m = re.search(rf"{re.escape(flag_name)}:\s*(YES|no)", section_text)
-        return m.group(1) if m else ""
-    except Exception:
-        return ""
-
-def desired_flag_for(verb):
-    if verb == "solo":
-        return ("Solo", "YES")
-    if verb == "unsolo":
-        return ("Solo", "no")
-    if verb == "mute":
-        return ("Mute", "YES")
-    if verb == "unmute":
-        return ("Mute", "no")
-    if verb == "select":
-        return ("Selected", "YES")
-    return ("", "")
-
-def maybe_execute_direct_intent(user_input, initial_state, known_actions):
-    """Fast path: deterministic + retrieval with guardrails for solo/mute/select intents.
-    Returns True always if intent matched (blocks LLM fallback to prevent random action spam).
-    """
-    verb, track_idx = parse_basic_intent(user_input)
-    if not verb or not track_idx:
-        return False
-
-    # LOCKED: canonical action only, no alternatives
-    action_id = choose_action_with_guardrails(verb, known_actions)
-    if not action_id and verb not in ("select",):
-        print(f"❌ No safe action found for '{verb}' in action list")
-        return True  # handled; do not fall back to LLM guessing
-
-    # Build minimal plan
-    plan = [f"SELECT_TRACK {track_idx}"]
-    if action_id:
-        plan.append(action_id)
-
-    print("🧭 Deterministic path:", ", ".join(plan))
-
-    # Record baseline state signature before execution
-    baseline_sig = hash(initial_state) if initial_state else 0
-
-    if not send_reaper_commands(plan):
-        print("❌ Failed to send commands (deterministic path)")
-        return True
-
-    # Wait for a FRESH state (poll server memory, not file, to avoid bridge spam)
-    def wait_fresh_state(baseline_hash, timeout=2.0):
-        """In cloud mode, poll server memory. Locally, just wait."""
-        if _CLOUD_STATE_PROVIDER:
-            # Cloud: poll the provider (server memory) without touching files
-            deadline = time.time() + timeout
-            while time.time() < deadline:
-                time.sleep(0.15)
-                try:
-                    new_state = _CLOUD_STATE_PROVIDER(_CURRENT_SESSION_ID)
-                    if hash(new_state) != baseline_hash:
-                        return new_state
-                except Exception:
-                    pass
-            # Timeout: return whatever we have
-            try:
-                return _CLOUD_STATE_PROVIDER(_CURRENT_SESSION_ID)
-            except Exception:
-                return "State unavailable"
-        else:
-            # Local: just wait fixed time
-            time.sleep(1.0)
-            return get_reaper_state()
-    
-    final_state = wait_fresh_state(baseline_sig, timeout=2.0)
-
-    section = extract_track_section(final_state, track_idx)
-    flag_name, want = desired_flag_for(verb)
-    if flag_name:
-        got = read_flag(section, flag_name)
-        if got == want:
-            print(f"✅ {verb.title()} OK on track {track_idx}")
-            return True
-
-        # ONE retry with SAME plan
-        if send_reaper_commands(plan):  # exact same plan
-            baseline_sig2 = hash(final_state)
-            final_state2 = wait_fresh_state(baseline_sig2, timeout=2.0)
-            section2 = extract_track_section(final_state2, track_idx)
-            got2 = read_flag(section2, flag_name)
-            if got2 == want:
-                print(f"✅ {verb.title()} OK on retry for track {track_idx}")
-                return True
-
-        print(f"❌ {verb.title()} failed: {flag_name} is '{got2 or got}', wanted '{want}' on track {track_idx}")
-        return True  # handled; avoid LLM spamming unrelated actions
-    else:
-        # Select case: ensure Selected: YES
-        selected = read_flag(section, "Selected")
-        if selected == "YES":
-            print(f"✅ Selected track {track_idx}")
-            return True
-
-        if send_reaper_commands(plan):  # same plan
-            baseline_sig2 = hash(final_state)
-            final_state2 = wait_fresh_state(baseline_sig2, timeout=2.0)
-            section2 = extract_track_section(final_state2, track_idx)
-            if read_flag(section2, "Selected") == "YES":
-                print(f"✅ Selected track {track_idx} (retry)")
-                return True
-
-        print(f"❌ Could not select track {track_idx}")
-        return True  # handled
-
 def sanity_check_actions(user_goal, planned_steps, known_actions):
     """
     Check if planned actions are semantically related to user's goal.
@@ -6089,11 +5908,144 @@ Sub-goals:
         # If parsing fails, treat entire request as one goal
         return [user_input]
 
+def route_deterministic_intent(user_input):
+    """Deterministic command router for solo/mute/select (bypasses LLM)
+    Returns: List[str] commands if matched, None if no match (fallback to LLM)
+    """
+    INTENT_RE = re.compile(r'(?i)\b(solo|unsolo|mute|unmute|select)\b.*?\btrack\s+(\d+)\b')
+    
+    ALLOWED_IDS = {"40280", "40294", "40297"}
+    DISALLOWED_IDS = {"40281"}
+    
+    VERB_TO_ACTION = {
+        "solo":   "40280",
+        "unsolo": "40280",
+        "mute":   "40294",
+        "unmute": "40294",
+        "select": None
+    }
+    
+    m = INTENT_RE.search(user_input)
+    if not m:
+        return None
+    
+    verb = m.group(1).lower()
+    track_n = int(m.group(2))
+    
+    # Build deterministic plan
+    plan = [f"SELECT_TRACK {track_n}"]
+    action = VERB_TO_ACTION[verb]
+    
+    # Guardrails
+    if action is not None:
+        assert action in ALLOWED_IDS and action not in DISALLOWED_IDS, f"Disallowed action for {verb}: {action}"
+        if verb in ("solo", "unsolo"):
+            assert action == "40280"
+        if verb in ("mute", "unmute"):
+            assert action == "40294"
+        plan.append(action)
+    
+    return plan
+
 def execute_user_command(user_input):
     """Main agentic loop with Chain of Thought: Break into sub-goals → Execute each → Verify"""
     import time
     
     print(f"\n🎤 User: {user_input}")
+    
+    # DETERMINISTIC ROUTER: Check for simple solo/mute/select commands first
+    deterministic_commands = route_deterministic_intent(user_input)
+    if deterministic_commands:
+        print(f"🎯 Deterministic routing: {' → '.join(deterministic_commands)}")
+        print(f"⚡ Executing without LLM planning...")
+        
+        # Execute commands
+        if not send_reaper_commands(deterministic_commands):
+            print("❌ Failed to send commands")
+            return
+        
+        time.sleep(0.6)
+        
+        # Get feedback
+        feedback = get_reaper_feedback()
+        if feedback != "No feedback available":
+            print(f"📢 Reaper says: {feedback}")
+        
+        # Verify result
+        final_state = get_reaper_state()
+        
+        # Parse intent to determine what to verify
+        m = re.search(r'(?i)\b(solo|unsolo|mute|unmute|select)\b.*?\btrack\s+(\d+)\b', user_input)
+        if m:
+            verb = m.group(1).lower()
+            track_n = int(m.group(2))
+            
+            # Check the relevant flag in state
+            track_section_match = re.search(rf'--- Track {track_n}: .+? ---(.+?)(?=--- Track \d+:|=== END STATE ===)', final_state, re.DOTALL)
+            
+            if track_section_match:
+                track_content = track_section_match.group(1)
+                
+                success = False
+                if verb in ("solo", "unsolo"):
+                    # For solo: check "Solo: YES", for unsolo: check "Solo: no"
+                    target_flag = "Solo: YES" if verb == "solo" else "Solo: no"
+                    if target_flag in track_content:
+                        success = True
+                        print(f"✅ SUCCESS: Track {track_n} {verb} confirmed")
+                    else:
+                        print(f"❌ FAILED: Track {track_n} not {verb}ed properly")
+                        print(f"   Expected '{target_flag}' but found: {track_content[:200]}")
+                        
+                elif verb in ("mute", "unmute"):
+                    target_flag = "Mute: YES" if verb == "mute" else "Mute: no"
+                    if target_flag in track_content:
+                        success = True
+                        print(f"✅ SUCCESS: Track {track_n} {verb} confirmed")
+                    else:
+                        print(f"❌ FAILED: Track {track_n} not {verb}d properly")
+                        print(f"   Expected '{target_flag}' but found: {track_content[:200]}")
+                        
+                elif verb == "select":
+                    if "Selected: YES" in track_content:
+                        success = True
+                        print(f"✅ SUCCESS: Track {track_n} selected")
+                    else:
+                        print(f"❌ FAILED: Track {track_n} not selected")
+                        print(f"   State shows: {track_content[:200]}")
+                
+                if not success:
+                    print(f"\n🔄 Retrying once...")
+                    if not send_reaper_commands(deterministic_commands):
+                        print("❌ Retry failed to send")
+                        return
+                    time.sleep(0.6)
+                    final_state = get_reaper_state()
+                    track_section_match = re.search(rf'--- Track {track_n}: .+? ---(.+?)(?=--- Track \d+:|=== END STATE ===)', final_state, re.DOTALL)
+                    if track_section_match:
+                        track_content = track_section_match.group(1)
+                        if verb in ("solo", "unsolo"):
+                            target_flag = "Solo: YES" if verb == "solo" else "Solo: no"
+                            if target_flag in track_content:
+                                print(f"✅ SUCCESS on retry: Track {track_n} {verb} confirmed")
+                            else:
+                                print(f"❌ Still failed after retry")
+                        elif verb in ("mute", "unmute"):
+                            target_flag = "Mute: YES" if verb == "mute" else "Mute: no"
+                            if target_flag in track_content:
+                                print(f"✅ SUCCESS on retry: Track {track_n} {verb} confirmed")
+                            else:
+                                print(f"❌ Still failed after retry")
+                        elif verb == "select":
+                            if "Selected: YES" in track_content:
+                                print(f"✅ SUCCESS on retry: Track {track_n} selected")
+                            else:
+                                print(f"❌ Still failed after retry")
+            else:
+                print(f"⚠️ Could not find Track {track_n} in state output")
+        
+        print("\n✨ Done!\n")
+        return
     
     # Check for reference matching requests
     user_lower = user_input.lower()
@@ -6269,14 +6221,6 @@ Recommendations: {', '.join(analysis.get('recommendations', [])) if analysis.get
     available_plugins = load_plugin_list()
     print(f"💪 Loaded {len(known_actions)} total actions")
     print(f"🎛️ Loaded {len(available_plugins)} available plugins")
-
-    # Fast-path: deterministic + retrieval with guardrails for simple intents
-    try:
-        handled = maybe_execute_direct_intent(user_input, initial_state, known_actions)
-    except Exception as _:
-        handled = False
-    if handled:
-        return
     
     # Retry loop (max 10 attempts - early stopping logic will exit sooner if stuck)
     # Reduced from 20 to prevent $8 burns on micro-adjustments
