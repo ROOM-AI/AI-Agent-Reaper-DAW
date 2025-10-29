@@ -246,14 +246,36 @@ REAPER_STATE = {}  # session_id -> state dict
 agent = None  # type: ignore
 
 def _state_provider(session_id: str) -> str:
-    state = REAPER_STATE.get(session_id, {})
-    # Prefer raw text dump if present
-    if isinstance(state, dict) and isinstance(state.get("state_text"), str):
-        return state["state_text"]
-    try:
-        return json.dumps(state) if state else ""
-    except Exception:
-        return ""
+    # Try current state; if missing/stale, request and wait briefly
+    def _to_text(st: Dict[str, Any]) -> str:
+        if isinstance(st, dict) and isinstance(st.get("state_text"), str):
+            return st["state_text"]
+        try:
+            return json.dumps(st) if st else ""
+        except Exception:
+            return ""
+
+    now = time.time()
+    st = REAPER_STATE.get(session_id, {})
+    last_ts = 0.0
+    if isinstance(st, dict):
+        last_ts = float(st.get("_server_received_ts", 0.0))
+
+    # If no state yet or older than ~1.5s, request a fresh one and wait up to 2s
+    if not st or (now - last_ts) > 1.5:
+        if session_id not in REAPER_SESSIONS:
+            REAPER_SESSIONS[session_id] = []
+        REAPER_SESSIONS[session_id].append("GET_STATE")
+        add_event("state_requested", {"via": "provider", "session_id": session_id}, session_id=session_id)
+        deadline = now + 2.0
+        while time.time() < deadline:
+            st2 = REAPER_STATE.get(session_id, {})
+            if isinstance(st2, dict) and float(st2.get("_server_received_ts", 0.0)) > last_ts:
+                return _to_text(st2)
+            time.sleep(0.1)
+        # Timeout: return whatever we have
+        return _to_text(st)
+    return _to_text(st)
 
 def _command_sink(commands, session_id: str) -> bool:
     try:
@@ -325,7 +347,9 @@ def reaper_execute(cmd: dict):
 def reaper_state(state: dict):
     """Reaper sends state updates here"""
     session_id = state.get("session_id", "demo")
-    REAPER_STATE[session_id] = state
+    state_copy = dict(state)
+    state_copy["_server_received_ts"] = time.time()
+    REAPER_STATE[session_id] = state_copy
     add_event("reaper_state_update", state, session_id=session_id)
     return {"status": "received"}
 

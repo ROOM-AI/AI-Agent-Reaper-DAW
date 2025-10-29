@@ -3803,10 +3803,10 @@ def smart_index_search(user_input, index_path=None, max_results=100):
     for p in candidate_paths:
         try:
             with open(p, 'r', encoding='utf-8') as f:
-            index = json.load(f)
-                log_debug(f"Loaded action index from {p} with {len(index)} entries")
-                break
-    except Exception as e:
+                index = json.load(f)
+            log_debug(f"Loaded action index from {p} with {len(index)} entries")
+            break
+        except Exception as e:
             last_err = e
             continue
     if index is None:
