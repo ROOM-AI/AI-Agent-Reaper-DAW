@@ -748,9 +748,6 @@ def get_reaper_state():
                 data = r.json() or {}
                 state = data.get("state")
                 if state:
-                    # If state is a dict with state_text, extract the text string
-                    if isinstance(state, dict) and "state_text" in state:
-                        return state["state_text"]
                     return state
         except Exception as http_err:
             log_debug(f"HTTP state error: {http_err}")
@@ -933,53 +930,23 @@ def load_action_list():
     known_actions = {}
     # Explicit disallow list for problematic small IDs that cause ambiguity
     disallowed_ids = {"7", "11", "47"}
-    # Try multiple candidate paths (Cloud Run sometimes changes cwd)
-    candidate_paths = [
-        str(REPO_DIR / "reaper_actions.txt"),
-        "reaper_actions.txt",
-        "/workspace/reaper_actions.txt",
-    ]
-    last_err = None
-    for p in candidate_paths:
-        try:
-            with open(p, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith("REAPER") or line.startswith("Format:") or line.startswith("Generated:"):
-                        continue
-                    if "|" in line:
-                        parts = line.split("|", 1)
-                        if len(parts) == 2:
-                            action_id = parts[0].strip()
-                            description = parts[1].strip()
-                            if action_id in disallowed_ids:
-                                continue
-                            known_actions[action_id] = description
-            if known_actions:
-                log_debug(f"Loaded {len(known_actions)} actions from {p}")
-                break
-        except Exception as e:
-            last_err = e
-            continue
-
-    # Fallback: minimal core set so cloud never has 0 actions
-    if not known_actions:
-        if last_err:
-            log_debug(f"Action load error (will use fallback): {last_err}")
-        core = {
-            "1007": "Transport: Play",
-            "1016": "Transport: Stop",
-            "1013": "Transport: Record",
-            "40280": "Track: Toggle solo for selected tracks",
-            "40281": "Track: Toggle mute for selected tracks",
-            "40339": "Track: Unmute all tracks",
-            "40340": "Track: Unsolo all tracks",
-            "40062": "Track: Duplicate tracks",
-            "40210": "Track: Copy tracks",
-            "40058": "Track: Paste tracks/items",
-        }
-        known_actions.update(core)
-        log_debug(f"Loaded fallback action set: {len(known_actions)} actions")
+    try:
+        with open(str(REPO_DIR / "reaper_actions.txt"), "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("REAPER") or line.startswith("Format:") or line.startswith("Generated:"):
+                    continue
+                if "|" in line:
+                    parts = line.split("|", 1)
+                    if len(parts) == 2:
+                        action_id = parts[0].strip()
+                        description = parts[1].strip()
+                        if action_id in disallowed_ids:
+                            continue
+                        known_actions[action_id] = description
+        log_debug(f"Loaded {len(known_actions)} actions")
+    except Exception as e:
+        log_debug(f"Action load error: {e}")
     
     return known_actions
 
@@ -3840,10 +3807,10 @@ def smart_index_search(user_input, index_path=None, max_results=100):
     for p in candidate_paths:
         try:
             with open(p, 'r', encoding='utf-8') as f:
-                index = json.load(f)
+            index = json.load(f)
             log_debug(f"Loaded action index from {p} with {len(index)} entries")
             break
-        except Exception as e:
+    except Exception as e:
             last_err = e
             continue
     if index is None:
@@ -4058,7 +4025,7 @@ def filter_relevant_actions(user_input, all_actions, max_actions=50):
             score += int(confidence * 10) + int(ratio * 5)
         else:
             continue
-
+        
         if score > 0:
             scored.append((score, aid, desc))
     
