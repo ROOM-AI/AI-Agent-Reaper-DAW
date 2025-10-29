@@ -643,7 +643,7 @@ function loop()
     check_for_commands()
     -- Periodically export state so the bridge can send live updates
     local now = reaper.time_precise()
-    if now - last_state_export >= 1.0 then
+    if now - last_state_export >= 5.0 then
         export_state()
         last_state_export = now
     end

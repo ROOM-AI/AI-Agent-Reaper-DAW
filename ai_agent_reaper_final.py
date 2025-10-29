@@ -941,17 +941,31 @@ def maybe_execute_direct_intent(user_input, initial_state, known_actions):
         print("❌ Failed to send commands (deterministic path)")
         return True
 
-    # Wait for a FRESH state (not the old cached one)
-    def wait_fresh(baseline, timeout=2.0):
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            time.sleep(0.15)
-            new_state = get_reaper_state()
-            if hash(new_state) != baseline:
-                return new_state
-        return get_reaper_state()  # timeout fallback
-
-    final_state = wait_fresh(baseline_sig, timeout=2.0)
+    # Wait for a FRESH state (poll server memory, not file, to avoid bridge spam)
+    def wait_fresh_state(baseline_hash, timeout=2.0):
+        """In cloud mode, poll server memory. Locally, just wait."""
+        if _CLOUD_STATE_PROVIDER:
+            # Cloud: poll the provider (server memory) without touching files
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                time.sleep(0.15)
+                try:
+                    new_state = _CLOUD_STATE_PROVIDER(_CURRENT_SESSION_ID)
+                    if hash(new_state) != baseline_hash:
+                        return new_state
+                except Exception:
+                    pass
+            # Timeout: return whatever we have
+            try:
+                return _CLOUD_STATE_PROVIDER(_CURRENT_SESSION_ID)
+            except Exception:
+                return "State unavailable"
+        else:
+            # Local: just wait fixed time
+            time.sleep(1.0)
+            return get_reaper_state()
+    
+    final_state = wait_fresh_state(baseline_sig, timeout=2.0)
 
     section = extract_track_section(final_state, track_idx)
     flag_name, want = desired_flag_for(verb)
@@ -962,9 +976,9 @@ def maybe_execute_direct_intent(user_input, initial_state, known_actions):
             return True
 
         # ONE retry with SAME plan
-        baseline_sig2 = hash(final_state)
         if send_reaper_commands(plan):  # exact same plan
-            final_state2 = wait_fresh(baseline_sig2, timeout=2.0)
+            baseline_sig2 = hash(final_state)
+            final_state2 = wait_fresh_state(baseline_sig2, timeout=2.0)
             section2 = extract_track_section(final_state2, track_idx)
             got2 = read_flag(section2, flag_name)
             if got2 == want:
@@ -980,9 +994,9 @@ def maybe_execute_direct_intent(user_input, initial_state, known_actions):
             print(f"✅ Selected track {track_idx}")
             return True
 
-        baseline_sig2 = hash(final_state)
         if send_reaper_commands(plan):  # same plan
-            final_state2 = wait_fresh(baseline_sig2, timeout=2.0)
+            baseline_sig2 = hash(final_state)
+            final_state2 = wait_fresh_state(baseline_sig2, timeout=2.0)
             section2 = extract_track_section(final_state2, track_idx)
             if read_flag(section2, "Selected") == "YES":
                 print(f"✅ Selected track {track_idx} (retry)")
