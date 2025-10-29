@@ -73,12 +73,28 @@ def poll_commands():
                 timeout=5
             )
             if r.status_code == 200 and r.text and r.text.strip():
-                # Server might return string or JSON - handle both
-                response = r.text.strip()
-                if response and response != "null" and response != '""' and response != "":
-                    # Write command to file for Lua to read
-                    COMMAND_FILE.write_text(response)
-                    print(f"← Received command: {response[:80]}")
+                # Server might return JSON string (e.g., "1007") or an object/array
+                raw = r.text.strip()
+                if raw and raw != "null" and raw != '""':
+                    cmd_text = raw
+                    try:
+                        parsed = json.loads(raw)
+                        # If it's a dict with 'command', use that; if it's a list, join lines; else str(parsed)
+                        if isinstance(parsed, dict) and 'command' in parsed:
+                            cmd_text = str(parsed['command'])
+                        elif isinstance(parsed, (list, tuple)):
+                            cmd_text = "\n".join(str(x) for x in parsed if x)
+                        else:
+                            cmd_text = str(parsed)
+                    except Exception:
+                        # Strip surrounding quotes if present
+                        if (raw.startswith('"') and raw.endswith('"')) or (raw.startswith("'") and raw.endswith("'")):
+                            cmd_text = raw[1:-1]
+                    # Ensure trailing newline so Lua processes a single line cleanly
+                    if not cmd_text.endswith("\n"):
+                        cmd_text = cmd_text + "\n"
+                    COMMAND_FILE.write_text(cmd_text)
+                    print(f"← Received command: {cmd_text.strip()[:80]}")
         except KeyboardInterrupt:
             raise  # Let Ctrl+C work
         except Exception as e:
