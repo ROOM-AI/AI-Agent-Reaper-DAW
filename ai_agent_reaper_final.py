@@ -3915,8 +3915,29 @@ def smart_index_search(user_input, index_path=None, max_results=100):
 def filter_relevant_actions(user_input, all_actions, max_actions=50):
     """Smart filter with EXACT track number matching"""
     import re
+    from difflib import SequenceMatcher
     
     keywords = user_input.lower().split()
+    # Confidence gating: only keep actions whose description matches enough user words
+    STOPWORDS = {"the","a","an","to","of","in","on","for","and","or","with","please","track","tracks"}
+    meaningful = [w for w in keywords if len(w) > 2 and w not in STOPWORDS]
+    CONF_THRESHOLD = 0.6  # 60% of meaningful words must appear
+
+    # Intent family detection (restrict candidates early)
+    user_lower = " ".join(keywords)
+    intent = None
+    if any(w in user_lower for w in ["unmute", "un-mute"]):
+        intent = "unmute"
+    elif "mute" in user_lower:
+        intent = "mute"
+    elif any(w in user_lower for w in ["unsolo", "un-solo", "unsolo all", "unsolo tracks"]):
+        intent = "unsolo"
+    elif "solo" in user_lower:
+        intent = "solo"
+    elif "duplicate" in user_lower:
+        intent = "duplicate"
+    elif "copy" in user_lower or "paste" in user_lower:
+        intent = "copypaste"
     
     # Extract track number if mentioned (e.g., "track 7" → 7)
     track_match = re.search(r'\btrack\s*(\d+)\b', user_input.lower())
@@ -3944,12 +3965,40 @@ def filter_relevant_actions(user_input, all_actions, max_actions=50):
         desc_lower = desc.lower()
         score = 0
         
+        # Confidence by word overlap
+        if meaningful:
+            matches = sum(1 for w in meaningful if w in desc_lower)
+            confidence = matches / max(1, len(meaningful))
+        else:
+            confidence = 1.0
+
+        # Family gate - keep only descriptions that contain the family keyword(s)
+        if intent == "solo":
+            if "solo" not in desc_lower or "unsolo" in desc_lower:
+                continue
+        elif intent == "unsolo":
+            if "unsolo" not in desc_lower and "un-solo" not in desc_lower:
+                continue
+        elif intent == "mute":
+            if "mute" not in desc_lower or "unmute" in desc_lower:
+                continue
+        elif intent == "unmute":
+            if "unmute" not in desc_lower:
+                continue
+        elif intent == "duplicate":
+            if "duplicate" not in desc_lower:
+                continue
+        elif intent == "copypaste":
+            if "copy" not in desc_lower and "paste" not in desc_lower:
+                continue
+        
         # Keyword matching
         for kw in keywords:
             if kw in desc_lower:
                 score += 2
         
         # EXACT track number boost (HUGE bonus if matches!)
+        exact_track_match = False
         if requested_track:
             # Match "track 07" or "track 7"
             track_in_desc = re.search(r'\btrack\s*0?(\d+)\b', desc_lower)
@@ -3957,13 +4006,26 @@ def filter_relevant_actions(user_input, all_actions, max_actions=50):
                 desc_track_num = int(track_in_desc.group(1))
                 if desc_track_num == requested_track:
                     score += 100  # MASSIVE boost for exact match!
+                    exact_track_match = True
                 elif abs(desc_track_num - requested_track) <= 2:
                     score += 10  # Small boost for nearby tracks
+            # Prefer actions that target selected tracks when a track number is present
+            if "selected" in desc_lower:
+                score += 5
         
         # Penalize MIDI CC/OSC only actions (usually not what user wants)
         if "midi cc/osc only" in desc_lower:
             score -= 5
         
+        # Gate by confidence unless it's an exact track match or essential
+        # Also allow if semantic similarity (SequenceMatcher) is high enough
+        ratio = SequenceMatcher(None, " ".join(meaningful), desc_lower).ratio() if meaningful else 1.0
+        if (confidence >= CONF_THRESHOLD) or exact_track_match or ratio >= 0.6:
+            # small tie-break by confidence
+            score += int(confidence * 10) + int(ratio * 5)
+        else:
+            continue
+
         if score > 0:
             scored.append((score, aid, desc))
     
@@ -3972,6 +4034,11 @@ def filter_relevant_actions(user_input, all_actions, max_actions=50):
     for score, aid, desc in scored[:max_actions - len(relevant)]:
         relevant[aid] = desc
     
+    # If nothing survived, fall back to essentials only
+    if not relevant:
+        for aid, desc in all_actions.items():
+            if aid in essential_ids:
+                relevant[aid] = desc
     return relevant
 
 def plan_actions(user_input, state, known_actions, available_plugins, previous_issues="", feedback="", lyric_context="", analysis_context="", retry_history=[], conversation_history=[], failed_commands=set()):
