@@ -6,6 +6,7 @@ import requests
 import time
 import os
 import json
+import threading
 from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -28,44 +29,51 @@ print(f"State file: {STATE_FILE}")
 print("=" * 50)
 print()
 
+_last_state_sent = ""
+
 # Ensure files exist
 COMMAND_FILE.touch(exist_ok=True)
 STATE_FILE.touch(exist_ok=True)
 
+def _send_state_if_changed():
+    global _last_state_sent
+    try:
+        if not STATE_FILE.exists():
+            return
+        content = STATE_FILE.read_text()
+        if content and content != _last_state_sent:
+            # Prefer raw text as 'state_text' so server can display it
+            try:
+                data = json.loads(content)
+                # If JSON, still include the pretty text for logs
+                state_payload = data if isinstance(data, dict) else {"state_text": str(data)}
+            except Exception:
+                state_payload = {"state_text": content}
+            state_payload["session_id"] = SESSION_ID
+            requests.post(
+                f"{CLOUD_URL}/api/reaper/state",
+                json=state_payload,
+                timeout=3,
+            )
+            _last_state_sent = content
+            print(f"→ Sent state to cloud (session: {SESSION_ID})")
+    except Exception as e:
+        print(f"⚠️ State send error: {e}")
+
 class StateFileHandler(FileSystemEventHandler):
     """Watch for state file changes and send to cloud"""
-    def __init__(self):
-        self.last_sent = ""
-    
     def on_modified(self, event):
-        if event.src_path == str(STATE_FILE):
-            try:
-                content = STATE_FILE.read_text()
-                if content and content != self.last_sent:
-                    # Parse JSON and add session_id
-                    try:
-                        state_data = json.loads(content) if content else {}
-                    except:
-                        # Send as plain text so server can use directly
-                        state_data = {"state_text": content}
-                    
-                    # Add session_id to the body (not as query param)
-                    state_data["session_id"] = SESSION_ID
-                    
-                    # Send state to cloud
-                    requests.post(
-                        f"{CLOUD_URL}/api/reaper/state",
-                        json=state_data,
-                        timeout=3
-                    )
-                    self.last_sent = content
-                    print(f"→ Sent state to cloud (session: {SESSION_ID})")
-            except Exception as e:
-                print(f"⚠️ State send error: {e}")
+        # Any file change in BASE_DIR triggers a check; internal de-dupe prevents spam
+        _send_state_if_changed()
+
+    def on_created(self, event):
+        _send_state_if_changed()
 
 def poll_commands():
-    """Poll cloud for commands and write to local file"""
+    """Poll cloud for commands and write to local file (with simple de-dupe)"""
     print(f"Starting polling loop...")
+    last_cmd_text = ""
+    last_cmd_time = 0.0
     while True:
         try:
             r = requests.get(
@@ -94,12 +102,26 @@ def poll_commands():
                     # Ensure trailing newline so Lua processes a single line cleanly
                     if not cmd_text.endswith("\n"):
                         cmd_text = cmd_text + "\n"
-                    COMMAND_FILE.write_text(cmd_text)
-                    print(f"← Received command: {cmd_text.strip()[:80]}")
+                    # Skip immediate duplicates (identical command back-to-back within ~1s)
+                    now_ts = time.time()
+                    if cmd_text.strip() == last_cmd_text.strip() and (now_ts - last_cmd_time) < 1.0:
+                        # Still update last seen to extend window slightly
+                        last_cmd_time = now_ts
+                    else:
+                        COMMAND_FILE.write_text(cmd_text)
+                        print(f"← Received command: {cmd_text.strip()[:80]}")
+                        last_cmd_text = cmd_text
+                        last_cmd_time = now_ts
         except KeyboardInterrupt:
             raise  # Let Ctrl+C work
         except Exception as e:
             print(f"⚠️ Poll error: {e}")
+        time.sleep(1.0)
+
+def state_pump():
+    """Periodic fallback to push state even if FS events are missed"""
+    while True:
+        _send_state_if_changed()
         time.sleep(1.0)
 
 if __name__ == "__main__":
@@ -108,6 +130,9 @@ if __name__ == "__main__":
     observer.schedule(StateFileHandler(), str(BASE_DIR), recursive=False)
     observer.start()
     print(f"✓ Watching {STATE_FILE} for changes")
+    
+    # Start periodic state pump fallback
+    threading.Thread(target=state_pump, daemon=True).start()
     
     # Start polling for commands
     print("✓ Polling cloud for commands")

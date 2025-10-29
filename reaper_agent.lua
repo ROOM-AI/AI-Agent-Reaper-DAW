@@ -2,12 +2,12 @@
 -- Load once: Actions → Show action list → New action → Load ReaScript → select this file → Run
 -- Keep running in background
 
--- Portable base dir using REAPER_AGENT_DIR or ~/AIAGENT_DAW
+-- Portable base dir using REAPER_AGENT_DIR or ~/AIAGENT DAW (match bridge)
 local sep = package.config:sub(1,1)
 local base = os.getenv("REAPER_AGENT_DIR")
 if not base or base == "" then
   local home = os.getenv(sep == "\\" and "USERPROFILE" or "HOME") or "."
-  base = home .. sep .. "AIAGENT_DAW"
+  base = home .. sep .. "AIAGENT DAW"
 end
 local COMMAND_FILE = base .. sep .. "reaper_commands.txt"
 local STATE_FILE   = base .. sep .. "reaper_state.txt"
@@ -78,7 +78,8 @@ function export_state()
     
     -- Project-level info
     stateFile:write("=== PROJECT STATE ===\n")
-    stateFile:write(string.format("Playing: %s\n", playState == 1 and "Yes" or "No"))
+    stateFile:write(string.format("Timestamp: %d\n", os.time()))
+    stateFile:write(string.format("Playing: %s\n", ((playState & 1) ~= 0) and "Yes" or "No"))
     stateFile:write(string.format("Cursor Position: %.2fs\n", cursorPos))
     stateFile:write(string.format("Tempo: %.1f BPM\n", tempo))
     stateFile:write(string.format("Total Tracks: %d\n", numTracks))
@@ -423,8 +424,9 @@ function process_command(line)
         end
         
     elseif cmd == "SELECT_TRACK" then
-        -- SELECT_TRACK <trackIdx>
-        local trackIdx = tonumber(parts[2]) or 0
+        -- SELECT_TRACK <trackNumber>  (treat input as 1-based; REAPER API is 0-based)
+        local trackNumber = tonumber(parts[2]) or 1
+        local idx0 = math.max(trackNumber - 1, 0)
         
         -- Deselect all tracks first
         local numTracks = reaper.CountTracks(0)
@@ -434,15 +436,15 @@ function process_command(line)
         end
         
         -- Select the target track
-        local track = reaper.GetTrack(0, trackIdx)
+        local track = reaper.GetTrack(0, idx0)
         if track then
             reaper.SetTrackSelected(track, true)
             -- ALSO "touch" the track by setting volume to current volume (makes it "last touched")
             local currentVol = reaper.GetMediaTrackInfo_Value(track, "D_VOL")
             reaper.SetMediaTrackInfo_Value(track, "D_VOL", currentVol)
-            execute_with_feedback("SELECT_TRACK", true, string.format("Selected track %d", trackIdx))
+            execute_with_feedback("SELECT_TRACK", true, string.format("Selected track %d", trackNumber))
         else
-            execute_with_feedback("SELECT_TRACK", false, string.format("Track %d not found", trackIdx))
+            execute_with_feedback("SELECT_TRACK", false, string.format("Track %d not found", trackNumber))
         end
         
     elseif cmd == "SET_TRACK_VOL" then
@@ -626,6 +628,8 @@ function check_for_commands()
     
     -- Write feedback after all commands processed
     write_feedback()
+    -- Export state so the bridge immediately sees changes
+    export_state()
 end
 
 function loop()
