@@ -350,6 +350,44 @@ def reaper_state(state: dict):
     add_event("reaper_state_update", state, session_id=session_id)
     return {"status": "received"}
 
+# -------------------- Debug endpoints (file presence, counts) --------------------
+@app.get("/debug/files")
+def debug_files():
+    files = [
+        "reaper_actions.txt",
+        "reaper_plugins_list.txt",
+        "action_index.json",
+        "ai_agent_reaper_final.py",
+        "cloud_agent_wrapper.py",
+        "main.py",
+    ]
+    listing = []
+    try:
+        listing = os.listdir(".")
+    except Exception:
+        pass
+    return {
+        "cwd": os.getcwd(),
+        "exists": {name: os.path.exists(name) for name in files},
+        "ls": listing[:200],
+    }
+
+@app.get("/debug/actions")
+def debug_actions():
+    try:
+        _ensure_agent_loaded()
+        actions = agent.load_action_list()
+        plugins = agent.load_plugin_list()
+        # Return only a small sample to keep payload small
+        sample = list(actions.items())[:5]
+        return {
+            "actions_count": len(actions),
+            "plugins_count": len(plugins),
+            "sample_actions": sample,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
 # -------------------- Static UI for investors --------------------
 @app.get("/", response_class=HTMLResponse)
 async def root():

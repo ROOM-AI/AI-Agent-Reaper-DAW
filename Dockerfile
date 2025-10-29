@@ -22,6 +22,8 @@ COPY prompt_enhancer.py .
 COPY local_bridge.pyw .
 
 COPY reaper_all_actions.txt .
+COPY reaper_actions.txt .
+COPY reaper_plugins_list.txt .
 COPY sound_knowledge_base.json .
 COPY action_index.json .
 
