@@ -285,9 +285,6 @@ def _command_sink(commands, session_id: str) -> bool:
             REAPER_SESSIONS[session_id] = []
         # Queue commands from agent
         REAPER_SESSIONS[session_id].extend(commands)
-        # Always follow with a GET_STATE to force a fresh state export for verification
-        REAPER_SESSIONS[session_id].append("GET_STATE")
-        add_event("state_requested", {"via": "auto_after_commands", "session_id": session_id}, session_id=session_id)
         return True
     except Exception:
         return False

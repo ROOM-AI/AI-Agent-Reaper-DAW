@@ -3803,10 +3803,10 @@ def smart_index_search(user_input, index_path=None, max_results=100):
     for p in candidate_paths:
         try:
             with open(p, 'r', encoding='utf-8') as f:
-                index = json.load(f)
+            index = json.load(f)
             log_debug(f"Loaded action index from {p} with {len(index)} entries")
             break
-        except Exception as e:
+    except Exception as e:
             last_err = e
             continue
     if index is None:
@@ -3890,16 +3890,22 @@ def smart_index_search(user_input, index_path=None, max_results=100):
             matched_actions[action_id] = description
     
     # ALWAYS include essential actions regardless of search
-    essential_ids = ["1007", "1016", "1013", "40280", "40294", "40340", "40291", "40062"]
+    essential_ids = ["1007", "1016", "1013", "40280", "40294", "40340", "40291", "40062", "40210", "40058"]
     for key, action_data in index.items():
         if action_data['id'] in essential_ids:
             matched_actions[action_data['id']] = action_data['desc']
     
-    # If no matches, return essential actions
+    # Filter: allow only safe/core actions (>=40000) or essential small IDs
+    def _allowed(aid: str) -> bool:
+        return (aid.isdigit() and int(aid) >= 40000) or (aid in essential_ids)
+
+    matched_actions = {aid: desc for aid, desc in matched_actions.items() if _allowed(aid)}
+
+    # If nothing after filtering, fall back to essentials
     if not matched_actions:
-        log_debug("No index matches, using essentials")
+        log_debug("No index matches after filter, using essentials")
         for key, action_data in index.items():
-            if action_data['id'] in essential_ids:
+            if _allowed(action_data['id']) and action_data['id'] in essential_ids:
                 matched_actions[action_data['id']] = action_data['desc']
     
     # Limit results
