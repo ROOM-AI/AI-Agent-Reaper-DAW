@@ -79,6 +79,7 @@ def api_chat(body: ChatIn):
     sys.stderr = output_capture
     
     try:
+        _ensure_agent_loaded()
         # Import prompt enhancer
         from prompt_enhancer import enhance_prompt
         
@@ -157,6 +158,7 @@ def api_chat_raw(body: ChatIn):
     sys.stderr = output_capture
     
     try:
+        _ensure_agent_loaded()
         # Directly run the FULL agent with the raw user text
         agent._CURRENT_SESSION_ID = body.session_id
         agent.execute_user_command(body.text)
@@ -240,8 +242,8 @@ def admin_queue(body: AdminCmd, x_api_key: Optional[str] = Header(default="")):
 REAPER_SESSIONS = {}  # session_id -> [commands]
 REAPER_STATE = {}  # session_id -> state dict
 
-# Wire the REAL agent with cloud hooks (no wrapper)
-import ai_agent_reaper_final as agent
+# Lazy-load the heavy agent module so the container can start fast
+agent = None  # type: ignore
 
 def _state_provider(session_id: str) -> str:
     state = REAPER_STATE.get(session_id, {})
@@ -281,13 +283,18 @@ def _memory_save(session_id: str, data: Dict[str, Any]) -> bool:
     return True
 
 # Inject hooks once on startup
-agent.set_cloud_hooks(
-    state_provider=_state_provider,
-    command_sink=_command_sink,
-    feedback_provider=_feedback_provider,
-    memory_load=_memory_load,
-    memory_save=_memory_save,
-)
+def _ensure_agent_loaded():
+    global agent
+    if agent is None:
+        import ai_agent_reaper_final as _agent  # delayed import
+        _agent.set_cloud_hooks(
+            state_provider=_state_provider,
+            command_sink=_command_sink,
+            feedback_provider=_feedback_provider,
+            memory_load=_memory_load,
+            memory_save=_memory_save,
+        )
+        agent = _agent
 
 @app.get("/api/reaper/poll")
 def reaper_poll(session_id: str = "default"):
