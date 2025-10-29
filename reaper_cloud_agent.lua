@@ -19,11 +19,11 @@ end
 function write_feedback()
     if #feedback_buffer > 0 then
         local file = io.open(FEEDBACK_FILE, "w")
-        if file then
+if file then
             for _, msg in ipairs(feedback_buffer) do
                 file:write(msg .. "\n")
             end
-            file:close()
+    file:close()
         end
         feedback_buffer = {}
     end
@@ -76,9 +76,9 @@ function export_state()
                 local _, fxName = reaper.TrackFX_GetFXName(track, j, "")
                 stateFile:write(string.format("    [%d] %s\n", j, fxName))
             end
-        end
     end
-    
+end
+
     stateFile:write("\n=== END STATE ===\n")
     stateFile:close()
 end
@@ -194,10 +194,10 @@ function process_command(line)
                     add_feedback("✅ Added FX")
                 else
                     msg("❌ Could not find FX: " .. fxName)
-                end
-            end
         end
-        
+    end
+end
+
     elseif cmd == "SET_FX_PARAM" then
         local trackIdx = tonumber(parts[2]) or 0
         local fxIdx = tonumber(parts[3]) or 0
@@ -261,7 +261,7 @@ function process_command(line)
         local envName = parts[3] or "Volume"
         
         local track = reaper.GetTrack(0, trackIdx)
-        if track then
+                if track then
             local env = reaper.GetTrackEnvelopeByName(track, envName)
             if env then
                 local numPoints = reaper.CountEnvelopePoints(env)
@@ -317,7 +317,7 @@ function check_for_commands()
     if not file then return end
     
     local content = file:read("*all")
-    file:close()
+        file:close()
     
     if not content or content == "" then return end
     
@@ -328,9 +328,9 @@ function check_for_commands()
     for line in content:gmatch("[^\r\n]+") do
         if line:match("%S") then
             process_command(line)
-        end
     end
-    
+end
+
     write_feedback()
 end
 
