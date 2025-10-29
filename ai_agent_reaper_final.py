@@ -3895,18 +3895,7 @@ def smart_index_search(user_input, index_path=None, max_results=100):
         if action_data['id'] in essential_ids:
             matched_actions[action_data['id']] = action_data['desc']
     
-    # Filter: allow only safe/core actions (>=40000) or essential small IDs
-    def _allowed(aid: str) -> bool:
-        return (aid.isdigit() and int(aid) >= 40000) or (aid in essential_ids)
-
-    matched_actions = {aid: desc for aid, desc in matched_actions.items() if _allowed(aid)}
-
-    # If nothing after filtering, fall back to essentials
-    if not matched_actions:
-        log_debug("No index matches after filter, using essentials")
-        for key, action_data in index.items():
-            if _allowed(action_data['id']) and action_data['id'] in essential_ids:
-                matched_actions[action_data['id']] = action_data['desc']
+    # No further filtering here – let caller restrict to allowed action list
     
     # Limit results
     if len(matched_actions) > max_results:
@@ -3984,8 +3973,15 @@ def filter_relevant_actions(user_input, all_actions, max_actions=50):
 def plan_actions(user_input, state, known_actions, available_plugins, previous_issues="", feedback="", lyric_context="", analysis_context="", retry_history=[], conversation_history=[], failed_commands=set()):
     """Phase 1: AI Plans what to do"""
     
-    # Use smart index search instead of old filter (MUCH faster!)
+    # Use smart index search, then RESTRICT to the curated action list (cloud uses only reaper_actions.txt)
     relevant_actions = smart_index_search(user_input, max_results=100)
+    if known_actions:
+        allowed_ids = set(known_actions.keys())
+        relevant_actions = {aid: desc for aid, desc in relevant_actions.items() if aid in allowed_ids}
+        # Fallback: if index returns nothing in allowed set, use text-based fallback over known_actions
+        if not relevant_actions:
+            fallback = filter_relevant_actions(user_input, known_actions, max_actions=50)
+            relevant_actions = fallback
     
     # If this is a retry, force-add any suggested actions from previous_issues
     if previous_issues:
