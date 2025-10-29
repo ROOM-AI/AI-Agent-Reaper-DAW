@@ -3780,7 +3780,7 @@ def librosa_based_reference_matching(track_idx, reference_audio_path, track_audi
 
 # ==================== END MERT SYSTEM ====================
 
-def smart_index_search(user_input, index_path=r"C:\Users\moosb\AIAGENT DAW\action_index.json", max_results=100):
+def smart_index_search(user_input, index_path=None, max_results=100):
     """
     Fast search using pre-built index with synonym support
     Returns: dict of {action_id: description}
@@ -3788,12 +3788,29 @@ def smart_index_search(user_input, index_path=r"C:\Users\moosb\AIAGENT DAW\actio
     import json
     import re
     
-    # Load index
+    # Resolve index path (avoid hardcoded Windows paths in cloud)
+    candidate_paths = []
+    if index_path:
+        candidate_paths.append(index_path)
     try:
-        with open(index_path, 'r', encoding='utf-8') as f:
-            index = json.load(f)
-    except Exception as e:
-        log_debug(f"Index load error: {e}")
+        candidate_paths.append(str(REPO_DIR / "action_index.json"))
+    except Exception:
+        pass
+    candidate_paths.append("action_index.json")
+
+    index = None
+    last_err = None
+    for p in candidate_paths:
+        try:
+            with open(p, 'r', encoding='utf-8') as f:
+                index = json.load(f)
+                log_debug(f"Loaded action index from {p} with {len(index)} entries")
+                break
+        except Exception as e:
+            last_err = e
+            continue
+    if index is None:
+        log_debug(f"Index load error: {last_err}")
         return {}
     
     # Synonym mapping for better matching
