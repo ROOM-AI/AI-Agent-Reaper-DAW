@@ -682,6 +682,71 @@ def parse_fx_list(state):
     
     return fx_list
 
+def get_track_state_from_dump(state_text: str, track_idx: int):
+    """Return {'mute': bool, 'solo': bool, 'line': str} or None by scanning the dump."""
+    lines = state_text.split("\n")
+    for i, line in enumerate(lines):
+        if line.startswith(f"--- Track {track_idx}:"):
+            # Look ahead a few lines for the Mute/Solo line
+            for j in range(i + 1, min(i + 8, len(lines))):
+                if "Mute:" in lines[j] and "Solo:" in lines[j]:
+                    mute_segment = lines[j].split("Mute:")[-1].split("|")[0].strip()
+                    solo_segment = lines[j].split("Solo:")[-1].strip()
+                    mute = mute_segment.upper().startswith("YES")
+                    solo = solo_segment.upper().startswith("YES")
+                    return {"mute": mute, "solo": solo, "line": lines[j].strip()}
+            return None
+    return None
+
+def validate_commands(commands, state):
+    """Validate commands before sending - catch AI mistakes"""
+    validated = []
+    warnings = []
+    
+    # Extract track count from state
+    max_track = -1
+    for line in state.split('\n'):
+        if line.startswith("--- Track "):
+            try:
+                track_num = int(line.split("Track ")[1].split(":")[0])
+                max_track = max(max_track, track_num)
+            except:
+                pass
+    
+    for cmd in commands:
+        # Validate SELECT_TRACK
+        if cmd.startswith("SELECT_TRACK"):
+            try:
+                track_idx = int(cmd.split()[1])
+                if track_idx > max_track:
+                    warnings.append(f"⚠️  Track {track_idx} doesn't exist (max is {max_track})")
+                    continue  # Skip this command
+            except:
+                pass
+
+        # Validate SOLO/MUTE toggles by checking desired state against dump when possible
+        if cmd.isdigit() and int(cmd) in (40280, 40294):
+            # find last SELECT_TRACK before this command to know target
+            target_track = None
+            for back in range(len(validated) - 1, -1, -1):
+                if validated[back].startswith("SELECT_TRACK"):
+                    try:
+                        target_track = int(validated[back].split()[1])
+                        break
+                    except:
+                        pass
+            if target_track is not None:
+                ts = get_track_state_from_dump(state, target_track)
+                if ts:
+                    if int(cmd) == 40294 and ts["mute"] is False:
+                        warnings.append(f"ℹ️  Track {target_track} currently unmuted; 40294 will toggle to muted")
+                    if int(cmd) == 40280 and ts["solo"] is False:
+                        warnings.append(f"ℹ️  Track {target_track} currently not soloed; 40280 will toggle to solo")
+        
+        validated.append(cmd)
+    
+    return validated, warnings
+
 def send_reaper_commands(commands):
     """Send commands to Reaper.
     - In cloud mode, push over HTTP to connected client via cloud server
@@ -6508,11 +6573,20 @@ Recommendations: {', '.join(analysis.get('recommendations', [])) if analysis.get
             # Reset no-recommendations counter since we're actually doing something
             no_recommendations_count = 0
             
+            # Validate commands before sending
+            validated_commands, warnings = validate_commands(reaper_commands, initial_state)
+            for warning in warnings:
+                print(warning)
+            
+            if not validated_commands:
+                print("❌ All commands were invalid!")
+                return
+            
             # Save snapshot before making changes
             snapshot_label = f"before: {user_input[:50]}"
             save_state_snapshot(snapshot_label)
             
-            if not send_reaper_commands(reaper_commands):
+            if not send_reaper_commands(validated_commands):
                 print("❌ Failed to send commands to Reaper")
                 return
             print("✅ Commands sent")
