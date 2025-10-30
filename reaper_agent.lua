@@ -82,9 +82,10 @@ function export_state()
     
     -- Project-level info
     stateFile:write("=== PROJECT STATE ===\n")
-    stateFile:write(string.format("Timestamp: %d\n", os.time()))
     stateFile:write(string.format("Export Counter: %d\n", state_export_counter))
     stateFile:write(string.format("Precise Time: %.6f\n", precise_time))
+    stateFile:write(string.format("Human Time: %s\n", os.date("%H:%M:%S")))
+    stateFile:write(string.format("Unix Timestamp: %d\n", os.time()))
     stateFile:write(string.format("Playing: %s\n", ((playState & 1) ~= 0) and "Yes" or "No"))
     stateFile:write(string.format("Cursor Position: %.2fs\n", cursorPos))
     stateFile:write(string.format("Tempo: %.1f BPM\n", tempo))
@@ -641,12 +642,8 @@ end
 
 function loop()
     check_for_commands()
-    -- Periodically export state so the bridge can send live updates
-    local now = reaper.time_precise()
-    if now - last_state_export >= 5.0 then
-        export_state()
-        last_state_export = now
-    end
+    -- Don't auto-export state (only on explicit GET_STATE to avoid spam)
+    -- Bridge will request GET_STATE when needed
     reaper.defer(loop)
 end
 
