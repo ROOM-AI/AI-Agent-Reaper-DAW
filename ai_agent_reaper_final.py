@@ -4043,6 +4043,69 @@ def filter_relevant_actions(user_input, all_actions, max_actions=50):
                 relevant[aid] = desc
     return relevant
 
+
+def claude_select_best_action(user_input, state, candidate_actions):
+    """Ask Claude to pick the best matching action ID from candidate list."""
+    if not candidate_actions:
+        return None
+
+    # Limit context size for prompt safety
+    candidate_lines = candidate_actions[:30]
+    candidate_text = "\n".join([f"{aid} | {desc}" for aid, desc in candidate_lines])
+
+    selector_prompt = f"""You must read every action description fully and choose the ONE command that best accomplishes the user's request inside Reaper. If multiple commands are needed, choose the primary trigger (e.g., the command that actually causes the effect) and assume helper steps like selecting tracks will be planned separately.
+
+USER REQUEST:
+{user_input}
+
+CURRENT STATE (trimmed):
+{state[:1500]}
+
+CANDIDATE ACTIONS:
+{candidate_text}
+
+Return strict JSON exactly in this form (no commentary):
+{{"action_id": "<ID>", "confidence": <0-1 float>, "explanation": "<10 words max>"}}
+
+Rules:
+- Pick an ID from the list only. If nothing matches, return an empty action_id and explain why.
+- Confidence 1.0 means perfect match; 0.0 means unusable.
+- Keep explanation under 10 words.
+"""
+
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-5-20250929",
+            max_tokens=200,
+            temperature=0,
+            messages=[{"role": "user", "content": selector_prompt}]
+        ).content[0].text.strip()
+
+        if response.startswith("```"):
+            parts = response.split("```")
+            if len(parts) >= 2:
+                response = parts[1]
+                if response.startswith("json"):
+                    response = response[4:]
+            response = response.strip()
+
+        data = json.loads(response)
+        action_id = str(data.get("action_id", "")).strip()
+        confidence = float(data.get("confidence", 0.0)) if data.get("confidence") is not None else 0.0
+        explanation = str(data.get("explanation", "")).strip()
+
+        if not action_id:
+            return None
+
+        return {
+            "action_id": action_id,
+            "confidence": confidence,
+            "explanation": explanation,
+        }
+    except Exception as exc:
+        log_debug(f"Claude selector failed: {exc}")
+        return None
+
 def plan_actions(user_input, state, known_actions, available_plugins, previous_issues="", feedback="", lyric_context="", analysis_context="", retry_history=[], conversation_history=[], failed_commands=set()):
     """Phase 1: AI Plans what to do"""
     
@@ -4064,6 +4127,30 @@ def plan_actions(user_input, state, known_actions, available_plugins, previous_i
     # Sort for readability (track numbers in order)
     sorted_actions = sorted(relevant_actions.items(), key=lambda x: (x[1], x[0]))
     actions_text = "\n".join([f"{aid}: {desc}" for aid, desc in sorted_actions])
+
+    claude_selector_section = ""
+    if sorted_actions:
+        candidate_slice = sorted_actions[:30]
+        claude_choice = claude_select_best_action(user_input, state, candidate_slice)
+        if claude_choice:
+            rec_id = claude_choice.get("action_id")
+            rec_conf = claude_choice.get("confidence", 0.0)
+            rec_reason = claude_choice.get("explanation", "")
+
+            if rec_id in dict(candidate_slice):
+                rec_desc = relevant_actions.get(rec_id, known_actions.get(rec_id, ""))
+                print(f"🤖 Claude selector recommends action {rec_id} ({rec_desc}) [confidence {rec_conf:.2f}]")
+
+                claude_selector_section = f"""
+**CLAUDE ACTION RECOMMENDATION:**
+- Suggested action ID: {rec_id}
+- Description: {rec_desc}
+- Confidence: {rec_conf:.2f}
+- Rationale: {rec_reason}
+
+**Follow this if it directly fulfills the request.** Plan any required prep steps (like selecting the right track) before triggering it.
+"""
+
     
     # Search for relevant plugins based on user input (fuzzy matching with scoring)
     user_lower = user_input.lower()
@@ -4437,6 +4524,7 @@ You are an AI controlling Reaper DAW. THINK STEP-BY-STEP and pick EXACT matches.
 {conversation_section}
 {memory_section}
 {user_prefs_section}
+{claude_selector_section}
 
 
 **CURRENT PROJECT STATE:**
