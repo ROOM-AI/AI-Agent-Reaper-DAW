@@ -4700,6 +4700,17 @@ When user says "add Waves distortion", search for: Manny M, Kramer Tape, J37 Tap
 - "show spectrum" → Use analyzer/visualizer (NOT an EQ)
 
 **CUSTOM COMMANDS (use these for plugins and automation):**
+
+**🚨 CRITICAL: TRACK INDEX CONVERSION 🚨**
+- State shows **1-based track numbers**: "Track 1", "Track 2", "Track 3" (matches UI)
+- Commands require **0-based indices**: trackIdx 0, 1, 2 (API requirement)
+- **YOU MUST SUBTRACT 1**: User says "Track 3" → State shows "--- Track 3: ..." → Command uses trackIdx=2
+- **EXAMPLES:**
+  * User: "automation on track 3" → State: "--- Track 3: Vocals ---" → Command: `VOL_DIP 2 10.0 15.0 0.5`
+  * User: "add reverb to track 1" → State: "--- Track 1: Drums ---" → Command: `ADD_FX 0 Reverb`
+  * User: "select track 2" → State: "--- Track 2: Bass ---" → Command: `SELECT_TRACK 1`
+- **ALWAYS SUBTRACT 1 FROM STATE TRACK NUMBER WHEN GENERATING COMMANDS!**
+
 - SELECT_TRACK <trackIdx> - Select track (REQUIRED before track actions!)
 - VOL_DIP <trackIdx> <tStart> <tEnd> <value0-1> - INSERTS 4 automation points (does NOT remove existing!)
   * CRITICAL: If automation already exists, use CLEAR_AUTOMATION first or you'll get overlapping points
@@ -6701,7 +6712,24 @@ Recommendations: {', '.join(analysis.get('recommendations', [])) if analysis.get
         if any(word in user_input.lower() for word in ['duplicate', 'copy', 'render', 'freeze']):
             time.sleep(0.3)  # 300ms for Reaper to update state
         
-        final_state = get_reaper_state()
+        # Poll until state actually changes (don't verify stale state)
+        max_wait = 5.0  # 5 second timeout
+        poll_interval = 0.3  # Check every 300ms
+        start_time = time.time()
+        final_state = initial_state
+        state_changed = False
+        
+        while time.time() - start_time < max_wait:
+            final_state = get_reaper_state()
+            if final_state != initial_state:
+                state_changed = True
+                wait_duration = time.time() - start_time
+                print(f"✅ State updated after {wait_duration:.1f}s")
+                break
+            time.sleep(poll_interval)
+        
+        if not state_changed:
+            print(f"⚠️ State didn't update within {max_wait}s - verifying anyway")
         
         # Quick check: Did state change at all?
         if initial_state == final_state:
