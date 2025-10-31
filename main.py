@@ -249,10 +249,15 @@ def _state_provider(session_id: str) -> str:
     # Try current state; if missing/stale, request and wait briefly
     def _to_text(st: Dict[str, Any]) -> str:
         if isinstance(st, dict) and isinstance(st.get("state_text"), str):
-            return st["state_text"]
+            text = st["state_text"]
+            print(f"[STATE_PROVIDER] Returning state_text: {len(text)} chars, first 200: {text[:200]}")
+            return text
         try:
-            return json.dumps(st) if st else ""
+            result = json.dumps(st) if st else ""
+            print(f"[STATE_PROVIDER] Returning JSON: {len(result)} chars")
+            return result
         except Exception:
+            print(f"[STATE_PROVIDER] Returning empty (exception)")
             return ""
 
     now = time.time()
@@ -260,21 +265,28 @@ def _state_provider(session_id: str) -> str:
     last_ts = 0.0
     if isinstance(st, dict):
         last_ts = float(st.get("_server_received_ts", 0.0))
+    
+    print(f"[STATE_PROVIDER] session={session_id}, now={now:.2f}, last_ts={last_ts:.2f}, diff={now-last_ts:.2f}s")
 
-    # If no state yet or older than ~1.5s, request a fresh one and wait up to 2s
-    if not st or (now - last_ts) > 1.5:
+    # Always request fresh state for verification (ensures we never read stale state)
+    if not st or (now - last_ts) > 0:
         if session_id not in REAPER_SESSIONS:
             REAPER_SESSIONS[session_id] = []
         REAPER_SESSIONS[session_id].append("GET_STATE")
         add_event("state_requested", {"via": "provider", "session_id": session_id}, session_id=session_id)
+        print(f"[STATE_PROVIDER] Requesting fresh state, waiting up to 2s...")
         deadline = now + 2.0
         while time.time() < deadline:
             st2 = REAPER_STATE.get(session_id, {})
             if isinstance(st2, dict) and float(st2.get("_server_received_ts", 0.0)) > last_ts:
+                new_ts = float(st2.get("_server_received_ts", 0.0))
+                print(f"[STATE_PROVIDER] Got fresh state! new_ts={new_ts:.2f}, waited {time.time()-now:.2f}s")
                 return _to_text(st2)
             time.sleep(0.1)
         # Timeout: return whatever we have
+        print(f"[STATE_PROVIDER] Timeout after 2s, returning cached state")
         return _to_text(st)
+    print(f"[STATE_PROVIDER] Returning cached state (not stale)")
     return _to_text(st)
 
 def _command_sink(commands, session_id: str) -> bool:
@@ -387,6 +399,27 @@ def debug_actions():
         }
     except Exception as e:
         return {"error": str(e)}
+
+@app.get("/debug/state")
+def debug_state(session_id: str = "demo"):
+    """View current stored state for debugging verification issues"""
+    st = REAPER_STATE.get(session_id, {})
+    if not st:
+        return {"error": "No state found", "session_id": session_id}
+    
+    state_text = st.get("state_text", "")
+    server_ts = st.get("_server_received_ts", 0.0)
+    age = time.time() - server_ts if server_ts else 999
+    
+    return {
+        "session_id": session_id,
+        "state_age_seconds": round(age, 2),
+        "state_length_chars": len(state_text),
+        "state_preview": state_text[:500] if state_text else "(no state_text)",
+        "full_state_first_1000": state_text[:1000] if state_text else "(no state_text)",
+        "server_received_ts": server_ts,
+        "all_keys": list(st.keys())
+    }
 
 # -------------------- Static UI for investors --------------------
 @app.get("/", response_class=HTMLResponse)
