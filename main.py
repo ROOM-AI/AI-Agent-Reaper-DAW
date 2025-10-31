@@ -4,6 +4,7 @@ from typing import Optional, Dict, Any, List
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
@@ -16,6 +17,9 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
 )
+
+# Mount static files
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 API_KEY = os.getenv("AGENT_API_KEY", "")  # set this on Railway
 
@@ -437,9 +441,6 @@ def debug_state(session_id: str = "demo"):
     }
 
 # -------------------- Static UI --------------------
-from fastapi.staticfiles import StaticFiles
-app.mount("/static", StaticFiles(directory="static"), name="static")
-
 @app.get("/", response_class=HTMLResponse)
 async def root():
     # Serve static/index.html
