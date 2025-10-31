@@ -317,7 +317,10 @@ def _memory_save(session_id: str, data: Dict[str, Any]) -> bool:
 def _ensure_agent_loaded():
     global agent
     if agent is None:
-        import ai_agent_reaper_final as _agent  # delayed import
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("local_agent", "local agent.py")
+        _agent = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_agent)
         _agent.set_cloud_hooks(
             state_provider=_state_provider,
             command_sink=_command_sink,
