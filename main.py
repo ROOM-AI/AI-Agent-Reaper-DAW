@@ -144,6 +144,18 @@ def api_chat(body: ChatIn):
         return {"reply": f"❌ Error: {str(e)}\n\n{error_output}", "plan": plan, "status": "error"}
 
 # -------------------- Chat (RAW) → real agent, no enhancer --------------------
+@app.post("/api/enhance")
+def api_enhance(body: ChatIn):
+    """Enhance a vague prompt without executing"""
+    try:
+        from prompt_enhancer import enhance_prompt
+        reaper_state = REAPER_STATE.get(body.session_id, {})
+        state_str = json.dumps(reaper_state) if reaper_state else ""
+        enhanced = enhance_prompt(body.text, state_str)
+        return {"original": body.text, "enhanced": enhanced}
+    except Exception as e:
+        return {"error": str(e), "enhanced": body.text}
+
 @app.post("/api/chat_raw")
 def api_chat_raw(body: ChatIn):
     import io
@@ -466,9 +478,12 @@ async def root():
                 <h3>Chat</h3>
                 <div class="messages" id="messages"></div>
                 <div class="input-group">
-                    <textarea id="messageInput" placeholder="Type your message... (add /e to enhance vague prompts)" rows="3"></textarea>
-                    <button onclick="sendMessage()">Send</button>
-                    <button onclick="syncState()" style="margin-left:8px;background:#6c757d">Sync state</button>
+                    <textarea id="messageInput" placeholder="Type your message..." rows="3"></textarea>
+                    <div style="display: flex; gap: 8px;">
+                        <button onclick="sendMessage()" style="flex: 2;">Send</button>
+                        <button onclick="enhancePrompt()" style="flex: 1; background:#ff9800;">✨ Enhance</button>
+                        <button onclick="syncState()" style="flex: 1; background:#6c757d;">Sync state</button>
+                    </div>
                 </div>
             </div>
             
@@ -532,17 +547,7 @@ async def root():
             let message = input.value.trim();
             if (!message) return;
             
-            // Check if user wants prompt enhancement (ends with /e)
-            const useEnhancer = message.endsWith('/e') || message.endsWith(' /e');
-            let displayMessage = message;
-            
-            if (useEnhancer) {
-                // Remove /e flag
-                message = message.replace(/\s*\/e\s*$/, '').trim();
-                displayMessage = message + ' ✨ (enhancing)';
-            }
-            
-            addMessage(displayMessage, 'user');
+            addMessage(message, 'user');
             input.value = '';
             
             if (!isConnected) {
@@ -551,10 +556,8 @@ async def root():
             }
             
             try {
-                // Use /api/chat (with enhancer) if /e flag, otherwise /api/chat_raw
-                const endpoint = useEnhancer ? '/api/chat' : '/api/chat_raw';
-                
-                const response = await fetch(endpoint, {
+                // Always use raw endpoint (user can enhance with button if needed)
+                const response = await fetch('/api/chat_raw', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ session_id: 'demo', text: message })
@@ -572,15 +575,50 @@ async def root():
                         addMessage('Queued ' + (data.plan?.steps?.length || 0) + ' steps', 'agent');
                     }
                     
-                    const eventMsg = useEnhancer ? 
-                        'Enhanced: ' + message + ' → ' + (data.plan?.steps?.length || 0) + ' commands' :
-                        'Message sent: ' + message + ' → ' + (data.plan?.steps?.length || 0) + ' commands';
-                    addEvent(eventMsg);
+                    addEvent('Message sent → ' + (data.plan?.steps?.length || 0) + ' commands');
                 } else {
                     addMessage('Error: ' + response.status, 'agent');
                 }
             } catch (error) {
                 addMessage('Network error: ' + error.message, 'agent');
+            }
+        }
+
+        async function enhancePrompt() {
+            const input = document.getElementById('messageInput');
+            const message = input.value.trim();
+            if (!message) {
+                addEvent('⚠️ Enter a message first');
+                return;
+            }
+            
+            if (!isConnected) {
+                addEvent('⚠️ Not connected to server');
+                return;
+            }
+            
+            addEvent('✨ Enhancing prompt...');
+            
+            try {
+                const response = await fetch('/api/enhance', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: 'demo', text: message })
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.enhanced) {
+                        input.value = data.enhanced;
+                        addEvent('✅ Prompt enhanced! Review and click Send');
+                    } else if (data.error) {
+                        addEvent('❌ Enhancement failed: ' + data.error);
+                    }
+                } else {
+                    addEvent('❌ Enhancement failed: ' + response.status);
+                }
+            } catch (error) {
+                addEvent('❌ Enhancement error: ' + error.message);
             }
         }
 
