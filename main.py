@@ -436,10 +436,19 @@ def debug_state(session_id: str = "demo"):
         "all_keys": list(st.keys())
     }
 
-# -------------------- Static UI for investors --------------------
+# -------------------- Static UI --------------------
+from fastapi.staticfiles import StaticFiles
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
 @app.get("/", response_class=HTMLResponse)
 async def root():
-    return HTMLResponse(content="""
+    # Serve static/index.html
+    try:
+        with open("static/index.html", "r") as f:
+            return HTMLResponse(content=f.read())
+    except FileNotFoundError:
+        # Fallback to embedded HTML if static file missing
+        return HTMLResponse(content="""
 <!DOCTYPE html>
 <html>
 <head>

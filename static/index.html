@@ -15,6 +15,7 @@
 </div>
 <div class="row">
   <input id="msg" placeholder="Tell the agent what to do…" style="flex:1">
+  <button onclick="enhance()" style="background:#ff9800">Enhance</button>
   <button onclick="send()">Send</button>
 </div>
 <div id="log"></div>
@@ -57,4 +58,27 @@ async function tick(){
 tick();
 
 msg.addEventListener('keypress', e => { if(e.key === 'Enter') send(); });
+
+async function enhance(){
+  const session_id = sid.value.trim() || "demo";
+  const text = msg.value.trim();
+  if(!text){ line('⚠ enter a prompt before enhancing'); return; }
+  try{
+    const r = await fetch('/api/enhance', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({session_id, text})
+    });
+    if(!r.ok){ line(`ENHANCE HTTP ${r.status}`); return; }
+    const j = await r.json();
+    if(j.error){ line(`ENHANCE ERR: ${j.error}`); return; }
+    if(j.enhanced){
+      msg.value = j.enhanced;
+      line('✨ Prompt enhanced. Review then hit Send.');
+    }else{
+      line('⚠ enhancer returned no update');
+    }
+  }catch(e){
+    line('ENHANCE EXC: ' + e);
+  }
+}
 </script>
