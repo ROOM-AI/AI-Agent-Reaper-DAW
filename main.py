@@ -3,8 +3,7 @@ from collections import defaultdict, deque
 from typing import Optional, Dict, Any, List
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, FileResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
@@ -17,9 +16,6 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
 )
-
-# Mount static files
-app.mount("/static", StaticFiles(directory="static"), name="static")
 
 API_KEY = os.getenv("AGENT_API_KEY", "")  # set this on Railway
 
@@ -150,15 +146,15 @@ def api_chat(body: ChatIn):
 # -------------------- Chat (RAW) → real agent, no enhancer --------------------
 @app.post("/api/enhance")
 def api_enhance(body: ChatIn):
-    """Enhance a vague prompt without executing"""
+    """Enhance a vague prompt to be specific/technical (no execution)"""
     try:
         from prompt_enhancer import enhance_prompt
         reaper_state = REAPER_STATE.get(body.session_id, {})
         state_str = json.dumps(reaper_state) if reaper_state else ""
         enhanced = enhance_prompt(body.text, state_str)
-        return {"original": body.text, "enhanced": enhanced}
+        return {"original": body.text, "enhanced": enhanced, "status": "success"}
     except Exception as e:
-        return {"error": str(e), "enhanced": body.text}
+        return {"original": body.text, "enhanced": body.text, "status": "error", "error": str(e)}
 
 @app.post("/api/chat_raw")
 def api_chat_raw(body: ChatIn):
@@ -334,7 +330,7 @@ def _ensure_agent_loaded():
     global agent
     if agent is None:
         import importlib.util
-        spec = importlib.util.spec_from_file_location("local_agent", "local_agent.py")
+        spec = importlib.util.spec_from_file_location("local_agent", "local agent.py")
         _agent = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(_agent)
         _agent.set_cloud_hooks(
@@ -440,10 +436,223 @@ def debug_state(session_id: str = "demo"):
         "all_keys": list(st.keys())
     }
 
-# -------------------- Static UI --------------------
-@app.get("/")
+# -------------------- Static UI for investors --------------------
+@app.get("/", response_class=HTMLResponse)
 async def root():
-    return FileResponse("static/index.html")
+    return HTMLResponse(content="""
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CursorDAW Cloud</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background: #1a1a1a; color: #fff; }
+        .container { max-width: 1000px; margin: 0 auto; }
+        .header { text-align: center; margin-bottom: 30px; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .card { background: #2a2a2a; border: 1px solid #444; border-radius: 8px; padding: 20px; }
+        .input-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; color: #ccc; }
+        input, textarea, button { 
+            width: 100%; padding: 10px; border: 1px solid #555; border-radius: 4px; 
+            background: #333; color: #fff; margin-bottom: 10px;
+        }
+        button { background: #007bff; border: none; cursor: pointer; }
+        button:hover { background: #0056b3; }
+        .button-row { display: flex; gap: 8px; }
+        .button-row button { width: auto; flex: 1; }
+        .enhance-btn { background: #ff9800 !important; }
+        .enhance-btn:hover { background: #e68900 !important; }
+        .sync-btn { background: #6c757d !important; }
+        .sync-btn:hover { background: #5a6268 !important; }
+        .status { text-align: center; padding: 10px; background: #333; border-radius: 4px; margin-bottom: 20px; }
+        .messages { height: 500px; overflow-y: auto; border: 1px solid #555; padding: 10px; background: #222; }
+        .message { margin-bottom: 10px; padding: 12px; border-radius: 4px; }
+        .user { background: #007bff; }
+        .agent { background: #28a745; max-width: 100%; overflow-x: auto; }
+        .events { height: 300px; overflow-y: auto; border: 1px solid #555; padding: 10px; background: #222; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎵 CursorDAW Cloud</h1>
+            <div class="status" id="status">Connecting...</div>
+        </div>
+        
+        <div class="grid">
+            <div class="card">
+                <h3>Chat</h3>
+                <div class="messages" id="messages"></div>
+                <div class="input-group">
+                    <textarea id="messageInput" placeholder="Type your message..." rows="3"></textarea>
+                    <div class="button-row">
+                        <button onclick="sendMessage()">Send</button>
+                        <button class="enhance-btn" onclick="enhancePrompt()">✨ Enhance</button>
+                        <button class="sync-btn" onclick="syncState()">Sync State</button>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="card">
+                <h3>Events</h3>
+                <div class="events" id="events"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let isConnected = false;
+        
+        function updateStatus(message, connected = false) {
+            document.getElementById('status').textContent = message;
+            isConnected = connected;
+        }
+        
+        function addMessage(text, type = 'user') {
+            const messagesDiv = document.getElementById('messages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message ' + type;
+            
+            // Use pre tag to preserve formatting/line breaks
+            const preElement = document.createElement('pre');
+            preElement.style.whiteSpace = 'pre-wrap';
+            preElement.style.margin = '0';
+            preElement.style.fontFamily = 'inherit';
+            preElement.style.fontSize = '14px';
+            preElement.textContent = text;
+            
+            messageDiv.appendChild(preElement);
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+        
+        function addEvent(text) {
+            const eventsDiv = document.getElementById('events');
+            const eventDiv = document.createElement('div');
+            eventDiv.textContent = new Date().toLocaleTimeString() + ': ' + text;
+            eventsDiv.appendChild(eventDiv);
+            eventsDiv.scrollTop = eventsDiv.scrollHeight;
+        }
+        
+        async function checkConnection() {
+            try {
+                const response = await fetch('/health');
+                if (response.ok) {
+                    const data = await response.json();
+                    updateStatus('Connected - ' + new Date(data.ts * 1000).toLocaleTimeString(), true);
+                    return true;
+                }
+            } catch (error) {
+                updateStatus('Disconnected', false);
+            }
+            return false;
+        }
+        
+        async function sendMessage() {
+            const input = document.getElementById('messageInput');
+            let message = input.value.trim();
+            if (!message) return;
+            
+            addMessage(message, 'user');
+            input.value = '';
+            
+            if (!isConnected) {
+                addMessage('Not connected to server', 'agent');
+                return;
+            }
+            
+            try {
+                // Always use raw endpoint (enhancer is now a separate button)
+                const response = await fetch('/api/chat_raw', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: 'demo', text: message })
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    
+                    // Show the full agent output (all reasoning, logs, everything)
+                    if (data.full_output && data.full_output.trim()) {
+                        addMessage(data.full_output, 'agent');
+                    } else if (data.reply) {
+                        addMessage(data.reply, 'agent');
+                    } else {
+                        addMessage('Queued ' + (data.plan?.steps?.length || 0) + ' steps', 'agent');
+                    }
+                    
+                    addEvent('Message sent → ' + (data.plan?.steps?.length || 0) + ' commands');
+                } else {
+                    addMessage('Error: ' + response.status, 'agent');
+                }
+            } catch (error) {
+                addMessage('Network error: ' + error.message, 'agent');
+            }
+        }
+
+        async function enhancePrompt() {
+            const input = document.getElementById('messageInput');
+            const message = input.value.trim();
+            if (!message) {
+                addEvent('⚠️ Enter some text first');
+                return;
+            }
+            
+            try {
+                addEvent('✨ Enhancing prompt...');
+                const response = await fetch('/api/enhance', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: 'demo', text: message })
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.enhanced && data.enhanced !== message) {
+                        input.value = data.enhanced;
+                        addEvent('✅ Prompt enhanced! Review and click Send');
+                    } else {
+                        addEvent('💡 Prompt already specific enough');
+                    }
+                } else {
+                    addEvent('❌ Enhancement failed: ' + response.status);
+                }
+            } catch (error) {
+                addEvent('❌ Enhancement error: ' + error.message);
+            }
+        }
+
+        async function syncState() {
+            try {
+                const res = await fetch('/api/reaper/execute', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ command: 'GET_STATE', session_id: 'demo' })
+                });
+                if (res.ok) {
+                    addEvent('Forced state sync queued');
+                } else {
+                    addEvent('State sync failed: ' + res.status);
+                }
+            } catch (e) {
+                addEvent('State sync error: ' + e.message);
+            }
+        }
+        
+        // Check connection on load
+        checkConnection();
+        
+        // Enter key support
+        document.getElementById('messageInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+    </script>
+</body>
+</html>
+""", status_code=200)
 
 # Allow running directly (Cloud Run buildpacks or manual runs)
 if __name__ == "__main__":
