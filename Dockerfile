@@ -26,7 +26,6 @@ COPY reaper_actions.txt .
 COPY reaper_plugins_list.txt .
 COPY sound_knowledge_base.json .
 COPY action_index.json .
-COPY static/ ./static/
 
 # Expose port
 EXPOSE 8080
