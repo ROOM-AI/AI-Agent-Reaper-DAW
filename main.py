@@ -152,9 +152,17 @@ def api_enhance(body: ChatIn):
         reaper_state = REAPER_STATE.get(body.session_id, {})
         state_str = json.dumps(reaper_state) if reaper_state else ""
         enhanced = enhance_prompt(body.text, state_str)
+        
+        # Log for debugging
+        print(f"[ENHANCE] Original: {body.text[:100]}")
+        print(f"[ENHANCE] Enhanced: {enhanced[:100]}")
+        
         return {"original": body.text, "enhanced": enhanced, "status": "success"}
     except Exception as e:
-        return {"original": body.text, "enhanced": body.text, "status": "error", "error": str(e)}
+        print(f"[ENHANCE ERROR] {type(e).__name__}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {"original": body.text, "enhanced": body.text, "status": "error", "error": f"{type(e).__name__}: {str(e)}"}
 
 @app.post("/api/chat_raw")
 def api_chat_raw(body: ChatIn):
@@ -608,14 +616,25 @@ async def root():
                 
                 if (response.ok) {
                     const data = await response.json();
+                    
+                    // Check for error status from API
+                    if (data.status === 'error') {
+                        addEvent('❌ Enhancement failed: ' + (data.error || 'Unknown error'));
+                        console.error('Enhance error:', data);
+                        return;
+                    }
+                    
                     if (data.enhanced && data.enhanced !== message) {
                         input.value = data.enhanced;
                         addEvent('✅ Prompt enhanced! Review and click Send');
+                        // Log to console so user can see what changed
+                        console.log('Original:', message);
+                        console.log('Enhanced:', data.enhanced);
                     } else {
                         addEvent('💡 Prompt already specific enough');
                     }
                 } else {
-                    addEvent('❌ Enhancement failed: ' + response.status);
+                    addEvent('❌ Enhancement failed: HTTP ' + response.status);
                 }
             } catch (error) {
                 addEvent('❌ Enhancement error: ' + error.message);
