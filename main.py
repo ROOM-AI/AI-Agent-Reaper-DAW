@@ -484,6 +484,10 @@ async def root():
     <div class="container">
         <div class="header">
             <h1>🎵 CursorDAW Cloud</h1>
+            <div class="input-group">
+                <label>Session ID (from your bridge):</label>
+                <input type="text" id="sessionInput" placeholder="Enter session ID from bridge window..." value="demo">
+            </div>
             <div class="status" id="status">Connecting...</div>
         </div>
         
@@ -510,6 +514,23 @@ async def root():
 
     <script>
         let isConnected = false;
+        
+        // Load session ID from localStorage or default to 'demo'
+        window.onload = function() {
+            const savedSessionId = localStorage.getItem('sessionId') || 'demo';
+            document.getElementById('sessionInput').value = savedSessionId;
+        };
+        
+        // Save session ID whenever it changes
+        document.getElementById('sessionInput')?.addEventListener('change', function(e) {
+            const sessionId = e.target.value.trim();
+            localStorage.setItem('sessionId', sessionId);
+            addEvent('✓ Session ID saved: ' + sessionId);
+        });
+        
+        function getSessionId() {
+            return document.getElementById('sessionInput').value.trim() || 'demo';
+        }
         
         function updateStatus(message, connected = false) {
             document.getElementById('status').textContent = message;
@@ -574,7 +595,7 @@ async def root():
                 const response = await fetch('/api/chat_raw', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ session_id: 'demo', text: message })
+                    body: JSON.stringify({ session_id: getSessionId(), text: message })
                 });
                 
                 if (response.ok) {
@@ -611,7 +632,7 @@ async def root():
                 const response = await fetch('/api/enhance', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ session_id: 'demo', text: message })
+                    body: JSON.stringify({ session_id: getSessionId(), text: message })
                 });
                 
                 if (response.ok) {
@@ -646,7 +667,7 @@ async def root():
                 const res = await fetch('/api/reaper/execute', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ command: 'GET_STATE', session_id: 'demo' })
+                    body: JSON.stringify({ command: 'GET_STATE', session_id: getSessionId() })
                 });
                 if (res.ok) {
                     addEvent('Forced state sync queued');
