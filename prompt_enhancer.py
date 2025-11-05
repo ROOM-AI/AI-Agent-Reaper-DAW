@@ -72,43 +72,94 @@ Transform vague input into EXTREMELY DETAILED, COMPLETE technical specifications
 
 **BE PRECISE, NOT EXHAUSTIVE. Don't add details the user didn't ask for.**
 
-**PRODUCTION KNOWLEDGE (use these techniques):**
+**PRODUCTION KNOWLEDGE (REAL TECHNIQUES):**
 
-**Vocal Processing:**
-- Air/presence: Boost 8-12kHz shelf +2dB
-- De-mudding: Cut 200-400Hz by 3-6dB  
-- Brightness: High shelf at 6kHz +2dB
-- Telephone effect: Band-pass 300-3000Hz
-- Underwater: Low-pass at 800-1200Hz with steep slope
-- Auto-tune: Add Antares or Waves Tune, set to 0-50% (0=off, 50=noticeable, 100=T-Pain)
+**UNDERSTANDING USER INTENT (what they REALLY mean):**
+- "Underwater" = HEAVY high-cut at 800Hz-1200Hz, brickwall slope, muffled/distant
+- "Phone call" = NARROW band-pass 300-3000Hz, aggressive slopes, tinny/lo-fi
+- "Warm" = Cut highs slightly (8kHz -2dB), boost low-mids (200-400Hz +2dB)
+- "Bright/Airy" = Boost highs (10-12kHz shelf +3dB), maybe de-ess after
+- "Punchy" = Fast attack compression (1-5ms), boost 80-120Hz +2dB
+- "Smooth/Polished" = Gentle compression 3:1, cut harsh 3-4kHz by 2dB
+- "Aggressive/In-your-face" = Heavy compression 6:1, boost presence 2-5kHz
+- "Distant/Spacey" = Long reverb 3-5s, cut some highs, lower volume
+- "Intimate/Close" = Light compression, boost 5kHz presence, minimal reverb
+- "Thick/Full" = Boost low-mids 200-400Hz, saturation, parallel compression
 
-**Reverb (space/depth):**
-- Subtle: 1.2s decay, 15-25% mix
-- Medium: 2.5s decay, 30-40% mix  
-- Huge: 4-7s decay, 40-60% mix
-- Specific plugins: Valhalla Room, Valhalla VintageVerb
+**Vocal Processing (DETAILED):**
+- Air/presence: Boost 10-12kHz shelf +2-3dB (adds sparkle/clarity)
+- De-mudding: Cut 250-350Hz by 3-5dB (clears boxiness)
+- Brightness: High shelf at 8kHz +2dB (general brightness without harshness)
+- Harsh fix: Cut 2.5-4kHz by 2-4dB (removes nasal/harsh frequencies)
+- Body/warmth: Boost 200-400Hz +2-3dB (adds thickness)
+- Clarity/definition: Boost 3-5kHz +2dB (helps vocal cut through mix)
+- De-essing: Cut 6-8kHz by 4-6dB with narrow Q (removes sibilance)
+- Telephone: Band-pass 300-3000Hz, BRICKWALL slopes (lo-fi effect)
+- Underwater: Low-pass 800-1200Hz, BRICKWALL slope (heavy muffling)
+- Radio/AM: Band-pass 500-2500Hz, add slight distortion
+- Auto-tune: Subtle = 10-20% mix, Obvious = 60-80%, T-Pain = 100%
 
-**Compression (punch/control):**
-- Gentle: 2:1 ratio, -18dB threshold (starts working on louder parts)
-- Medium: 4:1 ratio, -15dB threshold (standard vocal/bus comp)
-- Aggressive: 6:1 ratio, -12dB threshold (heavy limiting)
-- DO NOT use -9dB or higher threshold (too aggressive, kills dynamics)
+**Reverb (REAL SETTINGS):**
+- Subtle/Tight: 1.0-1.5s decay, 15-20% mix, 20-30ms pre-delay (adds space without wash)
+- Medium/Natural: 2.0-2.8s decay, 25-35% mix, 30-50ms pre-delay (standard vocal reverb)
+- Large/Spacious: 3.5-5.0s decay, 35-50% mix, 50-80ms pre-delay (big room, atmospheric)
+- Huge/Ambient: 5-8s decay, 45-60% mix, 80-120ms pre-delay (massive space, dreamy)
+- Intimate/Close: 0.8-1.2s decay, 10-15% mix, minimal pre-delay (barely there, natural)
+- Pre-delay tip: Separates vocal from reverb tail, keeps clarity (30-80ms sweet spot)
+- High-pass reverb at 200-300Hz to avoid muddiness
+- Plugins: Valhalla Room (natural), Valhalla VintageVerb (character), Raum (modern)
 
-**Delay:**
-- Slapback: 80-120ms, 20% mix
-- Quarter note: 375ms (at 120BPM), 30% mix
-- Half note: 750ms, 40% mix
+**Compression (REAL SETTINGS):**
+- Gentle/Transparent: 2:1 ratio, -18dB threshold, 30ms attack, 100ms release (glues, keeps dynamics)
+- Medium/Standard Vocal: 4:1 ratio, -15dB threshold, 10ms attack, 80ms release (controlled but natural)
+- Aggressive/Punchy: 6:1 ratio, -12dB threshold, 1-3ms attack, 50ms release (heavy control, upfront)
+- Bus/Glue Compression: 2:1-3:1 ratio, -20dB threshold, 30ms attack, auto release (subtle glue)
+- Parallel Compression: 8:1 ratio, -25dB threshold, 1ms attack, blend 30-50% (adds punch without losing dynamics)
+- NEVER use -9dB or higher threshold (destroys dynamics, sounds squashed)
 
-**Bass/Low-end:**
-- Sub boost: Shelf at 60Hz +3dB
-- Punch: Boost 80-100Hz +2-4dB
-- Muddy fix: Cut 200-300Hz by 4-6dB
-- High-pass: 30-50Hz (remove rumble)
+**Delay (TEMPO-SYNCED):**
+- Slapback: 80-120ms, 20-30% mix, 1-2 repeats (adds thickness/width)
+- Short/Doubling: 30-50ms, 15-25% mix (creates width, almost chorus-like)
+- Quarter note: Sync to tempo (1/4), 25-35% mix, 4-6 repeats (rhythmic delay)
+- Dotted 8th: Sync to tempo (1/8D), 30-40% mix, 4-6 repeats (dance/pop delay)
+- Half note: Sync to tempo (1/2), 30-45% mix, 3-4 repeats (spacey, atmospheric)
+- Eighth note: Sync to tempo (1/8), 25-35% mix (fast rhythmic)
+- Ping-pong: Stereo delay, alternating L/R, 30-40% mix (wide stereo image)
+- High-pass delay feedback at 400-600Hz to avoid mud buildup
 
-**SAFE RANGES (never exceed):**
-- Volume: 0-90% (never 100%+, causes clipping)
-- Gain: -12dB to +6dB max
-- Mix: 0-80% (rarely go above)
+**Bass/Low-end (DETAILED):**
+- Sub boost: Shelf at 50-60Hz +3-4dB (adds weight, use sparingly)
+- Punch/Body: Boost 80-120Hz +3-5dB (main bass punch)
+- Clarity: Boost 200-400Hz +2dB or Cut 200-300Hz -3dB (depends on mix density)
+- Muddy fix: Cut 250-350Hz by 4-6dB (removes boxy/muddy bass)
+- High-pass vocals: 80-120Hz (removes low rumble, cleans up low end)
+- High-pass instruments: 30-50Hz (removes sub-rumble, tightens low end)
+- 808s/Sub bass: Boost 40-60Hz +4-6dB, cut everything below 30Hz
+- Kick drum punch: Boost 60-80Hz for body, boost 3-5kHz for beater click
+
+**GENRE-SPECIFIC TRICKS:**
+- R&B/Soul: Smooth compression 3:1, boost 200Hz warmth, long reverb 3-4s, de-ess hard
+- Pop: Bright (10kHz +3dB), tight compression 4:1, short reverb 1.5-2s, clarity boost 3-5kHz
+- Hip-Hop: Punchy compression 6:1, boost presence 4-6kHz, minimal reverb, parallel compression
+- Indie/Bedroom: Lo-fi (cut highs 8kHz), add saturation, room reverb 2s, slightly muddy mix
+- EDM/Dance: Heavy compression 8:1, bright (+12kHz shelf), sidechain everything to kick
+
+**SATURATION/WARMTH:**
+- Tape saturation: Adds warmth, softens transients, glues mix (use 20-40% mix)
+- Tube saturation: Adds harmonic richness, smooths harsh frequencies (subtle, 15-30%)
+- Analog warmth: Cut harsh 3kHz -2dB, boost 200Hz +2dB, add slight saturation
+
+**STEREO WIDTH:**
+- Haas effect: Delay one side 10-30ms (creates width but check mono compatibility)
+- Stereo widener: Use sparingly on highs only (above 300Hz)
+- Double-track vocals: Pan hard L/R for huge width (chorus/hook sections)
+- Mid-side EQ: Boost sides at 8-12kHz for air, keep low-end centered
+
+**SAFE RANGES (NEVER EXCEED):**
+- Volume automation: 0-90% MAX (100%+ = clipping/distortion)
+- Gain staging: -12dB to +6dB max (keep headroom)
+- Effect mix levels: 0-70% typical, 80% absolute max (except parallel compression)
+- Compression threshold: -24dB to -9dB range (lower = gentler, higher = aggressive)
 
 **EXAMPLES:**
 
