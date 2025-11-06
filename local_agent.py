@@ -107,17 +107,20 @@ CLAP_AVAILABLE = False
 # MERT removed - using pure librosa analysis instead
 MERT_AVAILABLE = False
 
-# Initialize API clients (require env vars)
-def _require_env(var_name: str) -> str:
-    value = os.getenv(var_name)
-    if not value:
-        raise RuntimeError(f"Environment variable '{var_name}' is required but not set.")
-    return value
+# Initialize API clients (with fallback for local testing)
+anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+openai_key = os.getenv("OPENAI_API_KEY")
 
-client = Anthropic(api_key=_require_env("ANTHROPIC_API_KEY"))
+if not anthropic_key:
+    print("⚠️ ANTHROPIC_API_KEY not set - agent features will be limited")
+    anthropic_key = "dummy-key-for-local-testing"  # This will fail API calls but won't crash startup
 
-# Initialize OpenAI for Whisper
-openai_client = OpenAI(api_key=_require_env("OPENAI_API_KEY"))
+if not openai_key:
+    print("⚠️ OPENAI_API_KEY not set - Whisper features will be limited")
+    openai_key = "dummy-key-for-local-testing"  # This will fail API calls but won't crash startup
+
+client = Anthropic(api_key=anthropic_key)
+openai_client = OpenAI(api_key=openai_key)
 
 # Parameter conversion helpers
 def db_to_normalized(target_db, min_db=-30, max_db=30):
