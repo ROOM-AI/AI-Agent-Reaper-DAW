@@ -4109,16 +4109,15 @@ DECISION PIPELINE (FOLLOW IN ORDER, NO SKIPPING)
 
 2) STATE READ (What's already there?)
    - Check CURRENT STATE for:
-     • Track numbers: STATE shows "Track 1", "Track 2", "Track 3" etc. Use these EXACT numbers in commands (1-based).
      • Existing automation on the same target (esp. Volume).
      • Existing FX that satisfy requested category (EQ, comp, reverb, distortion, analyzer).
      • Plugin indices (fxIdx) and parameter indices (paramIdx). Do not guess; use what's shown.
    - If the goal is already met exactly → set already_complete=true and return empty steps.
 
 3) CONFLICT NEUTRALIZATION (MANDATORY WHEN APPLICABLE)
-   - Automation: CLEAR_AUTOMATION <trackNum> Volume → then create the new automation.
+   - Automation: CLEAR_AUTOMATION <trackIdx> Volume → then create the new automation.
    - Tonal conflicts: remove/disable the precise band or FX that blocks the goal, or retune its parameter to stop the conflict, then proceed.
-   - UI-only toggles don’t count as neutralization; you must actually remove the conflicting state.
+   - UI-only toggles don't count as neutralization; you must actually remove the conflicting state.
 
 4) IMPLEMENTATION STRATEGY (Minimal, Specific, Deterministic)
    - Prefer modifying existing FX over adding duplicates.
@@ -4152,26 +4151,26 @@ DECISION PIPELINE (FOLLOW IN ORDER, NO SKIPPING)
    - Never add the same plugin again on retry—configure the existing instance.
 
 7) AMBIGUITY (Fail-Closed)
-   - If an essential detail (track number, time range, target value) is missing and cannot be deduced from STATE:
+   - If an essential detail (track, time range, target value) is missing and cannot be deduced from STATE:
      → Set already_complete=false, and in "reasoning" name the single missing detail. Return steps=[].
    - Do not invent timestamps, values, or tracks.
 
 ===============================================================================
 COMMANDS YOU MAY EMIT (use exact strings; examples shown)
 ===============================================================================
-NOTE: <trackNum> is 1-BASED, matching what STATE shows (Track 1, Track 2, Track 3, etc.)
+<trackIdx> = track number minus 1 (Track 3 → use 2)
 
-- SELECT_TRACK <trackNum>
-- CLEAR_AUTOMATION <trackNum> Volume
-- VOL_DIP <trackNum> <tStart> <tEnd> <value0-1>        # inserts 4 points
-- SET_TRACK_VOL <trackNum> <volumeDB>
-- ADD_FX <trackNum> <ExactPluginNameFromList>
-- REMOVE_FX <trackNum> <fxIdx>
-- SET_FX_PARAM <trackNum> <fxIdx> <paramIdx> <value0-1>
-- FX_PARAM_AUTO <trackNum> <fxIdx> <paramIdx> <tStart> <tEnd> <startValue> <endValue>
-- GET_LYRICS <trackNum>
-- ANALYZE_TRACK <trackNum>                              # ONLY if analysis not already included above
-- APPLY_FROM_JSON <trackNum> [jsonPath]
+- SELECT_TRACK <trackIdx>
+- CLEAR_AUTOMATION <trackIdx> Volume
+- VOL_DIP <trackIdx> <tStart> <tEnd> <value0-1>        # inserts 4 points
+- SET_TRACK_VOL <trackIdx> <volumeDB>
+- ADD_FX <trackIdx> <ExactPluginNameFromList>
+- REMOVE_FX <trackIdx> <fxIdx>
+- SET_FX_PARAM <trackIdx> <fxIdx> <paramIdx> <value0-1>
+- FX_PARAM_AUTO <trackIdx> <fxIdx> <paramIdx> <tStart> <tEnd> <startValue> <endValue>
+- GET_LYRICS <trackIdx>
+- ANALYZE_TRACK <trackIdx>                              # ONLY if analysis not already included above
+- APPLY_FROM_JSON <trackIdx> [jsonPath]
 - GOTO <seconds>
 
 Notes:
@@ -4938,6 +4937,7 @@ Recommendations: {', '.join(analysis.get('recommendations', [])) if analysis.get
     reasoning = ""  # Initialize reasoning variable
     
     while retry_count < max_retries:
+        feedback = ""  # Initialize feedback at start of each retry iteration
         if retry_count == 0:
             print(f"\n🧠 Planning actions...")
         else:

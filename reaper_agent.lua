@@ -245,6 +245,70 @@ function process_command(line)
         return
     end
     
+    -- List all available plugins (Reaper stock only for demos)
+    if cmd == "LIST_PLUGINS" then
+        local plugins = {}
+        local i = 0
+        while true do
+            local ret, name = reaper.EnumInstalledFX(i)
+            if not ret then break end
+            -- Filter to only Reaper/Cockos/JS plugins
+            local nameLower = name:lower()
+            if nameLower:find("cockos") or nameLower:find("reaper") or nameLower:find("reacomp") or 
+               nameLower:find("reaeq") or nameLower:find("reagate") or nameLower:find("js:") then
+                table.insert(plugins, name)
+            end
+            i = i + 1
+        end
+        
+        local file = io.open(STATE_FILE, "w")
+        if file then
+            file:write("=== AVAILABLE PLUGINS (Reaper Stock) ===\n")
+            file:write(string.format("Total: %d plugins\n\n", #plugins))
+            for idx, name in ipairs(plugins) do
+                file:write(string.format("[%d] %s\n", idx, name))
+            end
+            file:close()
+        end
+        
+        msg(string.format("📋 Listed %d Reaper stock plugins to state file", #plugins))
+        add_feedback(string.format("✓ Listed %d Reaper stock plugins", #plugins))
+        return
+    end
+    
+    -- Search for plugins by name (Reaper stock only for demos)
+    if cmd == "SEARCH_PLUGIN" then
+        local searchTerm = table.concat(parts, " ", 2):lower()
+        local matches = {}
+        local i = 0
+        while true do
+            local ret, name = reaper.EnumInstalledFX(i)
+            if not ret then break end
+            local nameLower = name:lower()
+            -- Filter to only Reaper/Cockos/JS plugins
+            if (nameLower:find("cockos") or nameLower:find("reaper") or nameLower:find("reacomp") or 
+                nameLower:find("reaeq") or nameLower:find("reagate") or nameLower:find("js:")) and
+               nameLower:find(searchTerm, 1, true) then
+                table.insert(matches, name)
+            end
+            i = i + 1
+        end
+        
+        local file = io.open(STATE_FILE, "w")
+        if file then
+            file:write(string.format("=== SEARCH RESULTS (Reaper Stock): '%s' ===\n", searchTerm))
+            file:write(string.format("Found: %d matches\n\n", #matches))
+            for idx, name in ipairs(matches) do
+                file:write(string.format("[%d] %s\n", idx, name))
+            end
+            file:close()
+        end
+        
+        msg(string.format("🔍 Found %d Reaper stock plugins matching '%s'", #matches, searchTerm))
+        add_feedback(string.format("✓ Found %d Reaper stock plugins matching '%s'", #matches, searchTerm))
+        return
+    end
+    
     -- Check if cmd is a numeric action ID
     local actionID = tonumber(cmd)
     if actionID then
@@ -256,7 +320,7 @@ function process_command(line)
     
     -- Custom parametric commands below
     if cmd == "VOL_DIP" then
-        -- VOL_DIP <trackIdx> <tStart> <tEnd> <value>
+        -- VOL_DIP <trackIdx0Based> <tStart> <tEnd> <value>
         local trackIdx = tonumber(parts[2]) or 0
         local tStart = tonumber(parts[3]) or 16
         local tEnd = tonumber(parts[4]) or 32
@@ -264,7 +328,7 @@ function process_command(line)
         
         local track = reaper.GetTrack(0, trackIdx)
         if not track then
-            execute_with_feedback("VOL_DIP", false, string.format("Track %d not found", trackIdx))
+            execute_with_feedback("VOL_DIP", false, string.format("Track index %d not found", trackIdx))
             return
         end
         
@@ -292,7 +356,7 @@ function process_command(line)
         end
         
     elseif cmd == "SET_TRACK_PAN" then
-        -- SET_TRACK_PAN <trackIdx> <panValue>
+        -- SET_TRACK_PAN <trackIdx0Based> <panValue>
         local trackIdx = tonumber(parts[2]) or 0
         local panValue = tonumber(parts[3]) or 0.0  -- -1.0 (left) to 1.0 (right)
         
@@ -301,13 +365,13 @@ function process_command(line)
             -- Select track first (required for some operations)
             reaper.SetOnlyTrackSelected(track)
             reaper.SetMediaTrackInfo_Value(track, "D_PAN", panValue)
-            execute_with_feedback("SET_TRACK_PAN", true, string.format("Track %d pan: %.0f%%", trackIdx, panValue*100))
+            execute_with_feedback("SET_TRACK_PAN", true, string.format("Track index %d pan: %.0f%%", trackIdx, panValue*100))
         else
-            execute_with_feedback("SET_TRACK_PAN", false, string.format("Track %d not found", trackIdx))
+            execute_with_feedback("SET_TRACK_PAN", false, string.format("Track index %d not found", trackIdx))
         end
         
     elseif cmd == "ADD_FX" then
-        -- ADD_FX <trackIdx> <fxName>
+        -- ADD_FX <trackIdx0Based> <fxName>
         local trackIdx = tonumber(parts[2]) or 0
         local fxName = table.concat(parts, " ", 3)
        
@@ -386,7 +450,7 @@ function process_command(line)
         end
         
     elseif cmd == "SET_FX_PARAM" then
-        -- SET_FX_PARAM <trackIdx> <fxIdx> <paramIdx> <value0-1>
+        -- SET_FX_PARAM <trackIdx0Based> <fxIdx> <paramIdx> <value0-1>
         local trackIdx = tonumber(parts[2]) or 0
         local fxIdx = tonumber(parts[3]) or 0
         local paramIdx = tonumber(parts[4]) or 0
@@ -411,7 +475,7 @@ function process_command(line)
         end
         
     elseif cmd == "REMOVE_FX" then
-        -- REMOVE_FX <trackIdx> <fxIdx>
+        -- REMOVE_FX <trackIdx0Based> <fxIdx>
         local trackIdx = tonumber(parts[2]) or 0
         local fxIdx = tonumber(parts[3]) or 0
         
@@ -432,9 +496,8 @@ function process_command(line)
         end
         
     elseif cmd == "SELECT_TRACK" then
-        -- SELECT_TRACK <trackNumber>  (treat input as 1-based; REAPER API is 0-based)
-        local trackNumber = tonumber(parts[2]) or 1
-        local idx0 = math.max(trackNumber - 1, 0)
+        -- SELECT_TRACK <trackIdx0Based>
+        local idx0 = tonumber(parts[2]) or 0
         
         -- Deselect all tracks first
         local numTracks = reaper.CountTracks(0)
@@ -450,13 +513,13 @@ function process_command(line)
             -- ALSO "touch" the track by setting volume to current volume (makes it "last touched")
             local currentVol = reaper.GetMediaTrackInfo_Value(track, "D_VOL")
             reaper.SetMediaTrackInfo_Value(track, "D_VOL", currentVol)
-            execute_with_feedback("SELECT_TRACK", true, string.format("Selected track %d", trackNumber))
+            execute_with_feedback("SELECT_TRACK", true, string.format("Selected track index %d", idx0))
         else
-            execute_with_feedback("SELECT_TRACK", false, string.format("Track %d not found", trackNumber))
+            execute_with_feedback("SELECT_TRACK", false, string.format("Track index %d not found", idx0))
         end
         
     elseif cmd == "SET_TRACK_VOL" then
-        -- SET_TRACK_VOL <trackIdx> <volumeDB>
+        -- SET_TRACK_VOL <trackIdx0Based> <volumeDB>
         local trackIdx = tonumber(parts[2]) or 0
         local volDB = tonumber(parts[3]) or 0
         
@@ -470,7 +533,7 @@ function process_command(line)
         end
         
     elseif cmd == "CLEAR_AUTOMATION" then
-        -- CLEAR_AUTOMATION <trackIdx> <envelopeName>
+        -- CLEAR_AUTOMATION <trackIdx0Based> <envelopeName>
         local trackIdx = tonumber(parts[2]) or 0
         local envName = parts[3] or "Volume"
         
@@ -503,7 +566,7 @@ function process_command(line)
         end
         
     elseif cmd == "FX_PARAM_AUTO" then
-        -- FX_PARAM_AUTO <trackIdx> <fxIdx> <paramIdx> <tStart> <tEnd> <startValue> <endValue>
+        -- FX_PARAM_AUTO <trackIdx0Based> <fxIdx> <paramIdx> <tStart> <tEnd> <startValue> <endValue>
         local trackIdx = tonumber(parts[2]) or 0
         local fxIdx = tonumber(parts[3]) or 0
         local paramIdx = tonumber(parts[4]) or 0
