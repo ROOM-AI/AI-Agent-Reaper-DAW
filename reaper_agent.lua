@@ -117,8 +117,8 @@ function export_state()
         local numFX = reaper.TrackFX_GetCount(track)
         local numItems = reaper.CountTrackMediaItems(track)
         
-        local displayIndex = i + 1  -- Use 1-based numbering for consistency with commands/UI
-        stateFile:write(string.format("\n--- Track %d: %s ---\n", displayIndex, trackName))
+        -- Use 0-based indexing to match Reaper API and command parameters
+        stateFile:write(string.format("\n--- Track %d: %s ---\n", i, trackName))
         stateFile:write(string.format("  Volume: %.1f dB (%.0f%%)\n", 20*math.log(volume, 10), volume*100))
         stateFile:write(string.format("  Pan: %.0f%%\n", pan*100))
         stateFile:write(string.format("  Mute: %s | Solo: %s | Selected: %s\n", 

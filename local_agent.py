@@ -851,21 +851,51 @@ def load_action_list():
     return known_actions
 
 def load_plugin_list():
-    """Load available plugins from Reaper"""
+    """Load available plugins from Reaper with robust path fallbacks"""
     plugins = []
-    try:
-        with open(r"C:\Users\moosb\AIAGENT DAW\reaper_plugins_list.txt", "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("===") or line in ["Video processor", "Container"]:
-                    continue
-                if line.startswith("ReWire:"):
-                    continue  # Skip ReWire entries
-                plugins.append(line)
-        log_debug(f"Loaded {len(plugins)} plugins")
-    except Exception as e:
-        log_debug(f"Plugin load error: {e}")
-    
+    used_path = None
+
+    env_override = os.getenv("REAPER_AGENT_PLUGIN_DB")
+    resource_path = os.getenv("REAPER_RESOURCE_PATH")
+    here = Path(__file__).resolve().parent
+
+    candidate_paths = [
+        env_override,
+        Path("reaper_plugins_list.txt"),
+        here / "reaper_plugins_list.txt",
+        Path.cwd() / "reaper_plugins_list.txt",
+        Path(r"C:\Users\moosb\AIAGENT DAW\reaper_plugins_list.txt"),
+    ]
+
+    if resource_path:
+        candidate_paths.append(Path(resource_path) / "reaper_plugins_list.txt")
+
+    for candidate in candidate_paths:
+        if not candidate:
+            continue
+        candidate_path = Path(candidate)
+        if candidate_path.is_file() and candidate_path.stat().st_size > 0:
+            try:
+                with open(candidate_path, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith("==="):
+                            continue
+                        if line in ("Video processor", "Container"):
+                            continue
+                        if line.startswith("ReWire:"):
+                            continue
+                        plugins.append(line)
+                used_path = candidate_path
+                break
+            except Exception as read_error:
+                log_debug(f"Plugin load error from {candidate_path}: {read_error}")
+
+    if plugins:
+        log_debug(f"Loaded {len(plugins)} plugins from {used_path}")
+    else:
+        log_debug("Plugin load warning: no plugins found in any known location")
+
     return plugins
 
 def analyze_lyrics(track_idx, track_name):
