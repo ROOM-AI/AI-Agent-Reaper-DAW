@@ -4922,8 +4922,8 @@ Recommendations: {', '.join(analysis.get('recommendations', [])) if analysis.get
     print(f"💪 Loaded {len(known_actions)} total actions")
     print(f"🎛️ Loaded {len(available_plugins)} available plugins")
     
-    # Retry loop (up to 20 attempts for complex parameter tuning - blind parameter mapping needs iterations)
-    max_retries = 20
+    # Retry loop (up to 6 attempts - if it's not working by then, it won't work)
+    max_retries = 6
     retry_count = 0
     previous_issues = ""
     previous_feedback = ""
@@ -5344,18 +5344,23 @@ Recommendations: {', '.join(analysis.get('recommendations', [])) if analysis.get
             # Count success indicators in feedback
             success_count = feedback.count('✅') + feedback.count('🎛️') + feedback.count('🎚️') + feedback.count('🗑️')
             failure_count = feedback.count('❌')
+            unknown_count = feedback.count('❓')
             
             # Check for specific automation success messages
-            automation_success = 'Automated' in feedback and 'mix:' in feedback
+            automation_success = ('VOL_DIP' in feedback and '✓' in feedback) or ('Automated' in feedback and 'mix:' in feedback)
             fx_added = 'Added FX' in feedback
+            cleared_automation = 'Cleared' in feedback and 'automation' in feedback
             
-            # If we see clear success indicators and no failures, we're done
-            if (success_count >= 2 and failure_count == 0) or (automation_success and fx_added):
+            # If we see clear success indicators and minimal/no failures, we're done
+            # Allow some unknown commands as long as the main task succeeded
+            if (success_count >= 2 and failure_count <= unknown_count) or (automation_success and failure_count == 0):
                 print(f"\n✅ SUCCESS: Reaper feedback confirms {success_count} successful operations")
                 if automation_success:
-                    print(f"   🎛️ Automation created on mix parameter")
+                    print(f"   🎛️ Volume automation created successfully")
                 if fx_added:
                     print(f"   🔌 Plugin added successfully")
+                if cleared_automation:
+                    print(f"   🗑️ Cleared existing automation")
                 if lyrics_results and lyrics_already_displayed:
                     print(f"   📝 Lyrics extracted ({len(lyrics_results[0]['lyrics'])} words)")
                 break  # Don't even run verification - feedback is truth

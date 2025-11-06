@@ -1,13 +1,49 @@
 -- Reaper Cloud Agent - File-based bridge (NO CMD, NO HTTP)
 -- Python bridge handles all cloud communication
 -- This script ONLY reads/writes local files
-
-local COMMAND_FILE = [[C:\Users\moosb\AIAGENT DAW\reaper_commands.txt]]
-local STATE_FILE = [[C:\Users\moosb\AIAGENT DAW\reaper_state.txt]]
-local FEEDBACK_FILE = [[C:\Users\moosb\AIAGENT DAW\reaper_feedback.txt]]
-local last_check = reaper.time_precise()
+-- AUTO-DETECTS your user directory!
 
 function msg(s) reaper.ShowConsoleMsg(tostring(s).."\n") end
+
+-- Auto-detect base directory
+local base_dir = ""
+if reaper.GetOS():match("Win") then
+    -- Windows: use USERPROFILE environment variable
+    local userprofile = os.getenv("USERPROFILE") or "C:\\Users\\Default"
+    base_dir = userprofile .. "\\AIAGENT DAW\\"
+else
+    -- Mac/Linux: use HOME environment variable
+    local home = os.getenv("HOME") or "/tmp"
+    base_dir = home .. "/AIAGENT DAW/"
+end
+
+-- Create directory if it doesn't exist
+function ensure_dir_exists(path)
+    local dir_path = path:gsub("[\\/]$", "")  -- Remove trailing slash/backslash
+    if reaper.GetOS():match("Win") then
+        os.execute('if not exist "' .. dir_path .. '" mkdir "' .. dir_path .. '" 2>nul')
+    else
+        os.execute('mkdir -p "' .. dir_path .. '" 2>/dev/null')
+    end
+end
+
+-- Ensure directory exists on startup
+ensure_dir_exists(base_dir)
+msg("📁 Using directory: " .. base_dir)
+
+local COMMAND_FILE = base_dir .. "reaper_commands.txt"
+local STATE_FILE = base_dir .. "reaper_state.txt"
+local FEEDBACK_FILE = base_dir .. "reaper_feedback.txt"
+local last_check = reaper.time_precise()
+
+-- Create empty files if they don't exist
+local function touch_file(filepath)
+    local f = io.open(filepath, "a")
+    if f then f:close() end
+end
+touch_file(COMMAND_FILE)
+touch_file(STATE_FILE)
+touch_file(FEEDBACK_FILE)
 
 -- Feedback buffer to report back to Python
 local feedback_buffer = {}
@@ -19,11 +55,11 @@ end
 function write_feedback()
     if #feedback_buffer > 0 then
         local file = io.open(FEEDBACK_FILE, "w")
-if file then
+        if file then
             for _, msg in ipairs(feedback_buffer) do
                 file:write(msg .. "\n")
             end
-    file:close()
+            file:close()
         end
         feedback_buffer = {}
     end
@@ -45,8 +81,13 @@ end
 
 function export_state()
     -- Export state to file (bridge will send to cloud)
+    ensure_dir_exists(base_dir)
     local stateFile = io.open(STATE_FILE, "w")
-    if not stateFile then return end
+    if not stateFile then 
+        msg("❌ ERROR: Cannot write to " .. STATE_FILE)
+        msg("❌ Make sure folder exists: " .. base_dir)
+        return 
+    end
     
     local numTracks = reaper.CountTracks(0)
     local playState = reaper.GetPlayState()
@@ -213,9 +254,9 @@ function process_command(line)
                     add_feedback("✅ Added FX")
                 else
                     msg("❌ Could not find FX: " .. fxName)
+                end
+            end
         end
-    end
-end
 
     elseif cmd == "SET_FX_PARAM" then
         local trackIdx = tonumber(parts[2]) or 0
@@ -280,7 +321,7 @@ end
         local envName = parts[3] or "Volume"
         
         local track = reaper.GetTrack(0, trackIdx)
-                if track then
+        if track then
             local env = reaper.GetTrackEnvelopeByName(track, envName)
             if env then
                 local numPoints = reaper.CountEnvelopePoints(env)
@@ -336,7 +377,7 @@ function check_for_commands()
     if not file then return end
     
     local content = file:read("*all")
-        file:close()
+    file:close()
     
     if not content or content == "" then return end
     
@@ -347,8 +388,8 @@ function check_for_commands()
     for line in content:gmatch("[^\r\n]+") do
         if line:match("%S") then
             process_command(line)
+        end
     end
-end
 
     write_feedback()
 end
@@ -359,7 +400,9 @@ function loop()
 end
 
 msg("☁️ Reaper Cloud Agent Started (File-based)")
+msg("📁 Base Dir: "..base_dir)
 msg("📁 Commands: "..COMMAND_FILE)
 msg("📁 State: "..STATE_FILE)
 msg("✅ Bridge handles HTTP - NO CMD popups!")
 loop()
+
