@@ -107,20 +107,9 @@ CLAP_AVAILABLE = False
 # MERT removed - using pure librosa analysis instead
 MERT_AVAILABLE = False
 
-# Initialize API clients (with fallback for local testing)
-anthropic_key = os.getenv("ANTHROPIC_API_KEY")
-openai_key = os.getenv("OPENAI_API_KEY")
-
-if not anthropic_key:
-    print("⚠️ ANTHROPIC_API_KEY not set - agent features will be limited")
-    anthropic_key = "dummy-key-for-local-testing"  # This will fail API calls but won't crash startup
-
-if not openai_key:
-    print("⚠️ OPENAI_API_KEY not set - Whisper features will be limited")
-    openai_key = "dummy-key-for-local-testing"  # This will fail API calls but won't crash startup
-
-client = Anthropic(api_key=anthropic_key)
-openai_client = OpenAI(api_key=openai_key)
+# Initialize API clients
+client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", "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"))
+openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY", "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"))
 
 # Parameter conversion helpers
 def db_to_normalized(target_db, min_db=-30, max_db=30):
