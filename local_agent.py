@@ -107,11 +107,17 @@ CLAP_AVAILABLE = False
 # MERT removed - using pure librosa analysis instead
 MERT_AVAILABLE = False
 
-# Initialize Anthropic Claude
-client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", "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"))
+# Initialize API clients (require env vars)
+def _require_env(var_name: str) -> str:
+    value = os.getenv(var_name)
+    if not value:
+        raise RuntimeError(f"Environment variable '{var_name}' is required but not set.")
+    return value
+
+client = Anthropic(api_key=_require_env("ANTHROPIC_API_KEY"))
 
 # Initialize OpenAI for Whisper
-openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY", "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"))
+openai_client = OpenAI(api_key=_require_env("OPENAI_API_KEY"))
 
 # Parameter conversion helpers
 def db_to_normalized(target_db, min_db=-30, max_db=30):
@@ -723,6 +729,26 @@ def clear_reaper_feedback():
         log_debug("Cleared feedback file")
     except Exception as e:
         log_debug(f"Failed to clear feedback: {e}")
+
+SUCCESS_TOKENS = (
+    "✓",
+    "✅",
+    "Success",
+    "Added FX",
+    "Set param",
+    "VOL_DIP",
+    "CLEARED AUTOMATION",
+    "APPLY_FROM_JSON",
+)
+
+def feedback_contains_success(feedback_text: str) -> bool:
+    """Return True if feedback clearly indicates success"""
+    if not feedback_text:
+        return False
+    for token in SUCCESS_TOKENS:
+        if token in feedback_text:
+            return True
+    return False
 
 def sanity_check_actions(user_goal, planned_steps, known_actions):
     """
@@ -3969,10 +3995,10 @@ def plan_actions(user_input, state, known_actions, available_plugins, previous_i
     # Add failed commands warning
     failed_cmd_section = ""
     if failed_commands:
-        failed_cmd_section = "\n**⚠️ COMMANDS THAT ALREADY FAILED (DO NOT USE THESE AGAIN):**\n"
+        failed_cmd_section = "\n**⚠️ COMMAND STRINGS THAT ALREADY FAILED (DO NOT REPEAT THESE EXACT VARIANTS):**\n"
         for cmd in failed_commands:
-            failed_cmd_section += f"- {cmd} - Already tried, didn't work\n"
-        failed_cmd_section += "\n**CRITICAL**: Do NOT suggest these commands again! Try completely different approaches.\n"
+            failed_cmd_section += f"- {cmd}\n"
+        failed_cmd_section += "\n**CRITICAL**: Avoid repeating the exact commands above. You may still use the same action with different parameters if appropriate.\n"
     
     # Add user preferences if available
     user_prefs_section = ""
@@ -4107,6 +4133,9 @@ RUNTIME CONTEXT (VARIABLES PROVIDED BY CALLER)
 {conversation_section}
 {memory_section}
 {user_prefs_section}
+
+USER REQUEST (VERBATIM - SATISFY THIS EXACTLY):
+{user_input}
 
 CURRENT PROJECT STATE (SOURCE OF TRUTH):
 {state}
@@ -4986,7 +5015,11 @@ Recommendations: {', '.join(analysis.get('recommendations', [])) if analysis.get
         if failed_actions:
             print(f"🚫 Blocking {len(failed_actions)} previously failed action IDs from retry")
         if failed_commands:
-            print(f"🚫 Blocking {len(failed_commands)} previously failed custom commands from retry")
+            print(f"🚫 Blocking {len(failed_commands)} previously failed command variants from retry")
+        
+        # DEBUG: Log what we're sending to planner
+        log_debug(f"Sending to planner: user_input='{technical_input[:100]}...', state_len={len(initial_state)}, plugins={len(available_plugins)}")
+        print(f"🔍 DEBUG: Sending user request to planner: '{technical_input[:100]}...'")
         
         plan_response = plan_actions(technical_input, initial_state, available_actions_filtered, available_plugins, previous_issues, previous_feedback, lyric_context, analysis_context, retry_history, conversation_history, failed_commands)
         
@@ -5371,20 +5404,21 @@ Recommendations: {', '.join(analysis.get('recommendations', [])) if analysis.get
 
         # Quick check: If Reaper feedback confirms success, trust it and stop
         if feedback and feedback != "No feedback available":
-            # Count success indicators in feedback
-            success_count = feedback.count('✅') + feedback.count('🎛️') + feedback.count('🎚️') + feedback.count('🗑️')
-            failure_count = feedback.count('❌')
-            unknown_count = feedback.count('❓')
-            
-            # Check for specific automation success messages
-            automation_success = ('VOL_DIP' in feedback and '✓' in feedback) or ('Automated' in feedback and 'mix:' in feedback)
-            fx_added = 'Added FX' in feedback
-            cleared_automation = 'Cleared' in feedback and 'automation' in feedback
-            
-            # If we see clear success indicators and minimal/no failures, we're done
-            # Allow some unknown commands as long as the main task succeeded
-            if (success_count >= 2 and failure_count <= unknown_count) or (automation_success and failure_count == 0):
-                print(f"\n✅ SUCCESS: Reaper feedback confirms {success_count} successful operations")
+            feedback_lines = [line.strip() for line in feedback.splitlines() if line.strip()]
+            success_lines = [line for line in feedback_lines if feedback_contains_success(line)]
+            failure_lines = [line for line in feedback_lines if '❌' in line or 'Could not' in line or 'Unknown command' in line]
+            unknown_lines = [line for line in feedback_lines if '❓' in line]
+
+            automation_success = any('VOL_DIP' in line and '✓' in line for line in feedback_lines) or ('Automated' in feedback and 'mix:' in feedback)
+            fx_added = any('Added FX' in line for line in feedback_lines)
+            cleared_automation = any('Cleared' in line and 'automation' in line for line in feedback_lines)
+
+            if success_lines and len(failure_lines) <= len(unknown_lines):
+                print(f"\n✅ SUCCESS: Reaper feedback confirms {len(success_lines)} successful operations")
+                for line in success_lines[:5]:
+                    print(f"   • {line}")
+                if len(success_lines) > 5:
+                    print(f"   • ... ({len(success_lines) - 5} more)")
                 if automation_success:
                     print(f"   🎛️ Volume automation created successfully")
                 if fx_added:
@@ -5573,11 +5607,10 @@ Recommendations: {', '.join(analysis.get('recommendations', [])) if analysis.get
                     failed_actions.add(cmd.strip())
                     log_debug(f"Added action {cmd.strip()} to blocklist")
                 else:
-                    # Custom command (VOL_DIP, CLEAR_AUTOMATION, etc.)
-                    cmd_name = cmd.split()[0] if cmd else ""
-                    if cmd_name:
-                        failed_commands.add(cmd_name)
-                        log_debug(f"Added command {cmd_name} to blocklist")
+                    cmd_text = cmd.strip()
+                    if cmd_text:
+                        failed_commands.add(cmd_text)
+                        log_debug(f"Added command '{cmd_text}' to blocklist")
             
             # Prepare for retry - preserve ALL context
             # Track what we tried and what happened (include commands and outcome)
