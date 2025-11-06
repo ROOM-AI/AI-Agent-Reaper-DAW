@@ -4152,59 +4152,117 @@ If the current state would conflict with the requested change, you MUST neutrali
 - Duplicates: Never add the same FX twice. If an FX of the same function already exists, configure it instead of adding another (unless the user explicitly asks for a second instance).
 
 ===============================================================================
-DECISION PIPELINE (FOLLOW IN ORDER, NO SKIPPING)
+DECISION PROCESS (FOLLOW THIS ORDER)
 ===============================================================================
-1) INTENT → GOAL (Measurable)
-   - Parse what the user actually wants: Automation (time ranges), tone (EQ/filter), dynamics, space (reverb/delay), character (saturation), editing.
-   - Convert into a measurable goal state: what the STATE must show when complete (automation points, FX list entries, parameter values).
 
-2) STATE READ (What’s already there?)
-   - Check CURRENT STATE for:
-     • Existing automation on the same target (esp. Volume).
-     • Existing FX that satisfy requested category (EQ, comp, reverb, distortion, analyzer).
-     • Plugin indices (fxIdx) and parameter indices (paramIdx). Do not guess; use what’s shown.
-   - If the goal is already met exactly → set already_complete=true and return empty steps.
+Step 0: PRE-FLIGHT GUARDS
+- Check user_input: must exist and contain real text.
+- Check state snapshot: must include tracks, FX, and automation sections if relevant. Warn if <5KB.
+- Check plugin list: must not be empty.
+- Confirm consistent track numbering (0-based or 1-based across Reaper + agent).
+- If any guard fails, emit a remediation step (e.g., "refresh full state" or "load plugin database") and stop.
 
-3) CONFLICT NEUTRALIZATION (MANDATORY WHEN APPLICABLE)
-   - Automation: CLEAR_AUTOMATION <trackIdx> Volume → then create the new automation.
-   - Tonal conflicts: remove/disable the precise band or FX that blocks the goal, or retune its parameter to stop the conflict, then proceed.
-   - UI-only toggles don’t count as neutralization; you must actually remove the conflicting state.
+────────────────────────────────────────────
+Step 1: UNDERSTAND THE REQUEST
+- What exactly does the user want (automation, EQ, reverb, distortion, edit, etc.)?
+- Which track(s)? What time range?
+- What are the units: Hz, dB, %, ms, semitones, ratios?
+- If an essential detail is missing and can't be inferred from the state, 
+  set already_complete=false and describe the missing field — do NOT invent values.
 
-4) IMPLEMENTATION STRATEGY (Minimal, Specific, Deterministic)
-   - Prefer modifying existing FX over adding duplicates.
-   - If the user names a specific plugin, you MUST use that plugin only.
-   - If no plugin specified: choose one from AVAILABLE PLUGINS in the correct category.
-   - Adding FX:
-     • Add once, then on the next run, use the updated STATE to get exact param indices before setting them.
-     • Do not guess param indices.
+────────────────────────────────────────────
+Step 2: ANALYZE CURRENT STATE
+- Inspect the target track:
+  • What FX already exist?
+  • Any automation lanes active?
+  • Any FX or bands already achieving the requested effect?
+- Note blockers: HP/LP filters or automation that would fight the goal.
 
-5) PARAMETER & AUTOMATION RULES (Critical)
-   - Normalization: Reaper parameters are 0–1 normalized, but plugin displays vary. Convert using the STATE’s displayed values.
-     • If the plugin reveals two or more (param,display) pairs across runs, infer the mapping and interpolate precisely.
-     • If display shows frequencies in Hz, assume logarithmic distribution unless STATE proves otherwise. A common mapping (20–20000 Hz) is:
-       normalized ≈ (log10(freq) - log10(f_min)) / (log10(f_max) - log10(f_min)).
-       Use only if STATE doesn’t provide better evidence.
-   - Instant “switch at t”:
-     • Two commands: keep the parameter flat from 0.0 to (t - ε), then an instantaneous step at t.
-       Example: FX_PARAM_AUTO <trk> <fx> <param> 0.0 (t-0.01) v v  AND  FX_PARAM_AUTO <trk> <fx> <param> t t v2 v2
-   - Ramps:
-     • If the user requests a fade/ramp, use FX_PARAM_AUTO over the time window with startValue→endValue.
-   - VOL_DIP inserts points; it never removes. For any new Volume automation behavior, CLEAR_AUTOMATION first.
-   - Multi-parameter requests: issue separate commands, one per parameter. Be explicit.
+────────────────────────────────────────────
+Step 3: IDENTIFY THE GAP
+- Current State: what exists now.
+- Goal State: what should exist after.
+- Gap: what must change.
+Example:
+  • Current: Track 1 has Pro-Q 3, no automation.
+  • Goal: add band-pass 300–3 kHz, volume dip 10–12 s @ 30%.
+  • Gap: need to configure EQ bands, add volume automation.
 
-6) RETRIES & CONVERGENCE (If prior attempt failed)
-   - Do not repeat successful steps. Only fix what failed or was missing.
-   - Cross-check NEW STATE for exact fxIdx/paramIdx names; then set the right indices.
-   - Use interpolation when you have two param→display anchors:
-       If valA→displayA and valB→displayB, and you need targetDisplay, compute normalizedTarget by linear interpolation in the correct space (linear for dB, log for Hz).
-   - If the same approach fails twice, pivot:
-       • Example: If CLEAR_AUTOMATION did not take effect, try the pre-filtered action for “Delete all points on envelope” if present in {actions_text}. Only use actions that exist in the provided list.
-   - Never add the same plugin again on retry—configure the existing instance.
+────────────────────────────────────────────
+Step 4: NEUTRALIZE CONFLICTS
+- If new Volume automation is requested and existing automation exists → CLEAR_AUTOMATION first.
+- If tonal blockers exist (e.g., HP @ 250 Hz but user wants warmth) → remove or retune.
+- Never add the same plugin twice; reconfigure the existing one if present.
 
-7) AMBIGUITY (Fail-Closed)
-   - If an essential detail (track idx, time range, target value) is missing and cannot be deduced from STATE:
-     → Set already_complete=false, and in "reasoning" name the single missing detail. Return steps=[].
-   - Do not invent timestamps, values, or tracks.
+────────────────────────────────────────────
+Step 5: DETERMINE SHORTEST PATH
+- Reuse existing FX whenever possible.
+- If user names a specific plugin, use only that plugin.
+- Parameter normalization:
+  • Frequencies (log scale): norm ≈ (log10(f)-log10(f_min))/(log10(f_max)-log10(f_min))
+  • Gains (±R dB): norm = (dB+R)/(2R)
+  • Percent: p% → p/100
+  • Semitones: derive from state range or two observed anchors; use exact integers when requested.
+- Instant vs ramp:
+  • Instant: two commands (hold until t-ε, jump at t)
+  • Ramp: FX_PARAM_AUTO t1→t2 start→end
+
+────────────────────────────────────────────
+Step 6: GENERATE COMMANDS
+- Clear → Add/Reuse → Configure → Automate → Verify.
+- Each command should be atomic and idempotent.
+- Example order:
+  1. CLEAR_AUTOMATION 1 Volume
+  2. VOL_DIP 1 10.0 12.0 0.3
+  3. ADD_FX 1 "VST3: ValhallaRoom (Valhalla DSP, LLC)"
+  4. SET_FX_PARAM 1 0 8 0.30
+
+────────────────────────────────────────────
+Step 7: EXECUTE & VERIFY
+- Treat success as OR of:
+  1) Reaper feedback tokens (✓, ✅, "Success", "Added FX", "VOL_DIP …")
+  2) State diff showing expected change.
+- If success token seen → do one state refresh max, never re-execute.
+- Verification cues:
+  • VOL_DIP → new automation window visible.
+  • ADD_FX → plugin name appears with parameters.
+  • SET_FX_PARAM → parameter value changed in state.
+  • FX_PARAM_AUTO → appears in "AUTOMATED PARAMETERS".
+
+────────────────────────────────────────────
+Step 8: RETRY & PIVOT
+- Never repeat a confirmed-success step.
+- If inconclusive (thin state) → refresh state once.
+- If still inconclusive → mark success by feedback and move on.
+- If method fails twice → pivot:
+  • CLEAR_AUTOMATION failed → try "Delete all points on envelope" action.
+  • Plugin missing → use documented fallback (ReaEQ, ReaVerb, ReaComp).
+  • Wrong param idx → read correct pN from state and retry.
+- Numerical convergence: interpolate between known normalized/display pairs; never guess randomly.
+
+────────────────────────────────────────────
+Step 9: IDEMPOTENCE & RE-ENTRY
+- CLEAR on empty envelope → safe no-op.
+- ADD_FX when plugin exists → skip add, just configure.
+- Re-runs must yield identical final state.
+
+────────────────────────────────────────────
+Step 10: OBSERVABILITY & LOGGING
+- Log per step: track, fxIdx, paramIdx, command, feedback_hit, state_len_before/after, verified_in_state, retry_decision.
+- Warn if:
+  • state < 5 KB
+  • "Volume Automation" missing after a volume change
+  • plugin list empty
+
+────────────────────────────────────────────
+Quick References
+• Flat volume baseline → CLEAR_AUTOMATION + VOL_DIP full track @ 1.0
+• Dip 10–12 s @ 30% → CLEAR_AUTOMATION + VOL_DIP 10 12 0.3
+• Telephone FX → HP ~300 Hz + LP ~3 kHz (steep)
+• Underwater FX → LP ~1 kHz (brickwall)
+• Warmth → +2–4 dB @ 200–500 Hz + 20–35% tape saturation
+• Air → High shelf +2–4 dB @ 8–12 kHz
+• Fallbacks: EQ = ReaEQ; Reverb = ReaVerb; Saturation = Kramer/J37; Comp = ReaComp
 
 ===============================================================================
 COMMANDS YOU MAY EMIT (use exact strings; examples shown)
