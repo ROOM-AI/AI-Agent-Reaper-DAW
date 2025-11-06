@@ -453,31 +453,258 @@ async def root():
 <head>
     <title>CursorDAW Cloud</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 20px; background: #1a1a1a; color: #fff; }
-        .container { max-width: 1000px; margin: 0 auto; }
-        .header { text-align: center; margin-bottom: 30px; }
-        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-        .card { background: #2a2a2a; border: 1px solid #444; border-radius: 8px; padding: 20px; }
-        .input-group { margin-bottom: 15px; }
-        label { display: block; margin-bottom: 5px; color: #ccc; }
-        input, textarea, button { 
-            width: 100%; padding: 10px; border: 1px solid #555; border-radius: 4px; 
-            background: #333; color: #fff; margin-bottom: 10px;
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%);
+            color: #fff;
+            min-height: 100vh;
+            padding: 20px;
         }
-        button { background: #007bff; border: none; cursor: pointer; }
-        button:hover { background: #0056b3; }
-        .button-row { display: flex; gap: 8px; }
-        .button-row button { width: auto; flex: 1; }
-        .enhance-btn { background: #ff9800 !important; }
-        .enhance-btn:hover { background: #e68900 !important; }
-        .sync-btn { background: #6c757d !important; }
-        .sync-btn:hover { background: #5a6268 !important; }
-        .status { text-align: center; padding: 10px; background: #333; border-radius: 4px; margin-bottom: 20px; }
-        .messages { height: 500px; overflow-y: auto; border: 1px solid #555; padding: 10px; background: #222; }
-        .message { margin-bottom: 10px; padding: 12px; border-radius: 4px; }
-        .user { background: #007bff; }
-        .agent { background: #28a745; max-width: 100%; overflow-x: auto; }
-        .events { height: 300px; overflow-y: auto; border: 1px solid #555; padding: 10px; background: #222; }
+        
+        .container { 
+            max-width: 1200px; 
+            margin: 0 auto; 
+        }
+        
+        .header { 
+            text-align: center; 
+            margin-bottom: 40px;
+            animation: fadeInDown 0.6s ease-out;
+        }
+        
+        .header h1 {
+            font-size: 2.8em;
+            font-weight: 700;
+            margin-bottom: 20px;
+            background: linear-gradient(45deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            text-shadow: 0 0 30px rgba(102, 126, 234, 0.5);
+        }
+        
+        .input-group { 
+            margin-bottom: 20px; 
+        }
+        
+        label { 
+            display: block; 
+            margin-bottom: 8px; 
+            color: #a8b3cf;
+            font-weight: 500;
+            font-size: 0.9em;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        input, textarea { 
+            width: 100%; 
+            padding: 12px 16px; 
+            border: 2px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px; 
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            color: #fff; 
+            margin-bottom: 10px;
+            font-size: 14px;
+            transition: all 0.3s ease;
+        }
+        
+        input:focus, textarea:focus {
+            outline: none;
+            border-color: #667eea;
+            background: rgba(255, 255, 255, 0.08);
+            box-shadow: 0 0 20px rgba(102, 126, 234, 0.3);
+        }
+        
+        button { 
+            padding: 12px 24px;
+            border: none;
+            border-radius: 12px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 14px;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        button::before {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 0;
+            height: 0;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.2);
+            transform: translate(-50%, -50%);
+            transition: width 0.6s, height 0.6s;
+        }
+        
+        button:hover::before {
+            width: 300px;
+            height: 300px;
+        }
+        
+        button span { position: relative; z-index: 1; }
+        
+        button { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
+        button:hover { transform: translateY(-2px); box-shadow: 0 8px 25px rgba(102, 126, 234, 0.4); }
+        
+        .button-row { 
+            display: flex; 
+            gap: 12px; 
+            margin-top: 15px;
+        }
+        
+        .button-row button { 
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .enhance-btn { 
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%) !important;
+        }
+        .enhance-btn:hover { 
+            box-shadow: 0 8px 25px rgba(245, 87, 108, 0.4) !important;
+        }
+        
+        .sync-btn { 
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%) !important;
+        }
+        .sync-btn:hover { 
+            box-shadow: 0 8px 25px rgba(79, 172, 254, 0.4) !important;
+        }
+        
+        .status { 
+            text-align: center; 
+            padding: 15px; 
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 2px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px; 
+            margin-bottom: 25px;
+            font-weight: 600;
+            font-size: 1.1em;
+            color: #a8b3cf;
+            animation: pulse 2s ease-in-out infinite;
+        }
+        
+        .grid { 
+            display: grid; 
+            grid-template-columns: 1fr 1fr; 
+            gap: 25px;
+            animation: fadeIn 0.8s ease-out;
+        }
+        
+        .card { 
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 2px solid rgba(255, 255, 255, 0.1);
+            border-radius: 20px; 
+            padding: 25px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+        
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 12px 40px rgba(102, 126, 234, 0.2);
+        }
+        
+        .card h3 {
+            margin-bottom: 20px;
+            font-size: 1.4em;
+            color: #fff;
+            border-bottom: 2px solid rgba(102, 126, 234, 0.3);
+            padding-bottom: 10px;
+        }
+        
+        .messages { 
+            height: 500px; 
+            overflow-y: auto; 
+            border: 2px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 15px; 
+            background: rgba(0, 0, 0, 0.2);
+            margin-bottom: 15px;
+        }
+        
+        .messages::-webkit-scrollbar { width: 8px; }
+        .messages::-webkit-scrollbar-track { background: rgba(255, 255, 255, 0.05); border-radius: 10px; }
+        .messages::-webkit-scrollbar-thumb { background: rgba(102, 126, 234, 0.5); border-radius: 10px; }
+        .messages::-webkit-scrollbar-thumb:hover { background: rgba(102, 126, 234, 0.7); }
+        
+        .message { 
+            margin-bottom: 15px; 
+            padding: 15px 18px; 
+            border-radius: 12px;
+            animation: slideIn 0.3s ease-out;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+        }
+        
+        .user { 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            margin-left: 40px;
+            border-bottom-right-radius: 4px;
+        }
+        
+        .agent { 
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            margin-right: 40px;
+            max-width: 100%; 
+            overflow-x: auto;
+            border-bottom-left-radius: 4px;
+        }
+        
+        .events { 
+            height: 300px; 
+            overflow-y: auto; 
+            border: 2px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 15px; 
+            background: rgba(0, 0, 0, 0.2);
+            font-size: 0.9em;
+            color: #a8b3cf;
+        }
+        
+        .events::-webkit-scrollbar { width: 8px; }
+        .events::-webkit-scrollbar-track { background: rgba(255, 255, 255, 0.05); border-radius: 10px; }
+        .events::-webkit-scrollbar-thumb { background: rgba(79, 172, 254, 0.5); border-radius: 10px; }
+        .events::-webkit-scrollbar-thumb:hover { background: rgba(79, 172, 254, 0.7); }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        @keyframes fadeInDown {
+            from { opacity: 0; transform: translateY(-30px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateX(-20px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        
+        @media (max-width: 768px) {
+            .grid { grid-template-columns: 1fr; }
+            .message.user { margin-left: 10px; }
+            .message.agent { margin-right: 10px; }
+        }
     </style>
 </head>
 <body>
@@ -498,9 +725,9 @@ async def root():
                 <div class="input-group">
                     <textarea id="messageInput" placeholder="Type your message..." rows="3"></textarea>
                     <div class="button-row">
-                        <button onclick="sendMessage()">Send</button>
-                        <button class="enhance-btn" onclick="enhancePrompt()">✨ Enhance</button>
-                        <button class="sync-btn" onclick="syncState()">Sync State</button>
+                        <button onclick="sendMessage()"><span>Send</span></button>
+                        <button class="enhance-btn" onclick="enhancePrompt()"><span>✨ Enhance</span></button>
+                        <button class="sync-btn" onclick="syncState()"><span>Sync State</span></button>
                     </div>
                 </div>
             </div>
