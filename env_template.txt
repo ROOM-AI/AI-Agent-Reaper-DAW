@@ -1,0 +1,17 @@
+# Copy this file and rename to .env, then add your API keys
+
+# Required: Claude AI for agent reasoning
+ANTHROPIC_API_KEY=sk-ant-api03-YOUR-KEY-HERE
+
+# Optional: OpenAI for lyrics extraction (Whisper)
+OPENAI_API_KEY=sk-proj-YOUR-KEY-HERE
+
+# Optional: For cloud deployment
+# CLOUD_URL=https://your-deployed-service.run.app
+
+
+
+
+
+
+

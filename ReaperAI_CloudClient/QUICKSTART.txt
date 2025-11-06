@@ -1,0 +1,135 @@
+╔═══════════════════════════════════════════════════════════════╗
+║     🎵 REAPER AI AGENT - CLOUD CLIENT - QUICK START 🎵       ║
+╚═══════════════════════════════════════════════════════════════╝
+
+Control Reaper DAW with AI using natural language!
+This connects YOUR Reaper to a cloud AI agent.
+
+═══════════════════════════════════════════════════════════════
+
+📋 WHAT YOU NEED (3 things):
+
+1. Reaper DAW (any recent version)
+   → https://www.reaper.fm/download.php
+
+2. Python 3.9 or newer
+   → Windows: https://www.python.org/downloads/
+     ⚠️ Check "Add Python to PATH" during install!
+   → macOS: brew install python3
+   → Linux: sudo apt install python3 python3-pip
+
+3. This folder (already downloaded ✓)
+
+═══════════════════════════════════════════════════════════════
+
+⚡ INSTALLATION (ONE TIME ONLY):
+
+⚠️ IMPORTANT: You MUST run the installer FIRST before anything else!
+
+Windows:
+  1. Right-click INSTALL.bat → "Run as administrator"
+  2. Wait for it to finish (installs Python packages)
+  3. Press any key when done
+  4. Done!
+
+Mac/Linux:
+  1. Open Terminal in this folder
+  2. Run: chmod +x INSTALL.sh START_BRIDGE.sh
+  3. Run: ./INSTALL.sh
+  4. Done!
+
+═══════════════════════════════════════════════════════════════
+
+🚀 HOW TO USE (EVERY TIME):
+
+⚠️ DO THESE STEPS IN ORDER!
+
+Step 1: Start Reaper
+  → Open any project or create a new one
+  → Keep Reaper open!
+
+Step 2: Load the Lua script in Reaper
+  → In Reaper: Actions → Show action list
+  → Click "New action..." → "Load ReaScript..."
+  → Select: reaper_cloud_agent.lua (from this folder)
+  → Click "Run"
+  → Check Reaper console (View → Show console)
+  → You should see: "☁️ Reaper Cloud Agent Started"
+  → And: "📁 Using directory: C:\Users\YourName\AIAGENT DAW"
+
+Step 3: Start the bridge (KEEP REAPER OPEN!)
+  → Windows: Double-click START_BRIDGE.bat
+  → Mac/Linux: ./START_BRIDGE.sh
+  → You'll see a unique session ID (remember it!)
+  → Keep this window open!
+
+Step 4: Open the web interface
+  → Go to: https://feelings36lex36slo14moossolo-97692729550.europe-west1.run.app
+  → Enter YOUR session ID (shown in bridge window)
+  → Type commands like:
+    - "add reverb to track 3"
+    - "make it sound like a phone call"
+    - "create volume dip from 10 to 20 seconds"
+
+💡 Keep all 3 running: Reaper + Bridge + Browser
+
+═══════════════════════════════════════════════════════════════
+
+💡 TIPS:
+
+• Keep the bridge window open while using Reaper
+• The Lua script needs to stay running in Reaper
+• If multiple people use this, edit SESSION_ID in cloud_bridge.py
+  (default is "demo" - only one person can use it at a time)
+• Check Reaper's console (View → Show console) to see what's happening
+
+═══════════════════════════════════════════════════════════════
+
+❌ TROUBLESHOOTING:
+
+Problem: "Python not found"
+Solution: Install Python and make sure "Add to PATH" was checked
+
+Problem: "pip install fails"
+Solution: Run as administrator (Windows) or use sudo (Mac/Linux)
+
+Problem: "Bridge can't connect"
+Solution: Check your internet connection - the cloud server might be down
+
+Problem: "Lua script not responding"
+Solution: In Reaper, go to Actions → Show action list → 
+         Find "reaper_cloud_agent.lua" → Select it → Click "Run"
+
+Problem: "Commands not working"
+Solution: Make sure all 3 are running:
+         1. Reaper with Lua script
+         2. Bridge (START_BRIDGE.bat/sh)
+         3. Browser with web interface open
+
+═══════════════════════════════════════════════════════════════
+
+📁 FILES IN THIS PACKAGE:
+
+reaper_cloud_agent.lua  - Load this in Reaper
+cloud_bridge.py         - Connects your PC to cloud
+requirements.txt        - Python packages needed
+INSTALL.bat/sh          - One-click installer
+START_BRIDGE.bat/sh     - Start the bridge connector
+QUICKSTART.txt          - This file
+LINKS.txt               - Download links for software
+
+═══════════════════════════════════════════════════════════════
+
+🎓 EXAMPLE COMMANDS:
+
+"add reverb to track 3"
+"make the vocal sound like it's underwater"
+"create a volume dip from 10 to 20 seconds on track 2"
+"pan track 1 hard left"
+"remove all effects from track 4"
+"automate reverb mix from 20% to 80% between 5 and 10 seconds"
+
+═══════════════════════════════════════════════════════════════
+
+Enjoy controlling Reaper with AI! 🎵✨
+

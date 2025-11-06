@@ -12,7 +12,15 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
 CLOUD_URL = "https://feelings36lex36slo14moossolo-97692729550.europe-west1.run.app"
-SESSION_ID = "demo"  # Default session - change this if multiple users
+
+# Generate unique session ID based on computer name
+import platform
+import hashlib
+SESSION_ID = os.getenv("REAPER_SESSION_ID") or "demo"
+# Auto-generate session from hostname to avoid collisions
+if SESSION_ID == "demo":
+    hostname = platform.node() or "user"
+    SESSION_ID = hashlib.md5(hostname.encode()).hexdigest()[:8]
 
 # Local files that Lua reads/writes - MUST match Lua script paths!
 # Auto-detect base directory (matches Lua logic)
@@ -34,8 +42,8 @@ print(f"Command file: {COMMAND_FILE}")
 print(f"State file: {STATE_FILE}")
 print("=" * 50)
 print()
-print("NOTE: Only ONE user can use 'demo' session at a time.")
-print("If sharing, edit SESSION_ID in cloud_bridge.py")
+print(f"✓ Your unique session ID: {SESSION_ID}")
+print(f"✓ Use this in the web interface to control YOUR Reaper")
 print()
 
 _last_state_sent = ""
@@ -43,9 +51,16 @@ _last_send_ts = 0.0
 MIN_SEND_INTERVAL = 1.5  # seconds, to avoid spam on partial writes
 
 # Ensure directory and files exist
-BASE_DIR.mkdir(parents=True, exist_ok=True)
-COMMAND_FILE.touch(exist_ok=True)
-STATE_FILE.touch(exist_ok=True)
+try:
+    BASE_DIR.mkdir(parents=True, exist_ok=True)
+    COMMAND_FILE.touch(exist_ok=True)
+    STATE_FILE.touch(exist_ok=True)
+    print(f"✓ Created directory structure")
+except Exception as e:
+    print(f"❌ ERROR creating directories: {e}")
+    print(f"❌ Please run INSTALL.bat first!")
+    input("Press Enter to exit...")
+    exit(1)
 
 def _send_state_if_changed(force: bool = False):
     global _last_state_sent
@@ -161,6 +176,22 @@ def state_pump():
         time.sleep(2.0)
 
 if __name__ == "__main__":
+    # Test cloud connection first
+    print("Testing cloud connection...")
+    try:
+        test_resp = requests.get(f"{CLOUD_URL}/health", timeout=5)
+        if test_resp.status_code == 200:
+            print("✓ Cloud server is reachable")
+        else:
+            print(f"⚠️ Cloud returned status {test_resp.status_code}")
+    except Exception as e:
+        print(f"❌ Cannot reach cloud server: {e}")
+        print(f"❌ Check your internet connection")
+        print(f"❌ Cloud URL: {CLOUD_URL}")
+        input("Press Enter to continue anyway (or Ctrl+C to exit)...")
+    
+    print()
+    
     # Start watching state file
     observer = Observer()
     observer.schedule(StateFileHandler(), str(BASE_DIR), recursive=False)

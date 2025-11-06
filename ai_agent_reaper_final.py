@@ -4700,17 +4700,6 @@ When user says "add Waves distortion", search for: Manny M, Kramer Tape, J37 Tap
 - "show spectrum" → Use analyzer/visualizer (NOT an EQ)
 
 **CUSTOM COMMANDS (use these for plugins and automation):**
-
-**🚨 CRITICAL: TRACK INDEX CONVERSION 🚨**
-- State shows **1-based track numbers**: "Track 1", "Track 2", "Track 3" (matches UI)
-- Commands require **0-based indices**: trackIdx 0, 1, 2 (API requirement)
-- **YOU MUST SUBTRACT 1**: User says "Track 3" → State shows "--- Track 3: ..." → Command uses trackIdx=2
-- **EXAMPLES:**
-  * User: "automation on track 3" → State: "--- Track 3: Vocals ---" → Command: `VOL_DIP 2 10.0 15.0 0.5`
-  * User: "add reverb to track 1" → State: "--- Track 1: Drums ---" → Command: `ADD_FX 0 Reverb`
-  * User: "select track 2" → State: "--- Track 2: Bass ---" → Command: `SELECT_TRACK 1`
-- **ALWAYS SUBTRACT 1 FROM STATE TRACK NUMBER WHEN GENERATING COMMANDS!**
-
 - SELECT_TRACK <trackIdx> - Select track (REQUIRED before track actions!)
 - VOL_DIP <trackIdx> <tStart> <tEnd> <value0-1> - INSERTS 4 automation points (does NOT remove existing!)
   * CRITICAL: If automation already exists, use CLEAR_AUTOMATION first or you'll get overlapping points

@@ -1,0 +1,95 @@
+╔═══════════════════════════════════════════════════════════════╗
+║              🔗 DOWNLOAD LINKS - SOFTWARE NEEDED              ║
+╚═══════════════════════════════════════════════════════════════╝
+
+═══════════════════════════════════════════════════════════════
+
+1️⃣  REAPER DAW
+    ↓ Download from official site:
+    https://www.reaper.fm/download.php
+    
+    • Free 60-day trial (fully functional)
+    • Personal license: $60 USD
+    • Works on Windows, macOS, Linux
+    • Any recent version works (v6.0+)
+
+═══════════════════════════════════════════════════════════════
+
+2️⃣  PYTHON 3
+    
+    🪟 WINDOWS:
+    https://www.python.org/downloads/
+    
+    ⚠️ IMPORTANT: During installation, CHECK the box:
+       "Add Python to PATH" (at the bottom of installer)
+    
+    Recommended version: Python 3.11 or newer
+    
+    -----------------------------------------------------------
+    
+    🍎 macOS:
+    
+    Option A - Homebrew (recommended):
+    1. Install Homebrew first: https://brew.sh
+    2. Then run: brew install python3
+    
+    Option B - Official installer:
+    https://www.python.org/downloads/macos/
+    
+    -----------------------------------------------------------
+    
+    🐧 LINUX:
+    
+    Most Linux systems have Python 3 pre-installed.
+    Check by running: python3 --version
+    
+    If not installed:
+    • Ubuntu/Debian: sudo apt install python3 python3-pip
+    • Fedora: sudo dnf install python3 python3-pip
+    • Arch: sudo pacman -S python python-pip
+
+═══════════════════════════════════════════════════════════════
+
+3️⃣  CLOUD INTERFACE (WEB BROWSER)
+    
+    https://feelings36lex36slo14moossolo-97692729550.europe-west1.run.app
+    
+    • Works in any modern browser (Chrome, Firefox, Safari, Edge)
+    • No installation needed
+    • This is where you type AI commands
+    • Open this AFTER starting Reaper + Bridge
+
+═══════════════════════════════════════════════════════════════
+
+💡 VERIFICATION:
+
+After installing, verify everything works:
+
+✓ Reaper: Open it - if it launches, you're good!
+
+✓ Python (Windows):
+  1. Open Command Prompt (cmd)
+  2. Type: python --version
+  3. Should show: Python 3.x.x
+
+✓ Python (Mac/Linux):
+  1. Open Terminal
+  2. Type: python3 --version
+  3. Should show: Python 3.x.x
+
+✓ Cloud Interface:
+  1. Open the URL in your browser
+  2. Should see a web interface with text input
+
+═══════════════════════════════════════════════════════════════
+
+📧 SUPPORT:
+
+If downloads don't work or links are broken, these are the
+official sites - search for them:
+
+• Reaper: www.reaper.fm
+• Python: www.python.org
+
+═══════════════════════════════════════════════════════════════
+
