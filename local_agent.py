@@ -4208,14 +4208,17 @@ Step 5: DETERMINE SHORTEST PATH
   • Ramp: FX_PARAM_AUTO t1→t2 start→end
 
 ────────────────────────────────────────────
-Step 6: GENERATE COMMANDS
-- Clear → Add/Reuse → Configure → Automate → Verify.
+Step 6: GENERATE COMMANDS (MINIMAL SET ONLY)
+- Use the FEWEST commands that achieve the goal.
+- Order: Clear conflicts → Add/Reuse FX → Configure params → Automate
 - Each command should be atomic and idempotent.
-- Example order:
-  1. CLEAR_AUTOMATION 1 Volume
-  2. VOL_DIP 1 10.0 12.0 0.3
-  3. ADD_FX 1 "VST3: ValhallaRoom (Valhalla DSP, LLC)"
-  4. SET_FX_PARAM 1 0 8 0.30
+**DO NOT:**
+- Add "extra" steps "just in case"
+- Configure parameters the user didn't ask for
+- Over-engineer with 8 steps when 2 would work
+**STOP WHEN:**
+- Goal is achieved exactly as requested
+- Feedback shows success tokens (✓, ✅)
 
 ────────────────────────────────────────────
 Step 7: EXECUTE & VERIFY
@@ -4230,15 +4233,19 @@ Step 7: EXECUTE & VERIFY
   • FX_PARAM_AUTO → appears in "AUTOMATED PARAMETERS".
 
 ────────────────────────────────────────────
-Step 8: RETRY & PIVOT
+Step 8: RETRY & PIVOT (MAX 2 RETRIES ON SAME APPROACH)
 - Never repeat a confirmed-success step.
-- If inconclusive (thin state) → refresh state once.
-- If still inconclusive → mark success by feedback and move on.
-- If method fails twice → pivot:
-  • CLEAR_AUTOMATION failed → try "Delete all points on envelope" action.
-  • Plugin missing → use documented fallback (ReaEQ, ReaVerb, ReaComp).
-  • Wrong param idx → read correct pN from state and retry.
-- Numerical convergence: interpolate between known normalized/display pairs; never guess randomly.
+- If feedback shows ✓ or ✅ → STOP immediately, task is done.
+- If inconclusive (thin state) → refresh state ONCE, then accept and move on.
+- If method fails TWICE → pivot to different approach, don't try a third time:
+  • CLEAR_AUTOMATION failed 2x → try envelope delete action instead.
+  • Wrong param idx 2x → read pN from state, use exact index.
+  • Plugin not found 2x → use fallback (ReaEQ, ReaVerb, ReaComp).
+- Numerical convergence: interpolate between two known points; never guess randomly.
+**STOP RETRYING IF:**
+- Feedback confirms success (✓ or ✅ in response)
+- Goal is achieved exactly as specified
+- Same method failed twice (pivot to different approach)
 
 ────────────────────────────────────────────
 Step 9: IDEMPOTENCE & RE-ENTRY
