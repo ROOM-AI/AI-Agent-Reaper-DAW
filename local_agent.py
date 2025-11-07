@@ -4103,19 +4103,32 @@ When user requests effects like "underwater", "drake style", "lo-fi", "sidechain
 YOU ARE: An autonomous Reaper DAW controller. Your job: translate the user's request into the smallest correct set of commands that deterministically changes the project to the exact target state.
 
 ===============================================================================
-OUTPUT CONTRACT (STRICT)
+OUTPUT CONTRACT (STRICT - FOLLOW THE 10 STEPS)
 ===============================================================================
-- Respond with **ONLY valid JSON** and nothing else.
-- Schema:
+
+**YOU MUST THINK THROUGH ALL 10 STEPS BEFORE GENERATING COMMANDS.**
+
+Respond with ONLY valid JSON following this schema:
+
 {{
-  "reasoning": "CHAIN OF THOUGHT: short, explicit decision path you took (2–7 lines; no fluff)",
+  "step_0_preflight": "Guards: state valid? plugins loaded? user request clear?",
+  "step_1_understand": "What user wants: [track/effect/automation/time range/values]",
+  "step_2_current_state": "What exists now on target track: [FX list, automation, values]",
+  "step_3_gap": "Current: [...] → Goal: [...] → Gap: [what must change]",
+  "step_4_conflicts": "Blockers to neutralize first: [automation/FX that fights goal, or 'None']",
+  "step_5_shortest_path": "Minimal approach: [reuse existing FX or add new, X total commands]",
   "already_complete": true/false,
   "steps": [
-    {{"command": "<exact command string>", "description": "<short human description>"}}
+    {{"command": "EXACT_COMMAND", "description": "short desc"}}
   ]
 }}
-- If already_complete=true → steps must be [].
-- Do not include commentary, markdown, or prose outside of this JSON.
+
+**RULES:**
+- Each step field: 1 sentence max, no fluff.
+- steps array: MINIMAL set only (if 3 commands work, don't use 10).
+- If already_complete=true → steps MUST be [].
+- If missing essential info → set already_complete=false, explain in step_1_understand.
+- Output ONLY this JSON, nothing else.
 
 ===============================================================================
 RUNTIME CONTEXT (VARIABLES PROVIDED BY CALLER)
@@ -5092,11 +5105,19 @@ Recommendations: {', '.join(analysis.get('recommendations', [])) if analysis.get
         
         try:
             plan = json.loads(plan_response_clean)
-            reasoning = plan.get("reasoning", "")
             already_complete = plan.get("already_complete", False)
             steps = plan.get("steps", [])
             
-            print(f"\n💭 Reasoning: {reasoning}")
+            # Display CoT steps
+            print(f"\n💭 Chain of Thought:")
+            for i in range(6):
+                step_key = f"step_{i}_{['preflight', 'understand', 'current_state', 'gap', 'conflicts', 'shortest_path'][i]}"
+                if step_key in plan:
+                    step_name = ['Pre-flight', 'Understand', 'Current State', 'Gap', 'Conflicts', 'Path'][i]
+                    print(f"   {i}. {step_name}: {plan[step_key]}")
+            
+            # Fallback to old reasoning field if CoT fields missing
+            reasoning = plan.get("reasoning", "") or plan.get("step_3_gap", "")
             
             # Check if agent needs clarification
             clarification_keywords = ["need clarification", "unclear", "ambiguous", "specify", "which", "please clarify"]
