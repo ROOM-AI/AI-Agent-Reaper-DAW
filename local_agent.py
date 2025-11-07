@@ -722,6 +722,394 @@ def clear_reaper_feedback():
     except Exception as e:
         log_debug(f"Failed to clear feedback: {e}")
 
+# === Pro-Q 3 calibration and command rewrite helpers ===
+# Dynamically learn the normalized values for Low Cut / High Cut shapes and 48 dB/oct slope
+# on the user's installed Pro-Q 3, then rewrite outgoing commands to use those exact values.
+PROQ3_ENUM_CACHE = {
+    "low_cut": None,   # normalized value for "Low Cut" (aka High-Pass)
+    "high_cut": None,  # normalized value for "High Cut" (aka Low-Pass)
+    "slope_48": None,  # normalized value for "48 dB/oct"
+    "slope_96": None,  # normalized value for "96 dB/oct" or "Brickwall" (optional)
+}
+
+# === Generic FX schema + enum calibration (plugin-agnostic) ===
+FX_SCHEMA_CACHE = {}   # key: (plugin_name_lower) -> {'params': [(idx, name_lower, display)], 'built': ts}
+ENUM_LABEL_CACHE = {}  # key: (plugin_name_lower, param_name_lower_or_idx, label_key) -> normalized_value
+
+def _find_fx_index_in_state(state_text: str, track_idx: int, name_substring: str) -> int:
+    current_track = None
+    for line in state_text.splitlines():
+        m = re.match(r'--- Track (\d+):', line)
+        if m:
+            current_track = int(m.group(1))
+            continue
+        if current_track != track_idx:
+            continue
+        m = re.match(r'\s*\[(\d+)\]\s+(.+)', line)
+        if m:
+            fx_idx = int(m.group(1))
+            fx_name = m.group(2).strip().lower()
+            if name_substring.lower() in fx_name:
+                return fx_idx
+    return -1
+
+def _find_fx_index_by_candidates(state_text: str, track_idx: int, candidates: list) -> int:
+    for cand in candidates:
+        fx_idx = _find_fx_index_in_state(state_text, track_idx, cand)
+        if fx_idx >= 0:
+            return fx_idx
+    return -1
+
+def _get_plugin_name(state_text: str, track_idx: int, fx_idx: int) -> str:
+    current_track = None
+    for line in state_text.splitlines():
+        m = re.match(r'--- Track (\d+):', line)
+        if m:
+            current_track = int(m.group(1))
+            continue
+        if current_track != track_idx:
+            continue
+        m = re.match(r'\s*\[(\d+)\]\s+(.+)', line)
+        if m and int(m.group(1)) == fx_idx:
+            return m.group(2).strip()
+    return ""
+
+def _get_param_display(state_text: str, track_idx: int, fx_idx: int, param_idx: int):
+    current_track = None
+    current_fx = None
+    for line in state_text.splitlines():
+        m = re.match(r'--- Track (\d+):', line)
+        if m:
+            current_track = int(m.group(1))
+            current_fx = None
+            continue
+        if current_track != track_idx:
+            continue
+        m = re.match(r'\s*\[(\d+)\]\s+(.+)', line)
+        if m:
+            current_fx = int(m.group(1))
+            continue
+        if current_fx == fx_idx:
+            m = re.match(r'\s*p(\d+)\s+([^:]+):\s*[^\[]*\[\s*(.*?)\s*\]', line)
+            if m and int(m.group(1)) == param_idx:
+                param_name = m.group(2).strip()
+                display = m.group(3).strip()
+                return param_name, display
+    return None, None
+
+def _get_fx_param_table(state_text: str, track_idx: int, fx_idx: int):
+    current_track = None
+    current_fx = None
+    params = []
+    for line in state_text.splitlines():
+        m = re.match(r'--- Track (\d+):', line)
+        if m:
+            current_track = int(m.group(1))
+            current_fx = None
+            continue
+        if current_track != track_idx:
+            continue
+        m = re.match(r'\s*\[(\d+)\]\s+(.+)', line)
+        if m:
+            current_fx = int(m.group(1))
+            continue
+        if current_fx == fx_idx:
+            m = re.match(r'\s*p(\d+)\s+([^:]+):\s*[^\[]*\[\s*(.*?)\s*\]', line)
+            if m:
+                idx = int(m.group(1))
+                name = m.group(2).strip().lower()
+                display = m.group(3).strip().lower()
+                params.append((idx, name, display))
+    return params
+
+def _find_param_by_keywords(param_table, include_keywords, exclude_keywords=None):
+    include = [kw.lower() for kw in include_keywords]
+    exclude = [kw.lower() for kw in (exclude_keywords or [])]
+    for idx, name, _ in param_table:
+        if all(k in name for k in include) and not any(x in name for x in exclude):
+            return idx, name
+    return None, None
+
+def _find_band_param(param_table, band_num: int, key: str):
+    # Generic band param discovery: works for names like "Band 1 Frequency", "B1 Freq", "Band1 Type"
+    band_tokens = [f"band {band_num}", f"band{band_num}", f"b{band_num}"]
+    key_map = {
+        "used": ["used", "enable", "enabled", "active"],
+        "freq": ["freq", "frequency", "cutoff"],
+        "gain": ["gain"],
+        "type": ["type", "shape", "filter"],
+        "slope": ["slope"]
+    }
+    includes = key_map.get(key, [])
+    for bt in band_tokens:
+        for inc in includes:
+            idx, name = _find_param_by_keywords(param_table, [bt, inc])
+            if idx is not None:
+                return idx, name
+    # Try without explicit band token for plugins that show "High Cut Frequency" etc.
+    for inc in includes:
+        idx, name = _find_param_by_keywords(param_table, [inc])
+        if idx is not None:
+            return idx, name
+    return None, None
+
+def _freq_to_norm(freq_hz: float) -> float:
+    try:
+        val = (np.log10(freq_hz) - np.log10(20)) / (np.log10(20000) - np.log10(20))
+        return float(np.clip(val, 0.0, 1.0))
+    except Exception:
+        return 0.5
+
+def _calibrate_enum_to_label(plugin_name: str, track_idx: int, fx_idx: int, param_idx: int, label_synonyms: list) -> float:
+    """Sweep candidate normalized values and return the one whose display matches any label_synonyms."""
+    plugin_key = (plugin_name.lower().strip(), f"p{param_idx}")
+    label_key = "|".join(sorted([ls.lower() for ls in label_synonyms]))
+    cache_key = (plugin_key, label_key)
+    if cache_key in ENUM_LABEL_CACHE:
+        return ENUM_LABEL_CACHE[cache_key]
+
+    candidates = [0.00, 0.08, 0.12, 0.17, 0.25, 0.33, 0.42, 0.50, 0.58, 0.67, 0.75, 0.83, 0.92, 1.00]
+    for v in candidates:
+        send_reaper_commands([f"SET_FX_PARAM {track_idx} {fx_idx} {param_idx} {v}"])
+        time.sleep(0.15)
+        state = get_reaper_state()
+        _, disp = _get_param_display(state, track_idx, fx_idx, param_idx)
+        if not disp:
+            continue
+        d = disp.lower()
+        if any(ls in d for ls in [s.lower() for s in label_synonyms]):
+            ENUM_LABEL_CACHE[cache_key] = v
+            return v
+    # Fallback: return middle
+    ENUM_LABEL_CACHE[cache_key] = 0.5
+    return 0.5
+
+def ensure_eq_bandpass_generic(track_idx: int, preferred_plugins: list, hp_hz: float, lp_hz: float, slope_label: str = "48"):
+    """
+    Ensure band-pass (HP @ hp_hz, LP @ lp_hz) on any EQ using schema discovery + enum calibration.
+    Returns a list of commands to send.
+    """
+    cmds = []
+    state = get_reaper_state()
+
+    # 1) Find or add a preferred EQ
+    fx_idx = _find_fx_index_by_candidates(state, track_idx, preferred_plugins)
+    plugin_name = ""
+    if fx_idx < 0:
+        # Try to add the first preferred plugin
+        for plugin in preferred_plugins:
+            if send_reaper_commands([f"ADD_FX {track_idx} {plugin}"]):
+                time.sleep(0.8)
+                state = get_reaper_state()
+                fx_idx = _find_fx_index_by_candidates(state, track_idx, [plugin])
+                if fx_idx >= 0:
+                    cmds.append(f"ADD_FX {track_idx} {plugin}")
+                    plugin_name = plugin
+                    break
+        if fx_idx < 0:
+            return cmds  # Failed to add any EQ
+    if not plugin_name:
+        plugin_name = _get_plugin_name(state, track_idx, fx_idx)
+
+    # 2) Discover params
+    params = _get_fx_param_table(state, track_idx, fx_idx)
+
+    # Try to get band 1 + band 2 slots
+    b1_used, _ = _find_band_param(params, 1, "used")
+    b1_freq, _ = _find_band_param(params, 1, "freq")
+    b1_type, b1_type_name = _find_band_param(params, 1, "type")
+    b1_slope, _ = _find_band_param(params, 1, "slope")
+
+    b2_used, _ = _find_band_param(params, 2, "used")
+    b2_freq, _ = _find_band_param(params, 2, "freq")
+    b2_type, b2_type_name = _find_band_param(params, 2, "type")
+    b2_slope, _ = _find_band_param(params, 2, "slope")
+
+    # 3) Enable bands if possible
+    if b1_used is not None:
+        cmds.append(f"SET_FX_PARAM {track_idx} {fx_idx} {b1_used} 1.0")
+    if b2_used is not None:
+        cmds.append(f"SET_FX_PARAM {track_idx} {fx_idx} {b2_used} 1.0")
+
+    # 4) Set frequencies
+    if b1_freq is not None:
+        cmds.append(f"SET_FX_PARAM {track_idx} {fx_idx} {b1_freq} {_freq_to_norm(hp_hz):.4f}")
+    if b2_freq is not None:
+        cmds.append(f"SET_FX_PARAM {track_idx} {fx_idx} {b2_freq} {_freq_to_norm(lp_hz):.4f}")
+
+    # 5) Set types using calibration
+    # Band 1 should be High-Pass (often labeled Low Cut in FabFilter)
+    if b1_type is not None:
+        state = get_reaper_state()
+        plugin = plugin_name or _get_plugin_name(state, track_idx, fx_idx)
+        hp_labels = ["high pass", "high-pass", "low cut", "low-cut"]  # synonyms
+        val = _calibrate_enum_to_label(plugin, track_idx, fx_idx, b1_type, hp_labels)
+        cmds.append(f"SET_FX_PARAM {track_idx} {fx_idx} {b1_type} {val}")
+
+    # Band 2 should be Low-Pass (often labeled High Cut)
+    if b2_type is not None:
+        state = get_reaper_state()
+        plugin = plugin_name or _get_plugin_name(state, track_idx, fx_idx)
+        lp_labels = ["low pass", "low-pass", "high cut", "high-cut"]
+        val = _calibrate_enum_to_label(plugin, track_idx, fx_idx, b2_type, lp_labels)
+        cmds.append(f"SET_FX_PARAM {track_idx} {fx_idx} {b2_type} {val}")
+
+    # 6) Set slopes to requested (e.g., "48")
+    if b1_slope is not None:
+        state = get_reaper_state()
+        plugin = plugin_name or _get_plugin_name(state, track_idx, fx_idx)
+        slope_labels = [f"{slope_label}", f"{slope_label} db", f"{slope_label}db"]
+        val = _calibrate_enum_to_label(plugin, track_idx, fx_idx, b1_slope, slope_labels)
+        cmds.append(f"SET_FX_PARAM {track_idx} {fx_idx} {b1_slope} {val}")
+    if b2_slope is not None:
+        state = get_reaper_state()
+        plugin = plugin_name or _get_plugin_name(state, track_idx, fx_idx)
+        slope_labels = [f"{slope_label}", f"{slope_label} db", f"{slope_label}db"]
+        val = _calibrate_enum_to_label(plugin, track_idx, fx_idx, b2_slope, slope_labels)
+        cmds.append(f"SET_FX_PARAM {track_idx} {fx_idx} {b2_slope} {val}")
+
+    return cmds
+
+def _find_fx_index_in_state(state_text: str, track_idx: int, name_substring: str) -> int:
+    current_track = None
+    for line in state_text.splitlines():
+        m = re.match(r'--- Track (\d+):', line)
+        if m:
+            current_track = int(m.group(1))
+            continue
+        if current_track != track_idx:
+            continue
+        m = re.match(r'\s*\[(\d+)\]\s+(.+)', line)
+        if m:
+            fx_idx = int(m.group(1))
+            fx_name = m.group(2).strip().lower()
+            if name_substring.lower() in fx_name:
+                return fx_idx
+    return -1
+
+def _get_param_display(state_text: str, track_idx: int, fx_idx: int, param_idx: int):
+    current_track = None
+    current_fx = None
+    for line in state_text.splitlines():
+        m = re.match(r'--- Track (\d+):', line)
+        if m:
+            current_track = int(m.group(1))
+            current_fx = None
+            continue
+        if current_track != track_idx:
+            continue
+        m = re.match(r'\s*\[(\d+)\]\s+(.+)', line)
+        if m:
+            current_fx = int(m.group(1))
+            continue
+        if current_fx == fx_idx:
+            m = re.match(r'\s*p(\d+)\s+([^:]+):\s*[^\[]*\[\s*(.*?)\s*\]', line)
+            if m and int(m.group(1)) == param_idx:
+                param_name = m.group(2).strip()
+                display = m.group(3).strip()
+                return param_name, display
+    return None, None
+
+def _calibrate_proq3_enums(track_idx: int, fx_idx: int):
+    # Only calibrate once per session
+    if PROQ3_ENUM_CACHE["low_cut"] and PROQ3_ENUM_CACHE["high_cut"] and PROQ3_ENUM_CACHE["slope_48"]:
+        return
+
+    candidates = [0.00, 0.08, 0.12, 0.17, 0.25, 0.33, 0.42, 0.50, 0.58, 0.67, 0.75, 0.83, 0.92, 1.00]
+
+    # Band 1 Shape (param 8) → find Low Cut and High Cut
+    try:
+        for v in candidates:
+            send_reaper_commands([f"SET_FX_PARAM {track_idx} {fx_idx} 8 {v}"])
+            time.sleep(0.2)
+            state = get_reaper_state()
+            _, disp = _get_param_display(state, track_idx, fx_idx, 8)
+            if not disp:
+                continue
+            d = disp.lower()
+            if (("low cut" in d) or ("high pass" in d)) and PROQ3_ENUM_CACHE["low_cut"] is None:
+                PROQ3_ENUM_CACHE["low_cut"] = v
+            if (("high cut" in d) or ("low pass" in d)) and PROQ3_ENUM_CACHE["high_cut"] is None:
+                PROQ3_ENUM_CACHE["high_cut"] = v
+            if PROQ3_ENUM_CACHE["low_cut"] and PROQ3_ENUM_CACHE["high_cut"]:
+                break
+    except Exception:
+        pass
+
+    # Band 1 Slope (param 9) → find 48 dB/oct (and 96/Brickwall optionally)
+    try:
+        for v in candidates:
+            send_reaper_commands([f"SET_FX_PARAM {track_idx} {fx_idx} 9 {v}"])
+            time.sleep(0.2)
+            state = get_reaper_state()
+            _, disp = _get_param_display(state, track_idx, fx_idx, 9)
+            if not disp:
+                continue
+            d = disp.lower()
+            if (("48" in d) or ("48 db" in d)) and PROQ3_ENUM_CACHE["slope_48"] is None:
+                PROQ3_ENUM_CACHE["slope_48"] = v
+            if (("96" in d) or ("brickwall" in d)) and PROQ3_ENUM_CACHE["slope_96"] is None:
+                PROQ3_ENUM_CACHE["slope_96"] = v
+            if PROQ3_ENUM_CACHE["slope_48"] and PROQ3_ENUM_CACHE["slope_96"]:
+                break
+    except Exception:
+        pass
+
+def _rewrite_proq3_commands_with_calibration(reaper_commands: list) -> list:
+    """
+    If the command batch includes adding Pro-Q 3 and setting band shapes/slopes,
+    send the ADD_FX first, calibrate enum values, then rewrite remaining commands
+    to use the calibrated normalized values.
+    """
+    if not reaper_commands:
+        return reaper_commands
+
+    adds = [c for c in reaper_commands if c.startswith("ADD_FX") and "Pro-Q 3" in c]
+    if not adds:
+        return reaper_commands
+
+    # Use the first Pro-Q 3 addition to calibrate
+    add_cmd = adds[0]
+    try:
+        parts = add_cmd.split()
+        track_idx = int(parts[1])
+    except Exception:
+        return reaper_commands
+
+    # Send ADD_FX early to create the instance for calibration
+    send_reaper_commands([add_cmd])
+    time.sleep(1.0)
+    state = get_reaper_state()
+    fx_idx = _find_fx_index_in_state(state, track_idx, "Pro-Q 3")
+    if fx_idx < 0:
+        return reaper_commands
+
+    _calibrate_proq3_enums(track_idx, fx_idx)
+
+    # Rebuild commands: skip the first ADD_FX (already sent), and rewrite shapes/slopes
+    rewritten = []
+    skipped_first = False
+    for c in reaper_commands:
+        if not skipped_first and c == add_cmd:
+            skipped_first = True
+            continue
+        m = re.match(r'^SET_FX_PARAM\s+(\d+)\s+(\d+)\s+(\d+)\s+([0-9.]+)$', c.strip())
+        if not m:
+            rewritten.append(c)
+            continue
+        t = int(m.group(1)); f = int(m.group(2)); p = int(m.group(3))
+        if t == track_idx and f == fx_idx:
+            # Band 1 type/slope: p8/p9; Band 2 type/slope: p21/p22
+            if p == 8 and PROQ3_ENUM_CACHE["low_cut"] is not None:
+                c = f"SET_FX_PARAM {t} {f} 8 {PROQ3_ENUM_CACHE['low_cut']}"
+            elif p == 21 and PROQ3_ENUM_CACHE["high_cut"] is not None:
+                c = f"SET_FX_PARAM {t} {f} 21 {PROQ3_ENUM_CACHE['high_cut']}"
+            elif p in (9, 22) and PROQ3_ENUM_CACHE["slope_48"] is not None:
+                c = f"SET_FX_PARAM {t} {f} {p} {PROQ3_ENUM_CACHE['slope_48']}"
+        rewritten.append(c)
+
+    return rewritten
+
 SUCCESS_TOKENS = (
     "✓",
     "✅",
@@ -844,10 +1232,10 @@ def sanity_check_actions(user_goal, planned_steps, known_actions):
         return planned_steps, []
 
 def load_action_list():
-    """Load complete action database (6,309 actions!)"""
+    """Load curated action database (94 essential actions)"""
     known_actions = {}
     try:
-        # Try current directory first, then fallback to old path
+        # Use curated small action list for better focus
         action_file = Path("reaper_actions.txt")
         if not action_file.exists():
             action_file = Path(r"C:\Users\moosb\AIAGENT DAW\reaper_actions.txt")
@@ -3507,34 +3895,20 @@ def apply_production_adjustments(track_idx, differences, iteration=1):
         hp = differences['filtering']['ref_high_pass'] or 300
         lp = differences['filtering']['ref_low_pass'] or 3000
         print(f"   ✅ Adding telephone effect ({hp}Hz-{lp}Hz)")
-        
-        # Add Pro-Q 3
-        commands.append(f"ADD_FX {track_idx} VST3: Pro-Q 3 (FabFilter)")
-        
-        # High-pass filter (Band 1)
-        # Enable band
-        commands.append(f"SET_FX_PARAM {track_idx} {fx_index} 0 1.0")
-        # Set frequency
-        hp_normalized = (np.log10(hp) - np.log10(20)) / (np.log10(20000) - np.log10(20))
-        commands.append(f"SET_FX_PARAM {track_idx} {fx_index} 1 {hp_normalized:.4f}")
-        # Set to High Cut type (0.83)
-        commands.append(f"SET_FX_PARAM {track_idx} {fx_index} 8 0.17")
-        # Set slope to brickwall
-        commands.append(f"SET_FX_PARAM {track_idx} {fx_index} 9 1.0")
-        
-        # Low-pass filter (Band 2)
-        # Enable band
-        commands.append(f"SET_FX_PARAM {track_idx} {fx_index} 13 1.0")
-        # Set frequency
-        lp_normalized = (np.log10(lp) - np.log10(20)) / (np.log10(20000) - np.log10(20))
-        commands.append(f"SET_FX_PARAM {track_idx} {fx_index} 14 {lp_normalized:.4f}")
-        # Set to Low Cut type (0.17)
-        commands.append(f"SET_FX_PARAM {track_idx} {fx_index} 21 0.83")
-        # Set slope to brickwall
-        commands.append(f"SET_FX_PARAM {track_idx} {fx_index} 22 1.0")
-        
+
+        # Use generic EQ schema/cali to apply band-pass on any EQ
+        preferred_eqs = [
+            "VST3: Pro-Q 3 (FabFilter)",
+            "Pro-Q 3",
+            "VST3: ReaEQ (Cockos)",
+            "ReaEQ",
+            "VST: ReaEQ (Cockos)"
+        ]
+        generic_cmds = ensure_eq_bandpass_generic(track_idx, preferred_eqs, hp, lp, slope_label="48")
+        commands.extend(generic_cmds)
+
         actions_taken.append(f"telephone ({hp}Hz-{lp}Hz)")
-        fx_index += 1
+        fx_index += 1 if generic_cmds else 0
     
     # Delay
     if differences['delay']['needs_delay'] or differences['delay'].get('needs_adjust'):
@@ -5414,6 +5788,22 @@ Recommendations: {', '.join(analysis.get('recommendations', [])) if analysis.get
         if feedback != "No feedback available":
             print(f"📢 Reaper says: {feedback}")
         
+        # If Pro-Q 3 is involved, rewrite and resend with calibrated values
+        # We do this after initial send to ensure the plugin instance exists for calibration
+        if reaper_commands and any(("ADD_FX" in c and "Pro-Q 3" in c) or re.search(r"SET_FX_PARAM\s+\d+\s+\d+\s+(8|9|21|22)\s+", c) for c in reaper_commands):
+            # Rewrite commands with calibrated values and re-send if there were changes
+            rewritten = _rewrite_proq3_commands_with_calibration(reaper_commands)
+            if rewritten != reaper_commands:
+                print("🛠️ Calibrated Pro-Q 3 mapping → resending corrected commands")
+                if not send_reaper_commands(rewritten):
+                    print("❌ Failed to send calibrated commands")
+                else:
+                    print("✅ Calibrated commands sent")
+                time.sleep(0.8)
+                feedback2 = get_reaper_feedback()
+                if feedback2 != "No feedback available":
+                    print(f"📢 Reaper says: {feedback2}")
+        
         # Display lyrics if extracted (only show ONCE, not on every retry)
         if lyrics_results and not lyrics_already_displayed:
             for result in lyrics_results:
@@ -5678,6 +6068,18 @@ Recommendations: {', '.join(analysis.get('recommendations', [])) if analysis.get
             if issues:
                 print(f"📌 What's wrong: {issues}")
                 print(f"🔄 Will retry with this information...")
+
+            # Guardrail: if our commands changed state but verification failed, auto-revert to pre-send snapshot
+            try:
+                state_changed = (initial_state != final_state)
+                changed_by_us = any(("SET_FX_PARAM" in c) or ("ADD_FX" in c) or ("REMOVE_FX" in c) for c in reaper_commands)
+                if state_changed and changed_by_us:
+                    print("↩️  Auto-reverting to last snapshot (guardrail)...")
+                    ok, msg = revert_to_snapshot(-1)
+                    print(f"{'✅' if ok else '❌'} {msg}")
+                    time.sleep(0.6)
+            except Exception as _:
+                pass
             
             # Track failed action IDs and custom commands so we don't retry them
             for cmd in commands:
