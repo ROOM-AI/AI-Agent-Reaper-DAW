@@ -16,7 +16,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the application files
 COPY main.py .
-COPY local_agent.py .
+COPY old.py .
 COPY cloud_agent_wrapper.py .
 COPY prompt_enhancer.py .
 COPY local_bridge.pyw .

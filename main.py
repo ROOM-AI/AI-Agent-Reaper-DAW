@@ -338,7 +338,8 @@ def _ensure_agent_loaded():
     global agent
     if agent is None:
         import importlib.util
-        spec = importlib.util.spec_from_file_location("local_agent", "local_agent.py")
+        # Load legacy robust agent (old.py) instead of local_agent.py
+        spec = importlib.util.spec_from_file_location("old", "old.py")
         _agent = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(_agent)
         _agent.set_cloud_hooks(

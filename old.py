@@ -26,7 +26,7 @@ def set_cloud_hooks(
     memory_load=None,
     memory_save=None,
 ):
-    """Inject cloud I/O hooks so the real agent can run in server context"""
+    """Inject cloud I/O hooks so the agent can run in server context"""
     global _CLOUD_STATE_PROVIDER, _CLOUD_COMMAND_SINK, _CLOUD_FEEDBACK_PROVIDER
     global _CLOUD_MEMORY_LOAD, _CLOUD_MEMORY_SAVE
     _CLOUD_STATE_PROVIDER = state_provider or _CLOUD_STATE_PROVIDER
@@ -39,6 +39,46 @@ def set_current_session(session_id: str):
     """Set the active session id for cloud hook calls"""
     global _CURRENT_SESSION_ID
     _CURRENT_SESSION_ID = session_id or "demo"
+
+# Base data directory (configurable via environment variable, auto-align with bridge if possible)
+DEFAULT_BASE_DIR = Path(os.environ.get("AI_AGENT_REAPER_DATA_DIR", str(Path.home() / "AI-Agent-Reaper-DAW" / "data")))
+BASE_DIR = Path(DEFAULT_BASE_DIR)
+
+# If not explicitly set via env, prefer the bridge directory (repo parent) when it contains the txt files.
+if "AI_AGENT_REAPER_DATA_DIR" not in os.environ:
+    try:
+        repo_dir = Path(__file__).resolve().parent
+        parent_dir = repo_dir.parent  # e.g., C:\Users\moosb\AIAGENT DAW
+        parent_has_bridge_files = (parent_dir / "reaper_state.txt").exists() or (parent_dir / "reaper_commands.txt").exists()
+        if parent_has_bridge_files:
+            BASE_DIR = parent_dir
+    except Exception:
+        # Fallback to default if any resolution fails
+        BASE_DIR = Path(DEFAULT_BASE_DIR)
+
+BASE_DIR.mkdir(parents=True, exist_ok=True)
+
+# Announce chosen IO directory once (helps align with bridge)
+print(f"📁 Using IO directory: {BASE_DIR}")
+
+# File locations
+COMMAND_FILE = str(BASE_DIR / "reaper_commands.txt")
+STATE_FILE = str(BASE_DIR / "reaper_state.txt")
+MEMORY_FILE = str(BASE_DIR / "agent_memory.txt")
+FEEDBACK_FILE = str(BASE_DIR / "reaper_feedback.txt")
+DEBUG_LOG_FILE = str(BASE_DIR / "agent_debug.log")
+KNOWLEDGE_BASE_FILE = str(BASE_DIR / "sound_knowledge_base.json")
+USER_PREFERENCES_FILE = str(BASE_DIR / "user_preferences.json")
+LYRICS_CACHE_DIR = str(BASE_DIR / "lyrics_cache")
+TEMP_AUDIO_DIR = str(BASE_DIR / "temp_audio")
+STATE_HISTORY_FILE = str(BASE_DIR / "state_history.json")
+REFERENCE_AUDIO_DIR = str(BASE_DIR / "references")
+STRUCTURED_MEMORY_FILE = str(BASE_DIR / "structured_memory.json")
+
+# Ensure subdirectories exist
+Path(LYRICS_CACHE_DIR).mkdir(parents=True, exist_ok=True)
+Path(TEMP_AUDIO_DIR).mkdir(parents=True, exist_ok=True)
+Path(REFERENCE_AUDIO_DIR).mkdir(parents=True, exist_ok=True)
 
 # Clipboard for auto-copying enhanced prompts
 try:
@@ -107,9 +147,11 @@ CLAP_AVAILABLE = False
 # MERT removed - using pure librosa analysis instead
 MERT_AVAILABLE = False
 
-# Initialize API clients
-client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", "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"))
-openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY", "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"))
+# Initialize Anthropic Claude
+client = Anthropic(api_key="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")
+
+# Initialize OpenAI for Whisper
+openai_client = OpenAI(api_key="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")
 
 # Parameter conversion helpers
 def db_to_normalized(target_db, min_db=-30, max_db=30):
@@ -120,18 +162,7 @@ def normalized_to_db(normalized, min_db=-30, max_db=30):
     """Convert normalized 0-1 value to dB"""
     return min_db + (normalized * (max_db - min_db))
 
-COMMAND_FILE = r"C:\Users\moosb\AIAGENT DAW\reaper_commands.txt"
-STATE_FILE = r"C:\Users\moosb\AIAGENT DAW\reaper_state.txt"
-MEMORY_FILE = r"C:\Users\moosb\AIAGENT DAW\agent_memory.txt"
-FEEDBACK_FILE = r"C:\Users\moosb\AIAGENT DAW\reaper_feedback.txt"
-DEBUG_LOG_FILE = r"C:\Users\moosb\AIAGENT DAW\agent_debug.log"
-KNOWLEDGE_BASE_FILE = r"C:\Users\moosb\AIAGENT DAW\sound_knowledge_base.json"
-USER_PREFERENCES_FILE = r"C:\Users\moosb\AIAGENT DAW\user_preferences.json"
-LYRICS_CACHE_DIR = r"C:\Users\moosb\AIAGENT DAW\lyrics_cache"
-TEMP_AUDIO_DIR = r"C:\Users\moosb\AIAGENT DAW\temp_audio"
-STATE_HISTORY_FILE = r"C:\Users\moosb\AIAGENT DAW\state_history.json"
-REFERENCE_AUDIO_DIR = r"C:\Users\moosb\AIAGENT DAW\references"
-STRUCTURED_MEMORY_FILE = r"C:\Users\moosb\AIAGENT DAW\structured_memory.json"
+# Paths configured via BASE_DIR above
 
 # Production terms for CLAP semantic matching
 PRODUCTION_TERMS = [
@@ -343,19 +374,6 @@ def log_debug(message):
             f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {message}\n")
     except:
         pass
-
-# UI logging mode: FULL (default), COT (only chain-of-thought + summary), MIN (summary only)
-AGENT_LOG_MODE = os.getenv("AGENT_LOG_MODE", "FULL").upper()
-def ui_print(message: str, section: str = "GENERAL"):
-    mode = AGENT_LOG_MODE
-    if mode == "FULL":
-        print(message)
-    elif mode == "COT":
-        if section in ("COT", "SUMMARY"):
-            print(message)
-    elif mode == "MIN":
-        if section == "SUMMARY":
-            print(message)
 
 
 @contextmanager
@@ -672,18 +690,19 @@ def parse_fx_list(state):
     return fx_list
 
 def send_reaper_commands(commands):
-    """Send commands to Reaper (cloud-aware)"""
-    # Cloud hook path
-    if _CLOUD_COMMAND_SINK is not None:
-        try:
-            if not isinstance(commands, list):
-                commands = [commands]
-            return _CLOUD_COMMAND_SINK(commands, _CURRENT_SESSION_ID)
-        except Exception:
-            return False
-    
-    # Local file path
+    """Send commands to Reaper or cloud sink"""
     try:
+        # Normalize input
+        if not isinstance(commands, list):
+            commands = [commands]
+
+        # Prefer cloud sink if available
+        if _CLOUD_COMMAND_SINK is not None:
+            ok = _CLOUD_COMMAND_SINK(commands, _CURRENT_SESSION_ID)
+            log_debug(f"Sent via cloud sink: {commands} (ok={ok})")
+            return bool(ok)
+
+        # Fallback to local file write (bridge/Lua)
         with open(COMMAND_FILE, 'w') as f:
             for cmd in commands:
                 f.write(cmd + '\n')
@@ -695,23 +714,23 @@ def send_reaper_commands(commands):
         return False
 
 def get_reaper_state():
-    """Get current Reaper state (cloud-aware)"""
-    # Cloud hook path
+    """Get current Reaper state (cloud or local)"""
+    # Cloud path: ask provider directly
     if _CLOUD_STATE_PROVIDER is not None:
         try:
-            state_text = _CLOUD_STATE_PROVIDER(_CURRENT_SESSION_ID)
-            return state_text if isinstance(state_text, str) else str(state_text)
-        except Exception:
-            return "State unavailable"
-    
-    # Local file path
+            return _CLOUD_STATE_PROVIDER(_CURRENT_SESSION_ID) or ""
+        except Exception as e:
+            log_debug(f"Cloud state provider error: {e}")
+            # Fall through to local
+
+    # Local path: request and read file
     if not send_reaper_commands(["GET_STATE"]):
         return "State unavailable"
     time.sleep(0.3)
     try:
         with open(STATE_FILE, "r") as f:
             return f.read()
-    except:
+    except Exception:
         return "State unavailable"
 
 def get_reaper_feedback():
@@ -734,500 +753,6 @@ def clear_reaper_feedback():
         log_debug("Cleared feedback file")
     except Exception as e:
         log_debug(f"Failed to clear feedback: {e}")
-
-# === Pro-Q 3 calibration and command rewrite helpers ===
-# Dynamically learn the normalized values for Low Cut / High Cut shapes and 48 dB/oct slope
-# on the user's installed Pro-Q 3, then rewrite outgoing commands to use those exact values.
-PROQ3_ENUM_CACHE = {
-    "low_cut": None,   # normalized value for "Low Cut" (aka High-Pass)
-    "high_cut": None,  # normalized value for "High Cut" (aka Low-Pass)
-    "slope_48": None,  # normalized value for "48 dB/oct"
-    "slope_96": None,  # normalized value for "96 dB/oct" or "Brickwall" (optional)
-}
-
-# === Generic FX schema + enum calibration (plugin-agnostic) ===
-FX_SCHEMA_CACHE = {}   # key: (plugin_name_lower) -> {'params': [(idx, name_lower, display)], 'built': ts}
-ENUM_LABEL_CACHE = {}  # key: (plugin_name_lower, param_name_lower_or_idx, label_key) -> normalized_value
-
-def _find_fx_index_in_state(state_text: str, track_idx: int, name_substring: str) -> int:
-    current_track = None
-    for line in state_text.splitlines():
-        m = re.match(r'--- Track (\d+):', line)
-        if m:
-            current_track = int(m.group(1))
-            continue
-        if current_track != track_idx:
-            continue
-        m = re.match(r'\s*\[(\d+)\]\s+(.+)', line)
-        if m:
-            fx_idx = int(m.group(1))
-            fx_name = m.group(2).strip().lower()
-            if name_substring.lower() in fx_name:
-                return fx_idx
-    return -1
-
-def _find_fx_index_by_candidates(state_text: str, track_idx: int, candidates: list) -> int:
-    for cand in candidates:
-        fx_idx = _find_fx_index_in_state(state_text, track_idx, cand)
-        if fx_idx >= 0:
-            return fx_idx
-    return -1
-
-def _get_plugin_name(state_text: str, track_idx: int, fx_idx: int) -> str:
-    current_track = None
-    for line in state_text.splitlines():
-        m = re.match(r'--- Track (\d+):', line)
-        if m:
-            current_track = int(m.group(1))
-            continue
-        if current_track != track_idx:
-            continue
-        m = re.match(r'\s*\[(\d+)\]\s+(.+)', line)
-        if m and int(m.group(1)) == fx_idx:
-            return m.group(2).strip()
-    return ""
-
-def _get_param_display(state_text: str, track_idx: int, fx_idx: int, param_idx: int):
-    current_track = None
-    current_fx = None
-    for line in state_text.splitlines():
-        m = re.match(r'--- Track (\d+):', line)
-        if m:
-            current_track = int(m.group(1))
-            current_fx = None
-            continue
-        if current_track != track_idx:
-            continue
-        m = re.match(r'\s*\[(\d+)\]\s+(.+)', line)
-        if m:
-            current_fx = int(m.group(1))
-            continue
-        if current_fx == fx_idx:
-            m = re.match(r'\s*p(\d+)\s+([^:]+):\s*[^\[]*\[\s*(.*?)\s*\]', line)
-            if m and int(m.group(1)) == param_idx:
-                param_name = m.group(2).strip()
-                display = m.group(3).strip()
-                return param_name, display
-    return None, None
-
-def _get_fx_param_table(state_text: str, track_idx: int, fx_idx: int):
-    current_track = None
-    current_fx = None
-    params = []
-    for line in state_text.splitlines():
-        m = re.match(r'--- Track (\d+):', line)
-        if m:
-            current_track = int(m.group(1))
-            current_fx = None
-            continue
-        if current_track != track_idx:
-            continue
-        m = re.match(r'\s*\[(\d+)\]\s+(.+)', line)
-        if m:
-            current_fx = int(m.group(1))
-            continue
-        if current_fx == fx_idx:
-            m = re.match(r'\s*p(\d+)\s+([^:]+):\s*[^\[]*\[\s*(.*?)\s*\]', line)
-            if m:
-                idx = int(m.group(1))
-                name = m.group(2).strip().lower()
-                display = m.group(3).strip().lower()
-                params.append((idx, name, display))
-    return params
-
-def _find_param_by_keywords(param_table, include_keywords, exclude_keywords=None):
-    include = [kw.lower() for kw in include_keywords]
-    exclude = [kw.lower() for kw in (exclude_keywords or [])]
-    for idx, name, _ in param_table:
-        if all(k in name for k in include) and not any(x in name for x in exclude):
-            return idx, name
-    return None, None
-
-def _find_band_param(param_table, band_num: int, key: str):
-    # Generic band param discovery: works for names like "Band 1 Frequency", "B1 Freq", "Band1 Type"
-    band_tokens = [f"band {band_num}", f"band{band_num}", f"b{band_num}"]
-    key_map = {
-        "used": ["used", "enable", "enabled", "active"],
-        "freq": ["freq", "frequency", "cutoff"],
-        "gain": ["gain"],
-        "type": ["type", "shape", "filter"],
-        "slope": ["slope"]
-    }
-    includes = key_map.get(key, [])
-    for bt in band_tokens:
-        for inc in includes:
-            idx, name = _find_param_by_keywords(param_table, [bt, inc])
-            if idx is not None:
-                return idx, name
-    # Try without explicit band token for plugins that show "High Cut Frequency" etc.
-    for inc in includes:
-        idx, name = _find_param_by_keywords(param_table, [inc])
-        if idx is not None:
-            return idx, name
-    return None, None
-
-def _freq_to_norm(freq_hz: float) -> float:
-    try:
-        val = (np.log10(freq_hz) - np.log10(20)) / (np.log10(20000) - np.log10(20))
-        return float(np.clip(val, 0.0, 1.0))
-    except Exception:
-        return 0.5
-
-def _calibrate_enum_to_label(plugin_name: str, track_idx: int, fx_idx: int, param_idx: int, label_synonyms: list) -> float:
-    """Sweep candidate normalized values and return the one whose display matches any label_synonyms."""
-    plugin_key = (plugin_name.lower().strip(), f"p{param_idx}")
-    label_key = "|".join(sorted([ls.lower() for ls in label_synonyms]))
-    cache_key = (plugin_key, label_key)
-    if cache_key in ENUM_LABEL_CACHE:
-        return ENUM_LABEL_CACHE[cache_key]
-
-    candidates = [0.00, 0.08, 0.12, 0.17, 0.25, 0.33, 0.42, 0.50, 0.58, 0.67, 0.75, 0.83, 0.92, 1.00]
-    for v in candidates:
-        send_reaper_commands([f"SET_FX_PARAM {track_idx} {fx_idx} {param_idx} {v}"])
-        time.sleep(0.15)
-        state = get_reaper_state()
-        _, disp = _get_param_display(state, track_idx, fx_idx, param_idx)
-        if not disp:
-            continue
-        d = disp.lower()
-        if any(ls in d for ls in [s.lower() for s in label_synonyms]):
-            ENUM_LABEL_CACHE[cache_key] = v
-            return v
-    # Fallback: return middle
-    ENUM_LABEL_CACHE[cache_key] = 0.5
-    return 0.5
-
-def ensure_eq_bandpass_generic(track_idx: int, preferred_plugins: list, hp_hz: float, lp_hz: float, slope_label: str = "48"):
-    """
-    Ensure band-pass (HP @ hp_hz, LP @ lp_hz) on any EQ using schema discovery + enum calibration.
-    Returns a list of commands to send.
-    """
-    cmds = []
-    state = get_reaper_state()
-
-    # 1) Find or add a preferred EQ
-    fx_idx = _find_fx_index_by_candidates(state, track_idx, preferred_plugins)
-    plugin_name = ""
-    if fx_idx < 0:
-        # Try to add the first preferred plugin
-        for plugin in preferred_plugins:
-            if send_reaper_commands([f"ADD_FX {track_idx} {plugin}"]):
-                time.sleep(0.8)
-                state = get_reaper_state()
-                fx_idx = _find_fx_index_by_candidates(state, track_idx, [plugin])
-                if fx_idx >= 0:
-                    cmds.append(f"ADD_FX {track_idx} {plugin}")
-                    plugin_name = plugin
-                    break
-        if fx_idx < 0:
-            return cmds  # Failed to add any EQ
-    if not plugin_name:
-        plugin_name = _get_plugin_name(state, track_idx, fx_idx)
-
-    # 2) Discover params
-    params = _get_fx_param_table(state, track_idx, fx_idx)
-
-    # Try to get band 1 + band 2 slots
-    b1_used, _ = _find_band_param(params, 1, "used")
-    b1_freq, _ = _find_band_param(params, 1, "freq")
-    b1_type, b1_type_name = _find_band_param(params, 1, "type")
-    b1_slope, _ = _find_band_param(params, 1, "slope")
-
-    b2_used, _ = _find_band_param(params, 2, "used")
-    b2_freq, _ = _find_band_param(params, 2, "freq")
-    b2_type, b2_type_name = _find_band_param(params, 2, "type")
-    b2_slope, _ = _find_band_param(params, 2, "slope")
-
-    # 3) Enable bands if possible
-    if b1_used is not None:
-        cmds.append(f"SET_FX_PARAM {track_idx} {fx_idx} {b1_used} 1.0")
-    if b2_used is not None:
-        cmds.append(f"SET_FX_PARAM {track_idx} {fx_idx} {b2_used} 1.0")
-
-    # 4) Set frequencies
-    if b1_freq is not None:
-        cmds.append(f"SET_FX_PARAM {track_idx} {fx_idx} {b1_freq} {_freq_to_norm(hp_hz):.4f}")
-    if b2_freq is not None:
-        cmds.append(f"SET_FX_PARAM {track_idx} {fx_idx} {b2_freq} {_freq_to_norm(lp_hz):.4f}")
-
-    # 5) Set types using calibration
-    # Band 1 should be High-Pass (often labeled Low Cut in FabFilter)
-    if b1_type is not None:
-        state = get_reaper_state()
-        plugin = plugin_name or _get_plugin_name(state, track_idx, fx_idx)
-        hp_labels = ["high pass", "high-pass", "low cut", "low-cut"]  # synonyms
-        val = _calibrate_enum_to_label(plugin, track_idx, fx_idx, b1_type, hp_labels)
-        cmds.append(f"SET_FX_PARAM {track_idx} {fx_idx} {b1_type} {val}")
-
-    # Band 2 should be Low-Pass (often labeled High Cut)
-    if b2_type is not None:
-        state = get_reaper_state()
-        plugin = plugin_name or _get_plugin_name(state, track_idx, fx_idx)
-        lp_labels = ["low pass", "low-pass", "high cut", "high-cut"]
-        val = _calibrate_enum_to_label(plugin, track_idx, fx_idx, b2_type, lp_labels)
-        cmds.append(f"SET_FX_PARAM {track_idx} {fx_idx} {b2_type} {val}")
-
-    # 6) Set slopes to requested (e.g., "48")
-    if b1_slope is not None:
-        state = get_reaper_state()
-        plugin = plugin_name or _get_plugin_name(state, track_idx, fx_idx)
-        slope_labels = [f"{slope_label}", f"{slope_label} db", f"{slope_label}db"]
-        val = _calibrate_enum_to_label(plugin, track_idx, fx_idx, b1_slope, slope_labels)
-        cmds.append(f"SET_FX_PARAM {track_idx} {fx_idx} {b1_slope} {val}")
-    if b2_slope is not None:
-        state = get_reaper_state()
-        plugin = plugin_name or _get_plugin_name(state, track_idx, fx_idx)
-        slope_labels = [f"{slope_label}", f"{slope_label} db", f"{slope_label}db"]
-        val = _calibrate_enum_to_label(plugin, track_idx, fx_idx, b2_slope, slope_labels)
-        cmds.append(f"SET_FX_PARAM {track_idx} {fx_idx} {b2_slope} {val}")
-
-    return cmds
-
-def _find_fx_index_in_state(state_text: str, track_idx: int, name_substring: str) -> int:
-    current_track = None
-    for line in state_text.splitlines():
-        m = re.match(r'--- Track (\d+):', line)
-        if m:
-            current_track = int(m.group(1))
-            continue
-        if current_track != track_idx:
-            continue
-        m = re.match(r'\s*\[(\d+)\]\s+(.+)', line)
-        if m:
-            fx_idx = int(m.group(1))
-            fx_name = m.group(2).strip().lower()
-            if name_substring.lower() in fx_name:
-                return fx_idx
-    return -1
-
-def _get_param_display(state_text: str, track_idx: int, fx_idx: int, param_idx: int):
-    current_track = None
-    current_fx = None
-    for line in state_text.splitlines():
-        m = re.match(r'--- Track (\d+):', line)
-        if m:
-            current_track = int(m.group(1))
-            current_fx = None
-            continue
-        if current_track != track_idx:
-            continue
-        m = re.match(r'\s*\[(\d+)\]\s+(.+)', line)
-        if m:
-            current_fx = int(m.group(1))
-            continue
-        if current_fx == fx_idx:
-            m = re.match(r'\s*p(\d+)\s+([^:]+):\s*[^\[]*\[\s*(.*?)\s*\]', line)
-            if m and int(m.group(1)) == param_idx:
-                param_name = m.group(2).strip()
-                display = m.group(3).strip()
-                return param_name, display
-    return None, None
-
-def _calibrate_proq3_enums(track_idx: int, fx_idx: int):
-    # Only calibrate once per session
-    if PROQ3_ENUM_CACHE["low_cut"] and PROQ3_ENUM_CACHE["high_cut"] and PROQ3_ENUM_CACHE["slope_48"]:
-        return
-
-    candidates = [0.00, 0.08, 0.12, 0.17, 0.25, 0.33, 0.42, 0.50, 0.58, 0.67, 0.75, 0.83, 0.92, 1.00]
-
-    # Band 1 Shape (param 8) → find Low Cut and High Cut
-    try:
-        for v in candidates:
-            send_reaper_commands([f"SET_FX_PARAM {track_idx} {fx_idx} 8 {v}"])
-            time.sleep(0.2)
-            state = get_reaper_state()
-            _, disp = _get_param_display(state, track_idx, fx_idx, 8)
-            if not disp:
-                continue
-            d = disp.lower()
-            if (("low cut" in d) or ("high pass" in d)) and PROQ3_ENUM_CACHE["low_cut"] is None:
-                PROQ3_ENUM_CACHE["low_cut"] = v
-            if (("high cut" in d) or ("low pass" in d)) and PROQ3_ENUM_CACHE["high_cut"] is None:
-                PROQ3_ENUM_CACHE["high_cut"] = v
-            if PROQ3_ENUM_CACHE["low_cut"] and PROQ3_ENUM_CACHE["high_cut"]:
-                break
-    except Exception:
-        pass
-
-    # Band 1 Slope (param 9) → find 48 dB/oct (and 96/Brickwall optionally)
-    try:
-        for v in candidates:
-            send_reaper_commands([f"SET_FX_PARAM {track_idx} {fx_idx} 9 {v}"])
-            time.sleep(0.2)
-            state = get_reaper_state()
-            _, disp = _get_param_display(state, track_idx, fx_idx, 9)
-            if not disp:
-                continue
-            d = disp.lower()
-            if (("48" in d) or ("48 db" in d)) and PROQ3_ENUM_CACHE["slope_48"] is None:
-                PROQ3_ENUM_CACHE["slope_48"] = v
-            if (("96" in d) or ("brickwall" in d)) and PROQ3_ENUM_CACHE["slope_96"] is None:
-                PROQ3_ENUM_CACHE["slope_96"] = v
-            if PROQ3_ENUM_CACHE["slope_48"] and PROQ3_ENUM_CACHE["slope_96"]:
-                break
-    except Exception:
-        pass
-
-def _rewrite_proq3_commands_with_calibration(reaper_commands: list) -> list:
-    """
-    If the command batch includes adding Pro-Q 3 and setting band shapes/slopes,
-    send the ADD_FX first, calibrate enum values, then rewrite remaining commands
-    to use the calibrated normalized values.
-    """
-    if not reaper_commands:
-        return reaper_commands
-
-    adds = [c for c in reaper_commands if c.startswith("ADD_FX") and "Pro-Q 3" in c]
-    if not adds:
-        return reaper_commands
-
-    # Use the first Pro-Q 3 addition to calibrate
-    add_cmd = adds[0]
-    try:
-        parts = add_cmd.split()
-        track_idx = int(parts[1])
-    except Exception:
-        return reaper_commands
-
-    # Send ADD_FX early to create the instance for calibration
-    send_reaper_commands([add_cmd])
-    time.sleep(1.0)
-    state = get_reaper_state()
-    fx_idx = _find_fx_index_in_state(state, track_idx, "Pro-Q 3")
-    if fx_idx < 0:
-        return reaper_commands
-
-    _calibrate_proq3_enums(track_idx, fx_idx)
-
-    # Rebuild commands: skip the first ADD_FX (already sent), and rewrite shapes/slopes
-    rewritten = []
-    skipped_first = False
-    for c in reaper_commands:
-        if not skipped_first and c == add_cmd:
-            skipped_first = True
-            continue
-        m = re.match(r'^SET_FX_PARAM\s+(\d+)\s+(\d+)\s+(\d+)\s+([0-9.]+)$', c.strip())
-        if not m:
-            rewritten.append(c)
-            continue
-        t = int(m.group(1)); f = int(m.group(2)); p = int(m.group(3))
-        if t == track_idx and f == fx_idx:
-            # Band 1 type/slope: p8/p9; Band 2 type/slope: p21/p22
-            if p == 8 and PROQ3_ENUM_CACHE["low_cut"] is not None:
-                c = f"SET_FX_PARAM {t} {f} 8 {PROQ3_ENUM_CACHE['low_cut']}"
-            elif p == 21 and PROQ3_ENUM_CACHE["high_cut"] is not None:
-                c = f"SET_FX_PARAM {t} {f} 21 {PROQ3_ENUM_CACHE['high_cut']}"
-            elif p in (9, 22) and PROQ3_ENUM_CACHE["slope_48"] is not None:
-                c = f"SET_FX_PARAM {t} {f} {p} {PROQ3_ENUM_CACHE['slope_48']}"
-        rewritten.append(c)
-
-    return rewritten
-
-def _enforce_goal_and_neutralize(user_input: str, initial_state: str, reaper_commands: list) -> list:
-    """
-    Executor-level guardrail. Ensures neutralization for automation and EQ band-pass goals.
-    - Volume automation: if VOL_DIP is present and Volume automation already exists → prepend CLEAR_AUTOMATION.
-    - Telephone/band-pass (HP+LP): ignore planner's micro-steps and replace with generic EQ band-pass commands.
-    """
-    if not reaper_commands:
-        return reaper_commands
-
-    cmds = list(reaper_commands)
-    text = (user_input or "").lower()
-
-    # 0) Two-pass gating: if we're adding FX to a track in this batch, do not set ANY params
-    # for that same track in the same batch. First pass = ADD_FX only. Next cycle will set params
-    # using resolved indices from fresh state. This prevents guessing/wrong indices.
-    add_fx_tracks = set()
-    for c in cmds:
-        if c.startswith("ADD_FX"):
-            parts = c.split(maxsplit=3)
-            if len(parts) >= 3 and parts[1].isdigit():
-                add_fx_tracks.add(int(parts[1]))
-    if add_fx_tracks:
-        gated = []
-        for c in cmds:
-            if c.startswith("SET_FX_PARAM"):
-                parts = c.split()
-                if len(parts) >= 3 and parts[1].isdigit():
-                    tr = int(parts[1])
-                    if tr in add_fx_tracks:
-                        # Skip param writes for tracks where we're adding plugins in this batch
-                        continue
-            gated.append(c)
-        cmds = gated
-
-    # 1) Automation neutralization: Volume
-    needs_clear = False
-    tracks_to_clear = set()
-    for c in cmds:
-        if c.startswith("VOL_DIP"):
-            parts = c.split()
-            if len(parts) >= 2 and parts[1].isdigit():
-                tr = int(parts[1])
-                # Look in state for volume automation on this track
-                if re.search(rf'--- Track {tr}:\s+.*?Volume Automation:', initial_state, flags=re.S):
-                    needs_clear = True
-                    tracks_to_clear.add(tr)
-    if needs_clear:
-        clear_cmds = [f"CLEAR_AUTOMATION {tr} Volume" for tr in sorted(tracks_to_clear)]
-        # Prepend clears if not already included
-        if not any(cmd.startswith("CLEAR_AUTOMATION") for cmd in cmds):
-            cmds = clear_cmds + cmds
-
-    # 2) Telephone/band-pass enforcement across EQ
-    mentions_bandpass = any(k in text for k in ["telephone", "band-pass", "band pass"])
-    if mentions_bandpass:
-        # Try to detect track index from user_input or from commands (first that mentions a track)
-        tr_match = re.search(r'track\s+(\d+)', text)
-        if tr_match:
-            target_tr = int(tr_match.group(1))
-        else:
-            target_tr = None
-            for c in cmds:
-                m = re.match(r'^(?:ADD_FX|SET_FX_PARAM|VOL_DIP|FX_PARAM_AUTO|REMOVE_FX)\s+(\d+)\b', c)
-                if m:
-                    target_tr = int(m.group(1))
-                    break
-        if target_tr is not None:
-            preferred_eqs = [
-                "VST3: Pro-Q 3 (FabFilter)",
-                "Pro-Q 3",
-                "VST3: ReaEQ (Cockos)",
-                "ReaEQ",
-                "VST: ReaEQ (Cockos)"
-            ]
-            # Use default 300–3000 if not specified in text
-            hp, lp = 300.0, 3000.0
-            hp_match = re.search(r'(\d{2,5})\s*[-–to]+\s*(\d{2,5})\s*hz', text)
-            if hp_match:
-                a = float(hp_match.group(1)); b = float(hp_match.group(2))
-                hp, lp = min(a, b), max(a, b)
-            enforced = ensure_eq_bandpass_generic(target_tr, preferred_eqs, hp, lp, slope_label="48")
-            if enforced:
-                cmds = enforced  # Replace planner steps with deterministic goal enforcement
-
-    return cmds
-
-SUCCESS_TOKENS = (
-    "✓",
-    "✅",
-    "Success",
-    "Added FX",
-    "Set param",
-    "VOL_DIP",
-    "CLEARED AUTOMATION",
-    "APPLY_FROM_JSON",
-)
-
-def feedback_contains_success(feedback_text: str) -> bool:
-    """Return True if feedback clearly indicates success"""
-    if not feedback_text:
-        return False
-    for token in SUCCESS_TOKENS:
-        if token in feedback_text:
-            return True
-    return False
 
 def sanity_check_actions(user_goal, planned_steps, known_actions):
     """
@@ -1331,13 +856,13 @@ def sanity_check_actions(user_goal, planned_steps, known_actions):
         return planned_steps, []
 
 def load_action_list():
-    """Load curated action database (94 essential actions)"""
+    """Load complete action database (6,309 actions!)"""
     known_actions = {}
     try:
-        # Use curated small action list for better focus
+        # Try current directory first, then fallback to old path
         action_file = Path("reaper_actions.txt")
         if not action_file.exists():
-            action_file = Path(r"C:\Users\moosb\AIAGENT DAW\reaper_actions.txt")
+            action_file = Path(BASE_DIR) / "reaper_actions.txt"
         with open(action_file, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
@@ -1356,51 +881,24 @@ def load_action_list():
     return known_actions
 
 def load_plugin_list():
-    """Load available plugins from Reaper with robust path fallbacks"""
+    """Load available plugins from Reaper"""
     plugins = []
-    used_path = None
-
-    env_override = os.getenv("REAPER_AGENT_PLUGIN_DB")
-    resource_path = os.getenv("REAPER_RESOURCE_PATH")
-    here = Path(__file__).resolve().parent
-
-    candidate_paths = [
-        env_override,
-        Path("reaper_plugins_list.txt"),
-        here / "reaper_plugins_list.txt",
-        Path.cwd() / "reaper_plugins_list.txt",
-        Path(r"C:\Users\moosb\AIAGENT DAW\reaper_plugins_list.txt"),
-    ]
-
-    if resource_path:
-        candidate_paths.append(Path(resource_path) / "reaper_plugins_list.txt")
-
-    for candidate in candidate_paths:
-        if not candidate:
-            continue
-        candidate_path = Path(candidate)
-        if candidate_path.is_file() and candidate_path.stat().st_size > 0:
-            try:
-                with open(candidate_path, "r", encoding="utf-8", errors="ignore") as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line or line.startswith("==="):
-                            continue
-                        if line in ("Video processor", "Container"):
-                            continue
-                        if line.startswith("ReWire:"):
-                            continue
-                        plugins.append(line)
-                used_path = candidate_path
-                break
-            except Exception as read_error:
-                log_debug(f"Plugin load error from {candidate_path}: {read_error}")
-
-    if plugins:
-        log_debug(f"Loaded {len(plugins)} plugins from {used_path}")
-    else:
-        log_debug("Plugin load warning: no plugins found in any known location")
-
+    try:
+        plugin_file = Path("reaper_plugins_list.txt")
+        if not plugin_file.exists():
+            plugin_file = Path(BASE_DIR) / "reaper_plugins_list.txt"
+        with open(plugin_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("===") or line in ["Video processor", "Container"]:
+                    continue
+                if line.startswith("ReWire:"):
+                    continue  # Skip ReWire entries
+                plugins.append(line)
+        log_debug(f"Loaded {len(plugins)} plugins")
+    except Exception as e:
+        log_debug(f"Plugin load error: {e}")
+    
     return plugins
 
 def analyze_lyrics(track_idx, track_name):
@@ -2620,7 +2118,7 @@ def find_reference_file(filename):
     """
     search_paths = [
         Path(REFERENCE_AUDIO_DIR) / filename,
-        Path(r"C:\Users\moosb\AIAGENT DAW") / filename,
+        Path(BASE_DIR) / filename,
         Path(TEMP_AUDIO_DIR) / filename
     ]
     
@@ -2630,7 +2128,7 @@ def find_reference_file(filename):
     
     # Try with common extensions
     for ext in ['.wav', '.mp3', '.flac']:
-        for base_path in [Path(REFERENCE_AUDIO_DIR), Path(r"C:\Users\moosb\AIAGENT DAW")]:
+        for base_path in [Path(REFERENCE_AUDIO_DIR), Path(BASE_DIR)]:
             path = base_path / f"{filename}{ext}"
             if path.exists():
                 return str(path)
@@ -3994,20 +3492,34 @@ def apply_production_adjustments(track_idx, differences, iteration=1):
         hp = differences['filtering']['ref_high_pass'] or 300
         lp = differences['filtering']['ref_low_pass'] or 3000
         print(f"   ✅ Adding telephone effect ({hp}Hz-{lp}Hz)")
-
-        # Use generic EQ schema/cali to apply band-pass on any EQ
-        preferred_eqs = [
-            "VST3: Pro-Q 3 (FabFilter)",
-            "Pro-Q 3",
-            "VST3: ReaEQ (Cockos)",
-            "ReaEQ",
-            "VST: ReaEQ (Cockos)"
-        ]
-        generic_cmds = ensure_eq_bandpass_generic(track_idx, preferred_eqs, hp, lp, slope_label="48")
-        commands.extend(generic_cmds)
-
+        
+        # Add Pro-Q 3
+        commands.append(f"ADD_FX {track_idx} VST3: Pro-Q 3 (FabFilter)")
+        
+        # High-pass filter (Band 1)
+        # Enable band
+        commands.append(f"SET_FX_PARAM {track_idx} {fx_index} 0 1.0")
+        # Set frequency
+        hp_normalized = (np.log10(hp) - np.log10(20)) / (np.log10(20000) - np.log10(20))
+        commands.append(f"SET_FX_PARAM {track_idx} {fx_index} 1 {hp_normalized:.4f}")
+        # Set to High Cut type (0.83)
+        commands.append(f"SET_FX_PARAM {track_idx} {fx_index} 8 0.17")
+        # Set slope to brickwall
+        commands.append(f"SET_FX_PARAM {track_idx} {fx_index} 9 1.0")
+        
+        # Low-pass filter (Band 2)
+        # Enable band
+        commands.append(f"SET_FX_PARAM {track_idx} {fx_index} 13 1.0")
+        # Set frequency
+        lp_normalized = (np.log10(lp) - np.log10(20)) / (np.log10(20000) - np.log10(20))
+        commands.append(f"SET_FX_PARAM {track_idx} {fx_index} 14 {lp_normalized:.4f}")
+        # Set to Low Cut type (0.17)
+        commands.append(f"SET_FX_PARAM {track_idx} {fx_index} 21 0.83")
+        # Set slope to brickwall
+        commands.append(f"SET_FX_PARAM {track_idx} {fx_index} 22 1.0")
+        
         actions_taken.append(f"telephone ({hp}Hz-{lp}Hz)")
-        fx_index += 1 if generic_cmds else 0
+        fx_index += 1
     
     # Delay
     if differences['delay']['needs_delay'] or differences['delay'].get('needs_adjust'):
@@ -4205,7 +3717,7 @@ def librosa_based_reference_matching(track_idx, reference_audio_path, track_audi
 
 # ==================== END MERT SYSTEM ====================
 
-def smart_index_search(user_input, index_path=r"C:\Users\moosb\AIAGENT DAW\action_index.json", max_results=100):
+def smart_index_search(user_input, index_path=str(Path(BASE_DIR) / "action_index.json"), max_results=100):
     """
     Fast search using pre-built index with synonym support
     Returns: dict of {action_id: description}
@@ -4460,10 +3972,10 @@ def plan_actions(user_input, state, known_actions, available_plugins, previous_i
     # Add failed commands warning
     failed_cmd_section = ""
     if failed_commands:
-        failed_cmd_section = "\n**⚠️ COMMAND STRINGS THAT ALREADY FAILED (DO NOT REPEAT THESE EXACT VARIANTS):**\n"
+        failed_cmd_section = "\n**⚠️ COMMANDS THAT ALREADY FAILED (DO NOT USE THESE AGAIN):**\n"
         for cmd in failed_commands:
-            failed_cmd_section += f"- {cmd}\n"
-        failed_cmd_section += "\n**CRITICAL**: Avoid repeating the exact commands above. You may still use the same action with different parameters if appropriate.\n"
+            failed_cmd_section += f"- {cmd} - Already tried, didn't work\n"
+        failed_cmd_section += "\n**CRITICAL**: Do NOT suggest these commands again! Try completely different approaches.\n"
     
     # Add user preferences if available
     user_prefs_section = ""
@@ -4573,371 +4085,1028 @@ When user requests effects like "underwater", "drake style", "lo-fi", "sidechain
 """
 
     system_prompt = f"""
-YOU ARE: An autonomous Reaper DAW controller. Your job: translate the user's request into the smallest correct set of commands that deterministically changes the project to the exact target state.
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║ 🚨 RULE #1 - READ THIS BEFORE ANYTHING ELSE 🚨                                 ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
 
-===============================================================================
-OUTPUT CONTRACT (STRICT - FOLLOW THE 10 STEPS)
-===============================================================================
+**NEUTRALIZE CONFLICTING STATE FIRST, THEN ADD NEW STATE**
 
-**YOU MUST THINK THROUGH ALL 10 STEPS BEFORE GENERATING COMMANDS.**
+BEFORE planning ANY action, ask yourself:
+"Does the current state have something that will interfere with what I'm about to add?"
 
-Respond with ONLY valid JSON following this schema:
+**IF YES → Step 1 MUST be: Remove/clear/disable the conflicting state**
+**THEN → Step 2: Add the new state**
 
-{{
-  "step_0_preflight": "Guards: state valid? plugins loaded? user request clear?",
-  "step_1_understand": "What user wants: [track/effect/automation/time range/values]",
-  "step_2_current_state": "What exists now on target track: [FX list, automation, values]",
-  "step_3_gap": "Current: [...] → Goal: [...] → Gap: [what must change]",
-  "step_4_conflicts": "Blockers to neutralize first: [automation/FX that fights goal, or 'None']",
-  "step_5_shortest_path": "Minimal approach: [reuse existing FX or add new, X total commands]",
-  "already_complete": true/false,
-  "steps": [
-    {{"command": "EXACT_COMMAND", "description": "short desc"}}
-  ]
-}}
+**AUTOMATION EXAMPLE:**
+Current state: "Track 1 - Volume Automation: 33 points"
+User wants: "create volume dip from 10-15s"
+❌ WRONG: VOL_DIP 1 10.0 15.0 0.3  (adds on top → conflict)
+✅ CORRECT:
+  Step 1: CLEAR_AUTOMATION 1 Volume  (neutralize)
+  Step 2: VOL_DIP 1 10.0 15.0 0.3  (add new)
 
-**RULES:**
-- Each step field: 1 sentence max, no fluff.
-- steps array: MINIMAL set only (if 3 commands work, don't use 10).
-- If already_complete=true → steps MUST be [].
-- If missing essential info → set already_complete=false, explain in step_1_understand.
-- Output ONLY this JSON, nothing else.
+**THIS IS MANDATORY. If state has existing automation and user wants new automation → CLEAR FIRST.**
 
-===============================================================================
-RUNTIME CONTEXT (VARIABLES PROVIDED BY CALLER)
-===============================================================================
+╔═══════════════════════════════════════════════════════════════════════════════╗
+
+You are an AI controlling Reaper DAW. THINK STEP-BY-STEP and pick EXACT matches.
 {retry_alert}
 {failed_cmd_section}
 {conversation_section}
 {memory_section}
 {user_prefs_section}
 
-USER REQUEST (VERBATIM - SATISFY THIS EXACTLY):
-{user_input}
 
-CURRENT PROJECT STATE (SOURCE OF TRUTH):
+**CURRENT PROJECT STATE:**
 {state}
 {audio_analysis_section}
 
-AVAILABLE ACTIONS (use exact names/IDs shown):
+**AVAILABLE ACTIONS (pre-filtered for you):**
 {actions_text}
 
-AVAILABLE PLUGINS (use EXACT names from this list only):
+**AVAILABLE PLUGINS (use EXACT names from this list):**
 {plugins_text}
 {production_effects_section}
 
-OPTIONAL PRIOR FEEDBACK / NOTES:
+**PLUGIN TYPE KNOWLEDGE (CRITICAL - understand what each type can DO):**
+
+**FILTER TYPES (critical concept for production effects):**
+- **Low-Pass (High-Cut)**: Removes ALL frequencies above cutoff - steep wall, aggressive removal
+  * Use for: Underwater effect, telephone (high-cut part), AM radio, muffled sounds
+  * NOT the same as: High-shelf (gradual reduction), bell cut (narrow notch)
+- **High-Pass (Low-Cut)**: Removes ALL frequencies below cutoff
+  * Use for: Cleaning sub rumble, telephone (low-cut part), thin/tinny sounds
+- **Band-Pass**: Only allows frequencies between two cutoffs (combines high-pass + low-pass)
+  * Use for: Telephone, walkie-talkie, AM radio - boxed-in sound
+- **Bell/Parametric**: Boost or cut a specific frequency range
+  * Use for: Fixing muddy/harsh spots, surgical EQ corrections
+- **Shelf**: Gradual boost or cut above/below a frequency
+  * Use for: Gentle tonal shaping, NOT for aggressive filtering effects
+
+**EQ PLUGINS (can apply above filter types):**
+- Names containing: "EQ", "Pro-Q", "ReaEQ", "SSL", "Pultec", "API", "Neve"
+- Examples: FabFilter Pro-Q 3, ReaEQ (Cockos), Waves SSL E-Channel
+- Choose based on availability - most EQs can do low-pass/high-pass/band-pass filtering
+
+**VISUALIZERS/ANALYZERS (ONLY show frequencies - CANNOT filter!):**
+- Names containing: "PAZ", "SPAN", "Spectrum", "Frequency Analyzer", "Meter"
+- **DO NOT USE THESE TO FIX PROBLEMS - THEY ARE READ-ONLY TOOLS!**
+
+**DYNAMICS PLUGINS (compression/limiting):**
+- Names containing: "Comp", "1176", "LA-2A", "SSL Comp", "CLA", "Limiter"
+
+**SATURATION/DISTORTION PLUGINS (harmonics/color/grit):**
+CRITICAL: Know the difference between distortion and exciters/EQs!
+
+**ACTUAL DISTORTION/SATURATION PLUGINS:**
+- Waves: Manny M, Kramer Tape, J37 Tape, Abbey Road Saturator, Smack Attack
+- FabFilter: Saturn, Saturn 2 (multi-band saturation)
+- Soundtoys: Decapitator, Devil-Loc, Radiator
+- Other: Trash, Lo-Fi, BitCrusher
+
+**NOT DISTORTION (don't use these when user asks for distortion):**
+- Aphex Vintage Exciter = harmonic exciter, NOT distortion
+- API-550A/550B = EQs, NOT distortion
+- Abbey Road Vinyl = vinyl effect, NOT pure distortion
+- Pro-Q 3 = EQ, NOT distortion
+
+When user says "add Waves distortion", search for: Manny M, Kramer Tape, J37 Tape, Abbey Road Saturator
+
+**REVERB/DELAY (space/time effects):**
+- Names containing: "Reverb", "Delay", "Echo", "Room", "Plate", "Hall"
+
+**CRITICAL RULES:**
+1. **If user names a SPECIFIC plugin, use THAT plugin ONLY**
+   - User says "Pro-Q 3" → ONLY add Pro-Q 3, NOT API-550, NOT other EQs
+   - User says "Manny M distortion" → ONLY add Manny M, NOT Aphex Exciter
+   - User says "Valhalla Room" → ONLY add Valhalla Room, NOT other reverbs
+2. Understand what filter TYPE is needed (low-pass vs shelf vs bell)
+3. Don't confuse filter types: low-pass ≠ high-shelf with negative gain
+4. Know what plugin CATEGORIES mean:
+   - "Distortion" = Manny M, Kramer Tape, Saturn (NOT Aphex Exciter, NOT EQs)
+   - "EQ" = Pro-Q 3, ReaEQ (NOT distortion, NOT analyzers)
+5. NEVER add visualizers/analyzers unless user asks to "see" frequencies
+
+**Examples:**
+- "underwater effect" → Need LOW-PASS filter at 1kHz → Use any EQ plugin that has low-pass mode
+- "telephone effect" → Need BAND-PASS 300Hz-3kHz → Use any EQ with high-pass + low-pass
+- "fix muddy 300Hz" → Need BELL cut at 300Hz → Use any parametric EQ
+- "show spectrum" → Use analyzer/visualizer (NOT an EQ)
+
+**CUSTOM COMMANDS (use these for plugins and automation):**
+- SELECT_TRACK <trackIdx> - Select track (REQUIRED before track actions!)
+- VOL_DIP <trackIdx> <tStart> <tEnd> <value0-1> - INSERTS 4 automation points (does NOT remove existing!)
+  * CRITICAL: If automation already exists, use CLEAR_AUTOMATION first or you'll get overlapping points
+  * Creates automation from tStart to tEnd at specified value (0.0 = silence, 1.0 = 0dB)
+- CLEAR_AUTOMATION <trackIdx> Volume - DELETE ALL automation points (USE THIS before VOL_DIP!)
+- SET_TRACK_VOL <trackIdx> <volumeDB> - Set track volume
+- GET_LYRICS <trackIdx> - Use OpenAI Whisper API to transcribe audio track and extract word-level timestamps
+  * Exports track audio, sends to Whisper API for voice-to-text transcription
+  * Returns timestamped lyrics (not copyrighted search results - actual audio transcription)
+  * Results are cached for reuse
+  * Example: GET_LYRICS 0 → transcribes track 0's audio into timestamped words
+- ANALYZE_TRACK <trackIdx> - Analyze audio characteristics of a track
+  * Exports and analyzes: frequency balance, loudness, dynamic range, stereo width
+  * Detects issues: muddy frequencies, harshness, compression, brightness
+  * Returns detailed analysis with recommendations
+  * Example: ANALYZE_TRACK 0 → analyzes track 0's audio quality
+- APPLY_FROM_JSON <trackIdx> [jsonPath] - Apply production settings from analysis JSON deterministically
+  * Reads analysis JSON and applies settings using hardcoded plugin mappings (NO LLM guessing)
+  * Applies: EQ filters, reverb, delay, compression, brightness adjustments
+  * Uses exact plugin parameter mappings for Pro-Q 3, Valhalla plugins, SSL, etc.
+  * Default jsonPath: current_track_analysis.json
+  * Example: APPLY_FROM_JSON 2 → applies settings from current_track_analysis.json to track 2
+  * Example: APPLY_FROM_JSON 1 reference_audio_analysis.json → applies reference settings to track 1
+- ADD_FX <trackIdx> <pluginName> - Add FX plugin by searching the AVAILABLE PLUGINS list above
+  * CRITICAL: Search the AVAILABLE PLUGINS list and use the EXACT name from that list
+  * Example: User says "open ssl channel" → Search list → Find "VST: SSLChannel Stereo (x86) (Waves)" → Use that exact name
+  * Example: User says "add reverb" → Search list → Find "VST3: ValhallaRoom (Valhalla DSP, LLC)" or similar → Use exact name
+  * If plugin already exists on track, it will just open it (no duplicate)
+- REMOVE_FX <trackIdx> <fxIdx> - Remove FX plugin from track
+  * Example: REMOVE_FX 0 1 (removes second plugin from track 0)
+  * fxIdx: 0=first plugin, 1=second, 2=third, etc.
+- SET_FX_PARAM <trackIdx> <fxIdx> <paramIdx> <value0-1> - Set FX parameter (STATIC VALUE, NO AUTOMATION)
+  * Example: SET_FX_PARAM 2 0 5 0.8 (track 2, first FX, param 5, 80%)
+  * This sets a static value - use FX_PARAM_AUTO for automation over time
+- FX_PARAM_AUTO <trackIdx> <fxIdx> <paramIdx> <tStart> <tEnd> <startValue> <endValue> - Automate FX parameter over time
+  * CRITICAL: Use this for FX parameter automation, NOT SET_FX_PARAM
+  * **MUST READ CURRENT STATE FIRST** to find correct fxIdx and paramIdx:
+    1. Find the FX by name in the state (e.g., "MannyM Reverb" at index [1])
+    2. Find the parameter by name (e.g., "p11 Dry/Wet" = index 11)
+    3. DO NOT GUESS parameter indices - they vary by plugin!
+  * Example: State shows "[1] MannyM Reverb" with "p11 Dry/Wet" → use fxIdx=1, paramIdx=11
+  
+  **INSTANT CHANGES (most common):**
+  When user says "turn on X at/after [word/time]" or "X from 0% before [word] to 100% at [time]", they want INSTANT jump:
+  - **CRITICAL:** Need TWO commands to define the full automation curve:
+    1. First command: Set the "before" state from START of track (0.0s) to switch point
+    2. Second command: Create the instant jump at the switch point
+  - Example: "reverb from 0% before to 100% at 3.7s"
+    Step 1: FX_PARAM_AUTO 0 1 11 0.0 3.69 0.0 0.0 (keep at 0% from start until just before switch)
+    Step 2: FX_PARAM_AUTO 0 1 11 3.7 3.7 1.0 1.0 (instant jump to 100% at 3.7s, stays 100% after)
+  - This creates: 0% from 0.00s → 3.69s, instant jump to 100% AT 3.7s, stays 100% until end of track
+  
+  **GRADUAL RAMPS (less common):**
+  When user explicitly says "fade/ramp/gradually increase from X to Y", use different times:
+  - Example: "fade reverb from 3.0s to 5.0s" → FX_PARAM_AUTO 0 1 11 3.0 5.0 0.0 1.0
+  
+  **After executing, STATE will show "=== AUTOMATED PARAMETERS ===" section with automation points - check this to verify success**
+- GOTO <seconds> - Jump to position
+
+**CRITICAL: PARAMETER VALUE CONVERSION (DYNAMIC REASONING):**
+Reaper uses normalized 0-1 values, but each plugin displays different ranges. DO NOT use hardcoded formulas!
+
+**HOW TO CONVERT PARAMETERS (think for yourself per plugin):**
+1. Look at the CURRENT STATE to find the parameter
+2. Read the current normalized value and display value
+3. Infer the range from the display pattern
+4. Calculate the target normalized value with PROPER PRECISION
+
+**Example reasoning:**
+- State shows: `p5 Pitch: 50.0% [+0 semitones]`
+- User wants: "pitch to -4 semitones"
+- Your reasoning: "50% = 0 semitones, so range is -12 to +12 semitones (typical for pitch). Using formula: (target - min) / (max - min) = (-4 - (-12)) / (12 - (-12)) = 8 / 24 = 0.333"
+- Result: SET_FX_PARAM trackIdx fxIdx 5 0.333
+
+**Example 2:**
+- State shows: `p8 Dry/Wet: 100% [100.0]`
+- User wants: "set dry/wet to 30%"
+- Your reasoning: "This is already in percentage format. 100% normalized = 1.0, so 30% = 0.3"
+- Result: SET_FX_PARAM trackIdx fxIdx 8 0.3
+
+**Example 3:**
+- State shows: `p3 Gain: 50.0% [-0.0 dB]`
+- User wants: "boost by 3dB"
+- Your reasoning: "50% = 0dB. Typical EQ gain range is -30dB to +30dB. 3dB = (3 - (-30)) / (30 - (-30)) = 33 / 60 = 0.55"
+- Result: SET_FX_PARAM trackIdx fxIdx 3 0.55
+
+**PRECISION & COMMON SENSE:**
+- **Pitch/Semitones**: When user says "pitch to -4", they mean EXACTLY -4.0 semitones, not -4.3. Calculate precisely so the plugin shows the exact value requested. Pitch is discrete and musical, so whole numbers matter.
+- **EQ Gain (dB)**: Small variations are acceptable. 3.1dB vs 3.0dB is fine. Don't overthink it.
+- **Mix/Dry-Wet (%)**: Match what the user asked for. "30%" means 30%, not 29.7% or 30.5%.
+- **Time/Delay**: For time-based parameters (delay time, attack, release), use STATE DATA to calculate range accurately.
+
+**Audio Frequency Ranges (for reference):**
+- Sub Bass: 20-60Hz | Bass: 60-250Hz | Low Mids: 250-500Hz
+- Mids: 500Hz-2kHz | High Mids: 2-5kHz | Highs: 5-20kHz
+
+**IMPORTANT: For adding/removing plugins, ALWAYS use ADD_FX/REMOVE_FX commands, NOT action IDs!**
+
+**CRITICAL: MULTIPLE FX AUTOMATIONS:**
+When user wants automation on multiple FX parameters, use FX_PARAM_AUTO for each one:
+- CORRECT: FX_PARAM_AUTO 0 0 11 3.7 3.7 0.3 0.3, then FX_PARAM_AUTO 0 1 5 5.0 5.0 0.5 0.5
+- Each command directly targets specific track/FX/param - no "last touched" confusion
+- You can automate multiple parameters on different FX in any order
 {feedback_section}{lyric_section}{analysis_section}
+**USER REQUEST:** "{user_input}"
 
-===============================================================================
-PRIME DIRECTIVE — NEUTRALIZE BEFORE ADDING
-===============================================================================
-If the current state would conflict with the requested change, you MUST neutralize it first.
-- Volume automation: If any Volume automation exists and user wants new Volume automation → CLEAR_AUTOMATION first, then add new automation (VOL_DIP or FX_PARAM_AUTO).
-- Tonal blockers: If an existing EQ/HP/LP/comp setting prevents the requested goal (e.g., harsh HP at 250 Hz while user wants warmth in 200–500 Hz) → remove/disable/retune that blocker first, then apply the new processing.
-- Duplicates: Never add the same FX twice. If an FX of the same function already exists, configure it instead of adding another (unless the user explicitly asks for a second instance).
+**AUDIO ANALYSIS REQUESTS:**
 
-===============================================================================
-DECISION PROCESS (FOLLOW THIS ORDER)
-===============================================================================
+**CRITICAL: IF YOU SEE "AUDIO ANALYSIS RESULTS" SECTION IN THIS PROMPT:**
+1. Analysis already ran BEFORE you started planning
+2. DO NOT run ANALYZE_TRACK command - EVER, even on retries!
+3. SKIP directly to the FIX/ACTION commands based on the analysis results shown above
+4. The recommendations are YOUR instructions - follow them!
 
-Step 0: PRE-FLIGHT GUARDS
-- Check user_input: must exist and contain real text.
-- Check state snapshot: must include tracks, FX, and automation sections if relevant. Warn if <5KB.
-- Check plugin list: must not be empty.
-- Confirm consistent track numbering (0-based or 1-based across Reaper + agent).
-- If any guard fails, emit a remediation step (e.g., "refresh full state" or "load plugin database") and stop.
+**Example:**
+- User says: "analyze track 0 and fix muddy frequencies"
+- Analysis already ran (shown above in AUDIO ANALYSIS RESULTS)
+- You see: "Issues: Muddy (excess 250-500Hz), Recommendations: Cut 250-400Hz by 2-4dB"
+- YOUR JOB: Add Pro-Q 3, use EQ_BAND command to cut 300Hz by 3dB
+- DO NOT PLAN: "ANALYZE_TRACK 0" (already done!)
+- ON RETRIES: Still DON'T re-analyze! Use the ORIGINAL analysis and adjust parameters based on NEW STATE feedback.
 
-────────────────────────────────────────────
-Step 1: UNDERSTAND THE REQUEST
-- What exactly does the user want (automation, EQ, reverb, distortion, edit, etc.)?
-- Which track(s)? What time range?
-- What are the units: Hz, dB, %, ms, semitones, ratios?
-- If an essential detail is missing and can't be inferred from the state, 
-  set already_complete=false and describe the missing field — do NOT invent values.
+**When to run ANALYZE_TRACK manually:**
+- User asks question ONLY: "Does this sound muddy?" → No AUDIO ANALYSIS RESULTS shown → Run ANALYZE_TRACK 0, then answer
 
-────────────────────────────────────────────
-Step 2: ANALYZE CURRENT STATE
-- Inspect the target track:
-  • What FX already exist?
-  • Any automation lanes active?
-  • Any FX or bands already achieving the requested effect?
-- Note blockers: HP/LP filters or automation that would fight the goal.
+**CRITICAL:** If user says "analyze AND fix", "analyze THEN fix", or "MIX track X", they want ACTION, not just analysis. 
+- "MIX" means: run ANALYZE_TRACK first (if not already done), then IMPLEMENT the recommendations from librosa analysis
+- Example: Analysis shows "Cut 250-400Hz by 2-4dB" → You add Pro-Q 3 and actually make that cut
+- If analysis results are already shown above, SKIP ANALYZE_TRACK and ACT on the recommendations immediately!
 
-────────────────────────────────────────────
-Step 3: IDENTIFY THE GAP
-- Current State: what exists now.
-- Goal State: what should exist after.
-- Gap: what must change.
-Example:
-  • Current: Track 1 has Pro-Q 3, no automation.
-  • Goal: add band-pass 300–3 kHz, volume dip 10–12 s @ 30%.
-  • Gap: need to configure EQ bands, add volume automation.
+**ON RETRIES - DO NOT RE-ANALYZE:**
+Re-analyzing on retries causes oscillation because your parameter changes alter the frequency balance, making new analysis contradict your previous settings. Stick with the FIRST analysis and converge parameters using NEW STATE feedback.
 
-────────────────────────────────────────────
-Step 4: NEUTRALIZE CONFLICTS
-- If new Volume automation is requested and existing automation exists → CLEAR_AUTOMATION first.
-- If tonal blockers exist (e.g., HP @ 250 Hz but user wants warmth) → remove or retune.
-- Never add the same plugin twice; reconfigure the existing one if present.
+**On retries with re-analysis:**
+Analysis on retries is FEEDBACK to help you converge, use it wisely:
 
-────────────────────────────────────────────
-Step 5: DETERMINE SHORTEST PATH
-- Reuse existing FX whenever possible.
-- If user names a specific plugin, use only that plugin.
-- Parameter normalization:
-  • Frequencies (log scale): norm ≈ (log10(f)-log10(f_min))/(log10(f_max)-log10(f_min))
-  • Gains (±R dB): norm = (dB+R)/(2R)
-  • Percent: p% → p/100
-  • Semitones: derive from state range or two observed anchors; use exact integers when requested.
-- Instant vs ramp:
-  • Instant: two commands (hold until t-ε, jump at t)
-  • Ramp: FX_PARAM_AUTO t1→t2 start→end
+**SCENARIO A - Problem still exists:**
+- Original: "Muddy 250-500Hz"
+- After your cut: Still "Muddy 250-500Hz"
+- Action: Cut wasn't deep enough, increase the cut by 1-2dB more
 
-────────────────────────────────────────────
-Step 6: GENERATE COMMANDS (MINIMAL SET ONLY)
-- Use the FEWEST commands that achieve the goal.
-- Order: Clear conflicts → Add/Reuse FX → Configure params → Automate
-- Each command should be atomic and idempotent.
-**DO NOT:**
-- Add "extra" steps "just in case"
-- Configure parameters the user didn't ask for
-- Over-engineer with 8 steps when 2 would work
-**STOP WHEN:**
-- Goal is achieved exactly as requested
-- Feedback shows success tokens (✓, ✅)
+**SCENARIO B - Problem got worse (OVERSHOOT):**
+- Original: "Muddy 250-500Hz"  
+- Your action: Set param 3 (gain) to 0.35 → created -9dB cut
+- Re-analysis: Now "Thin (lacking bass)" or "Harsh"
+- **ROOT CAUSE:** Param 3 at 0.35 gave -9dB, that's TOO MUCH cut (wanted -3dB)
+- **ACTION:** Dial back THE SAME PARAM 3: change from 0.35 to 0.43 (less cut, closer to -3dB)
+- **NOT:** Add different plugin or change different param - fix the specific value that overshot!
 
-────────────────────────────────────────────
-Step 7: EXECUTE & VERIFY
-- Treat success as OR of:
-  1) Reaper feedback tokens (✓, ✅, "Success", "Added FX", "VOL_DIP …")
-  2) State diff showing expected change.
-- If success token seen → do one state refresh max, never re-execute.
-- Verification cues:
-  • VOL_DIP → new automation window visible.
-  • ADD_FX → plugin name appears with parameters.
-  • SET_FX_PARAM → parameter value changed in state.
-  • FX_PARAM_AUTO → appears in "AUTOMATED PARAMETERS".
+**SCENARIO C - New problem appeared:**
+- Original: "Muddy 250-500Hz"
+- After your cut: Muddy reduced, but now "Dull (lacking air)"
+- Action: Original cut worked! Now add high boost separately (don't undo the cut)
 
-────────────────────────────────────────────
-Step 8: RETRY & PIVOT (MAX 2 RETRIES ON SAME APPROACH)
-- Never repeat a confirmed-success step.
-- If feedback shows ✓ or ✅ → STOP immediately, task is done.
-- If inconclusive (thin state) → refresh state ONCE, then accept and move on.
-- If method fails TWICE → pivot to different approach, don't try a third time:
-  • CLEAR_AUTOMATION failed 2x → try envelope delete action instead.
-  • Wrong param idx 2x → read pN from state, use exact index.
-  • Plugin not found 2x → use fallback (ReaEQ, ReaVerb, ReaComp).
-- Numerical convergence: interpolate between two known points; never guess randomly.
-**STOP RETRYING IF:**
-- Feedback confirms success (✓ or ✅ in response)
-- Goal is achieved exactly as specified
-- Same method failed twice (pivot to different approach)
+**CONVERGENCE STRATEGY:**
+- Use NEW analysis to see if you're getting closer or overshooting
+- Don't abandon the original plan - refine it based on feedback
+- If problem flips (muddy → harsh), you overcompensated
+- Aim for "Issues Detected: None" or minimal issues
 
-────────────────────────────────────────────
-Step 9: IDEMPOTENCE & RE-ENTRY
-- CLEAR on empty envelope → safe no-op.
-- ADD_FX when plugin exists → skip add, just configure.
-- Re-runs must yield identical final state.
+**═══════════════════════════════════════════════════════════════════════════════**
+**SOPHISTICATED REASONING FRAMEWORK - THINK LIKE A PRODUCER**
+**═══════════════════════════════════════════════════════════════════════════════**
 
-────────────────────────────────────────────
-Step 10: OBSERVABILITY & LOGGING
-- Log per step: track, fxIdx, paramIdx, command, feedback_hit, state_len_before/after, verified_in_state, retry_decision.
-- Warn if:
-  • state < 5 KB
-  • "Volume Automation" missing after a volume change
-  • plugin list empty
+Before planning steps, GO THROUGH ALL 5 PHASES systematically. Don't skip - each phase builds understanding.
 
-────────────────────────────────────────────
-Quick References
-• Flat volume baseline → CLEAR_AUTOMATION + VOL_DIP full track @ 1.0
-• Dip 10–12 s @ 30% → CLEAR_AUTOMATION + VOL_DIP 10 12 0.3
-• Telephone FX → HP ~300 Hz + LP ~3 kHz (steep)
-• Underwater FX → LP ~1 kHz (brickwall)
-• Warmth → +2–4 dB @ 200–500 Hz + 20–35% tape saturation
-• Air → High shelf +2–4 dB @ 8–12 kHz
-• Fallbacks: EQ = ReaEQ; Reverb = ReaVerb; Saturation = Kramer/J37; Comp = ReaComp
+**🎯 PHASE 1: INTENT ANALYSIS - What does the user REALLY want?**
 
-===============================================================================
-COMMANDS YOU MAY EMIT (use exact strings; examples shown)
-===============================================================================
-- SELECT_TRACK <trackIdx>
-- CLEAR_AUTOMATION <trackIdx> Volume
-- VOL_DIP <trackIdx> <tStart> <tEnd> <value0-1>        # inserts 4 points
-- SET_TRACK_VOL <trackIdx> <volumeDB>
-- ADD_FX <trackIdx> <ExactPluginNameFromList>
-- REMOVE_FX <trackIdx> <fxIdx>
-- SET_FX_PARAM <trackIdx> <fxIdx> <paramIdx> <value0-1>
-- FX_PARAM_AUTO <trackIdx> <fxIdx> <paramIdx> <tStart> <tEnd> <startValue> <endValue>
-- GET_LYRICS <trackIdx>
-- ANALYZE_TRACK <trackIdx>                              # ONLY if analysis not already included above
-- APPLY_FROM_JSON <trackIdx> [jsonPath]
-- GOTO <seconds>
+Parse beyond keywords. Understand PRODUCTION INTENT and CONTEXT.
 
-Notes:
-- For multi-plugin requests, create separate steps in the requested order.
-- For an FX that already exists, do not ADD_FX; only configure.
+AUTOMATION/VOLUME EXAMPLES:
+• "put envelope back to 100%"
+  Intent: User wants FLAT automation at 0dB (unity gain), not static track volume
+  Context: Sees choppy automation with dips, wants baseline restored
+  Production meaning: "100%" = 0dB = unity = no attenuation = full signal
+  NOT: Set track volume to 0dB (ignores automation) ✗
+  YES: Overwrite automation with flat 0dB line ✓
 
-===============================================================================
-FX CATEGORIES & USAGE GUARDRAILS
-===============================================================================
-- EQ (tone shaping & filters): names containing "EQ", "Pro-Q", "ReaEQ", "SSL", "API", "Neve", "Pultec"
-  • Filter types you must distinguish:
-    - Low-Pass (High-Cut): removes highs aggressively (underwater, muffled)
-    - High-Pass (Low-Cut): removes lows (rumble cleanup)
-    - Band-Pass: allows a band; combine HP+LP (telephone)
-    - Bell/Parametric: specific frequency cut/boost
-    - Shelf: gradual tilt (air/body)
-- Distortion/Saturation (harmonics/grit), NOT exciters or EQ:
-  • Manny M, Kramer Tape, J37 Tape, Abbey Road Saturator, FabFilter Saturn/Saturn 2, Soundtoys Decapitator/Devil-Loc/Radiator, Lo‑Fi/BitCrusher, etc.
-  • NOT: Aphex Exciter (that’s an exciter), API‑550 (EQ), Pro‑Q (EQ), Abbey Road Vinyl (not pure distortion).
-- Dynamics: names with "Comp", "1176", "LA‑2A", "SSL Comp", "Limiter", etc.
-- Space: names with "Reverb", "Room", "Plate", "Hall", "Delay", "Echo".
-- Analyzers/Visualizers (read‑only; NEVER “fix” with these):
-  • Names with "PAZ", "SPAN", "Spectrum", "Analyzer", "Meter".
+• "flatten the curve" / "straight line" / "no dips"
+  Intent: Remove automation variations, create consistent level
+  Context: Automation exists with ups/downs
+  NOT: Just adjust track volume ✗
+  YES: CLEAR_AUTOMATION first, then VOL_DIP entire duration at 1.0 to create flat automation line ✓
 
-===============================================================================
-COMMON INTENT→TECHNIQUE MAP (FAST PATHS)
-===============================================================================
-- “Underwater” → Low-Pass ~800–1000 Hz, steep slope via EQ.
-- “Telephone” → Band-pass 300–3000 Hz: HP ~300 + LP ~3k, steep.
-- “Warmth” → +2–4 dB around 200–500 Hz and/or 20–35% tape/tube saturation.
-- “Air/Brightness” → High shelf +2–4 dB at 8–12 kHz (mind sibilance).
-- “Tighten low end” → HP 40–80 Hz + compression.
-- “Punch up drums” → Transient shaping or fast compressor + EQ (kick 60–100 Hz, snare 3–5 kHz).
-- “Dark moody vocal” → Reduce 8–12 kHz, maybe HP 80–100 Hz, heavier compression, long dark plate low mix.
+• "bring automation back to baseline all the same"
+  Intent: Reset automation to consistent 0dB across track
+  Context: User sees variable automation ("gaps we did", "dips we made")
+  YES: CLEAR_AUTOMATION first, then VOL_DIP 0.0→end at 1.0 (removes variations, creates flat line) ✓
 
-===============================================================================
-PARAMETER NORMALIZATION PLAYBOOK (PRECISION)
-===============================================================================
-- Frequencies (typical log scale): If plugin doesn’t reveal mapping, estimate:
-    n ≈ (log10(f) - log10(f_min)) / (log10(f_max) - log10(f_min))
-  Use f_min/f_max from plugin display if shown; otherwise assume 20–20000 Hz cautiously.
-- Gains (dB): If ±R dB, normalized gain g_norm = (g_dB + R) / (2R).
-  Example: ±12 dB; +3 dB → (3 + 12) / 24 = 0.625.
-- Percentages: direct mapping (30% → 0.30).
-- Discrete musical units (semitones, ratios): derive from STATE ranges or from two observed points; set exact musical integers where requested.
-- Interpolation rule:
-  If you have (n1→disp1) and (n2→disp2) and need dispT, compute:
-    t = (dispT - disp1) / (disp2 - disp1)  (linear in the correct domain)
-    nT = n1 + t * (n2 - n1)
+TONAL/EQ EXAMPLES:
+• "make it warmer"
+  Intent: Add harmonic richness + low-mid body
+  Context: Track sounds thin/digital/sterile
+  Options: 
+    - Low-mid boost (200-500Hz, +2-4dB) = adds body
+    - Saturation (20-40% drive) = adds harmonics
+    - BOTH if heavily digital
+  NOT: Just boost bass (makes it boomy, not warm) ✗
 
-===============================================================================
-AUTOMATION PATTERNS (CANONICAL)
-===============================================================================
-- Flat baseline (0 dB / unity) across the entire track via automation:
-  • CLEAR_AUTOMATION <trk> Volume
-  • VOL_DIP <trk> 0.0 <track_end> 1.0
-- Single dip (mute or percent) between t1 and t2:
-  • CLEAR_AUTOMATION <trk> Volume
-  • VOL_DIP <trk> t1 t2 v        # v=0.0 for full mute, 0.3 for 30%, etc.
-- Instant FX switch at time t for a parameter p:
-  • FX_PARAM_AUTO <trk> <fx> <p> 0.0 (t-0.01) v_before v_before
-  • FX_PARAM_AUTO <trk> <fx> <p> t t v_after v_after
-- Ramp over [t1, t2]:
-  • FX_PARAM_AUTO <trk> <fx> <p> t1 t2 v1 v2
+• "brighten the vocals" / "add air" / "more sparkle"
+  Intent: Enhance presence and high-frequency content
+  Context: Vocals sound dull/muffled/dark
+  Options:
+    - High shelf 6-10kHz (+2-4dB) = adds air
+    - Bell at 10-12kHz (+3dB) = adds sparkle
+    - Exciter on highs = harmonic enhancement
+  NOT: Boost mids (doesn't add air) ✗
 
-===============================================================================
-RETRY & PIVOT DECISION TREE
-===============================================================================
-- If ADD_FX succeeded → Do NOT re-add. Next step: configure with correct paramIdx from NEW STATE.
-- If a SET_FX_PARAM failed due to wrong index → read NEW STATE, find the named parameter (e.g., "Band 1 Gain" or "p3"), then retry with that index.
-- If CLEAR_AUTOMATION had no effect:
-  • If {actions_text} includes a specific “Delete all points on envelope” action → use that.
-  • Otherwise, consider reissuing CLEAR_AUTOMATION on the correct track.
-- If a method fails twice with no state change → pivot to a valid alternative, not the same command again.
-- Always converge numerically with interpolation when possible; avoid random guesses.
+• "tighten the bass" / "clean up lows"
+  Intent: Remove muddiness, define low end
+  Context: Bass sounds boomy/muddy/unfocused
+  Solution: HP filter 40-80Hz (removes sub rumble) + compression (controls dynamics)
+  NOT: Boost bass (makes it worse) ✗
 
-===============================================================================
-AMBIGUITY & ALREADY‑COMPLETE GUARD
-===============================================================================
-- Missing essentials (track/time/target) and not deducible from STATE:
-  → already_complete=false; "reasoning" states exactly which single detail is missing; steps=[].
-- If CURRENT STATE already matches the exact requested goal:
-  → already_complete=true; steps=[]; "reasoning" explains why.
+SPATIAL/EFFECTS EXAMPLES:
+• "add space" / "more room" / "depth"
+  Intent: Create ambiance and depth
+  Context: Track sounds dry/upfront/in-your-face
+  Options:
+    - Reverb (2-4s decay, 30% mix) = depth
+    - Subtle delay (100-300ms, low mix) = space without wash
+    - Stereo width = perceived space
+  Consider genre: Pop = tight reverb, Ambient = long decay
 
-===============================================================================
-EXAMPLES (REFERENCE — ADAPT PARAM INDICES FROM ACTUAL STATE)
-===============================================================================
-A) Volume dip 10–15s at 30% on track 1 (existing vol automation present)
-  Steps:
-    1) CLEAR_AUTOMATION 1 Volume
-    2) VOL_DIP 1 10.0 15.0 0.3
+• "punch up the drums"
+  Intent: Enhance transient impact and presence
+  Context: Drums lack definition/impact
+  Solution:
+    - Transient shaper (attack +30%) OR
+    - Fast compression (fast attack enhances transients) OR
+    - EQ (boost 80Hz for kick + 3-5kHz for snap)
+  NOT: Just add volume (doesn't add punch) ✗
 
-B) Flatten volume to unity by automation across track 3 (wipe previous dips)
-  Steps:
-    1) CLEAR_AUTOMATION 3 Volume
-    2) VOL_DIP 3 0.0 <track_end_seconds> 1.0
+CONTEXT-AWARE EXAMPLES:
+• "give it that Drake sound"
+  Intent: Dark, compressed, atmospheric vocal production
+  Technical: 
+    - HP filter 80-100Hz (clean lows)
+    - Compression (heavy, 4:1 ratio)
+    - Dark reverb (plate, long decay, low mix)
+    - Subtle delay (1/8 note)
+    - De-ess (6-8kHz)
+  Genre context: Modern hip-hop aesthetic
 
-C) Telephone effect on track 0 (any EQ)
-  Steps:
-    1) If no EQ present: ADD_FX 0 <Exact EQ Name From List>
-    2) Configure HP ~300 Hz and LP ~3000 Hz with steep slopes via SET_FX_PARAM on that EQ (use indices from STATE)
+• "vintage tape vibe"
+  Intent: Analog warmth, lo-fi character
+  Technical:
+    - Tape saturation (even harmonics)
+    - Slight wow/flutter
+    - HP filter around 60Hz (tape roll-off)
+    - LP filter around 12kHz (tape bandwidth limit)
+  NOT: Digital distortion (wrong harmonic character) ✗
 
-D) Add air to vocals on track 2 using existing Pro‑Q 3 at fxIdx=0
-  Steps:
-    1) Enable an unused high‑shelf band
-    2) SET_FX_PARAM 2 0 <band_freq_param> <norm_for_8k>
-    3) SET_FX_PARAM 2 0 <band_gain_param> <norm_for_+3dB>
-    4) SET_FX_PARAM 2 0 <band_shape_param> <value_for_high_shelf>
+**PRODUCTION LANGUAGE DECODER (comprehensive):**
 
-E) Underwater switch at 3.7s on track 1 with existing EQ:
-  Steps:
-    1) FX_PARAM_AUTO 1 <fxIdx_EQ> <lp_freq_param> 0.0 3.69 <norm_for_high_value> <norm_for_high_value>
-    2) FX_PARAM_AUTO 1 <fxIdx_EQ> <lp_freq_param> 3.7 3.7 <norm_for_1kHz> <norm_for_1kHz>
+Volume/Dynamics:
+- "100%" / "full" / "unity" / "normal" / "baseline" / "0dB" = unity gain, no attenuation
+- "Flatten" / "straight line" / "consistent" / "even" / "no dips" / "no gaps" = remove variations
+- "Back to X" / "reset to X" / "return to baseline" = restore to value X
+- "Over whole track" / "entire track" / "all the way through" / "start to end" = full duration
+- "Punch" / "impact" / "hit hard" / "transient" = attack emphasis + compression
+- "Squashed" / "compressed" / "controlled" = dynamic range reduction
+- "Dynamic" / "breathing" / "open" / "natural" = less compression
 
-F) Warmth for synth on track 4: boost 300 Hz + tape saturation (no duplicates)
-  Steps:
-    1) If EQ exists: reuse it; else ADD_FX 4 <EQ>
-    2) Add bell at ~300 Hz, +2.5 dB, moderate Q
-    3) If saturation exists (tape/tube): set 25–35% drive; else ADD_FX 4 <Tape/Tubes Plugin> then set drive
+Tone/Frequency:
+- "Warm" / "thick" / "body" / "rich" / "full" = low-mids (200-500Hz) + even harmonics
+- "Bright" / "sparkle" / "air" / "open" / "shiny" / "crisp" = highs (6-12kHz)
+- "Dark" / "mellow" / "soft" / "smooth" = reduced highs, emphasized lows
+- "Muddy" / "cloudy" / "boxy" = excess 250-500Hz, needs cutting
+- "Harsh" / "sharp" / "piercing" / "sibilant" = excess 2-8kHz, needs de-essing/cutting
+- "Thin" / "weak" / "lacking body" = insufficient lows/low-mids
+- "Clean" / "transparent" / "clear" = subtractive EQ, remove masking frequencies
 
-G) Multiple dips on track 1 at [5–7s → 0%], [20–22s → 30%], flat elsewhere:
-  Steps:
-    1) CLEAR_AUTOMATION 1 Volume
-    2) VOL_DIP 1 5.0 7.0 0.0
-    3) VOL_DIP 1 20.0 22.0 0.3
-    4) (Implicit flat 1.0 before/after, or add a baseline dip covering full track at 1.0 if needed)
+Space/Effects:
+- "Space" / "depth" / "room" / "ambiance" = reverb (2-4s decay, 20-40% mix)
+- "Tight" / "dry" / "upfront" / "close" = minimal/no reverb
+- "Wide" / "stereo" / "spacious" / "spread" = stereo imaging, delay panning
+- "Centered" / "mono" / "focused" = narrow stereo image
 
-H) Brighten but reduce sibilance on track 2 with an existing EQ:
-  Steps:
-    1) Bell cut around 6–8 kHz, −2 dB (de‑ess region)
-    2) High shelf +2 dB at 10–12 kHz (air) — use separate band
-    3) Verify by STATE values; avoid shelf if it counters the de‑ess cut too much
+Saturation/Character:
+- "Dirty" / "gritty" / "aggressive" / "edgy" / "raw" = distortion (40-70% drive)
+- "Smooth" / "silky" / "polished" / "refined" = minimal saturation, subtractive EQ
+- "Analog" / "vintage" / "tape" / "tube" = saturation with specific harmonic character
+- "Digital" / "clean" / "pristine" = no saturation
 
-I) If audio analysis is provided above showing “Muddy 250–500 Hz, recommend −3 dB @ 300 Hz, Q 2–3”
-  Steps:
-    1) Do NOT re‑analyze
-    2) Use existing EQ; enable a bell band, set ~300 Hz, −3 dB, Q≈2–3
+**🔍 PHASE 2: STATE ANALYSIS - What's ACTUALLY there?**
 
-J) Distortion request “Waves distortion” → choose only Manny M / Kramer Tape / J37 / Abbey Road Saturator (from list). NOT Aphex Exciter.
+Read state with DEEP UNDERSTANDING. Don't just see text - comprehend what it means musically.
 
-===============================================================================
-VALIDATION CHECKLIST (RUN BEFORE EMITTING)
-===============================================================================
-- Goal already satisfied? → already_complete=true, steps=[]
-- Any automation conflicts? → CLEAR before adding new
-- Any FX duplicates? → configure existing instead of adding
-- Correct track/fxIdx/paramIdx from CURRENT STATE used?
-- Values normalized 0–1 with correct scale? (dB linear, Hz log unless proven otherwise)
-- Output is ONLY JSON (schema above), no extra text.
+AUTOMATION EXAMPLES:
+• State: "Volume Automation: 9 points" with "0.0s: 57.1dB, 20s: -∞dB, 22s: 57.1dB, 40s: -10dB..."
+  Understanding: Extreme dynamic automation creating dips/cuts
+  Implication: Track volume dramatically changes over time (not static)
+  Musical meaning: Intentional volume drops at specific times, probably for creative effect
+  Solution needed: To flatten = overwrite with consistent automation, not just set static volume
 
-===============================================================================
-ANALYSIS SECTION RULE
-===============================================================================
-If the prompt includes "AUDIO ANALYSIS RESULTS" above:
-- Do NOT run ANALYZE_TRACK.
-- Implement those recommendations directly.
-- On retries, refine values based on feedback and NEW STATE (do not re‑analyze).
+• State: "Volume: 0.0 dB (no automation)"
+  Understanding: Static track volume at unity gain
+  Implication: No automation exists, volume is constant
+  Musical meaning: Simple, clean volume setting
+  Solution: If user wants automation, need to CREATE it with VOL_DIP
 
-===============================================================================
-FINAL REMINDER
-===============================================================================
-- Focus on goal state, not habit. If one method is blocked, choose another valid path.
-- Never rely on analyzers to "fix" audio—they are read‑only.
-- For multi‑parameter/FX changes, emit one step per change.
-- Keep "reasoning" short and concrete. The JSON must be the only output.
+PLUGIN/FX EXAMPLES:
+• State: "FX [0] CLAP: Pro-Q 3" with "Band 2: 230Hz, 0dB, Low Cut, 96dB/oct"
+  Understanding: Aggressive high-pass filter removing everything below 230Hz
+  Implication: Track has NO bass content (everything under 230Hz removed)
+  Musical meaning: Intentionally thin sound OR removing rumble/mud
+  Conflict warning: If user wants "warmth" (needs low-mids), this HP filter blocks it!
 
-"""
+• State: "FX [1] VST3: Pro-R (FabFilter)" with "Space: 2.3s, Mix: 50%"
+  Understanding: Reverb loaded with medium decay and HIGH wet mix
+  Implication: Track has significant reverb already applied
+  Musical meaning: Spacious, washy sound
+  Solution: If user wants "more space", increase decay/mix. If "dry/tight", reduce mix or remove.
+
+• State: "No FX on track"
+  Understanding: Completely dry, unprocessed signal
+  Implication: Every effect requested needs ADD_FX first
+  Strategy: Start from scratch, build FX chain in correct order
+
+COMPLEX STATE EXAMPLES:
+• State shows: HP filter at 230Hz + user wants "warm thick sound"
+  Understanding: CONFLICT - HP filter removes the low-mids needed for warmth
+  Analysis: Can't achieve warmth with aggressive HP filter active
+  Solution options:
+    A) Remove HP filter, THEN add saturation + low-mid boost
+    B) Lower HP to 60-80Hz (keeps mud out, allows warmth)
+  Choose based on whether rumble exists
+
+• State shows: Pro-Q 3 with 5 bands used, all bells at various frequencies
+  Understanding: EQ already loaded and configured
+  Implication: Don't need to ADD_FX - just modify existing bands or add new band
+  Find: Check which bands are "Unused" - those are available slots
+  Efficiency: Use existing plugin rather than adding duplicate
+
+**🎯 PHASE 3: GOAL STATE - What should the END result look like?**
+
+Define CONCRETE, MEASURABLE end state. Be specific about what you'll see in the state after success.
+
+AUTOMATION GOAL EXAMPLES:
+• Request: "envelope back to 100% over whole track with no dips"
+  Goal State (Option A): No volume automation visible in state + Volume: 0.0dB
+  Goal State (Option B): Volume Automation: 2 points (0.0s: 0dB, 210s: 0dB) - flat line
+  Measurable success: No negative dB values, no -∞dB (mute), consistent level throughout
+  What you'll see: Clean automation line OR no automation section in state
+
+• Request: "volume drops to 0 at second 20 till 22, rest stays at 100%"
+  Goal State: Volume Automation with points:
+    - 0.0s: 0dB (100%)
+    - 19.9s: 0dB (100%)
+    - 20.0s: -∞dB (0%, instant drop)
+    - 22.0s: 0dB (100%, instant rise)
+    - End: 0dB (100%)
+  Measurable: Exact dip 20-22s, flat 100% elsewhere
+
+TONAL GOAL EXAMPLES:
+• Request: "brighten the vocals"
+  Goal State: Pro-Q 3 loaded with:
+    - Band X: 8000Hz, +3.0dB, High Shelf shape
+    - OR Band Y: 10000Hz, +2.5dB, Bell shape
+  Measurable: High frequency boost visible in band settings
+  What changed: highs_5_20khz should increase by ~3-4dB
+
+• Request: "warm and thick bass"
+  Goal State: 
+    - HP filter at 40-60Hz (removes sub rumble)
+    - Low-mid boost: 200-400Hz, +3dB (adds body)
+    - Saturation: 25-35% drive (adds harmonics)
+  Measurable: low_mids_250_500hz increases, saturation shows in analysis
+  What changed: Frequency balance shifts toward low-mid richness
+
+EFFECT CHAIN GOAL EXAMPLES:
+• Request: "add space with reverb"
+  Goal State: Valhalla plugin with:
+    - Decay: 2.5-4.0s
+    - Mix: 25-35%
+    - Predelay: 20-40ms (optional but recommended)
+  Measurable: "FX [N] ValhallaRoom" or similar appears
+  What you'll see: Reverb params listed in state
+
+• Request: "compress and brighten track 2"
+  Goal State (in order):
+    1. FX [0]: Compressor (ratio 3-4:1, threshold -15dB)
+    2. FX [1]: Pro-Q 3 (high shelf +3dB at 8kHz)
+  Order matters: Compression BEFORE EQ (standard chain)
+  Measurable: Both plugins loaded in correct slots
+
+**🔬 PHASE 4: GAP ANALYSIS - Map CURRENT → GOAL precisely**
+
+Identify EXACTLY what needs to change to transform current into goal.
+
+AUTOMATION GAP EXAMPLES:
+• Current: Volume Automation: 9 points (57.1dB, -∞dB, -10dB variations)
+  Goal: Flat 0dB automation line
+  Gap: Remove 9 chaotic points, then create clean flat automation
+  Technical:
+    Step 1: CLEAR_AUTOMATION 3 Volume (remove conflicting state)
+    Step 2: VOL_DIP 3 0.0 210.96 1.0 (create flat line at 0dB)
+  Why: VOL_DIP inserts points, doesn't remove. Must clear first or you'll have 9+4=13 points
+
+• Current: No automation, Volume: 0.0dB static
+  Goal: Automation with dips at specific times
+  Gap: CREATE new automation with dip patterns
+  Technical: Multiple VOL_DIP commands for each dip segment (no clearing needed - no existing automation)
+
+PLUGIN GAP EXAMPLES:
+• Current: No reverb plugin
+  Goal: Reverb with 3s decay, 30% mix
+  Gap: Plugin doesn't exist - need to add it FIRST
+  Technical: 
+    Step 1: ADD_FX 2 VST3: ValhallaRoom
+    Step 2: Wait for retry (state will show param indices)
+    Step 3: SET_FX_PARAM for decay and mix with correct indices
+
+• Current: Pro-Q 3 exists with bands 1-3 used
+  Goal: Add high shelf +3dB at 8kHz
+  Gap: Plugin exists, just need to configure unused band
+  Technical: Find "Band 4 Used = 0.0 (Unused)" in state
+    Step 1: Enable Band 4
+    Step 2: Set frequency to 8kHz
+    Step 3: Set gain to +3dB
+    Step 4: Set shape to High Shelf
+  Why efficient: Uses existing plugin, doesn't duplicate
+
+CONFLICT GAP EXAMPLES:
+• Current: HP filter at 250Hz + User wants "warm sound"
+  Goal: Warmth (needs low-mids 200-500Hz)
+  Gap: HP filter BLOCKS the frequencies needed for warmth!
+  Conflict detected: Can't be warm while removing warm frequencies
+  Solution paths:
+    A) Remove/bypass HP filter, THEN add saturation + low-mid boost
+    B) Lower HP to 60Hz (keeps out rumble but allows warmth)
+  Choose A if no rumble issue, B if rumble exists
+
+• Current: Bright EQ (+6dB at 10kHz) + User wants "dark moody sound"
+  Goal: Dark sound (reduced highs)
+  Gap: Existing bright EQ OPPOSES dark goal
+  Solution:
+    A) Remove bright EQ band, THEN add dark high-cut
+    B) Invert the EQ (change +6dB to -6dB)
+  Choose based on whether other bands are useful
+
+**⚙️ PHASE 5: TECHNICAL TRANSLATION - Commands with full reasoning**
+
+Convert gaps into EXECUTABLE commands with complete logical chains.
+
+AUTOMATION COMMAND EXAMPLES:
+• Gap: "Overwrite track 3 automation (9 chaotic points) with flat 0dB line"
+  
+  Reasoning chain:
+  - Track 3 has 210.96s duration (from state)
+  - State shows "Volume Automation: 9 points" (existing automation will interfere)
+  - RULE #1: Must clear conflicting state BEFORE adding new state
+  - VOL_DIP inserts 4 new points - it does NOT remove existing points
+  - If we don't clear first, we'll have 9 old + 4 new = 13 conflicting points
+  - After clearing, track has NO automation points
+  - Then VOL_DIP creates clean automation from 0.0s to 210.96s at 1.0 (0dB)
+  
+  Commands (IN THIS ORDER):
+    Step 1: CLEAR_AUTOMATION 3 Volume  (neutralize - removes all 9 points)
+    Step 2: VOL_DIP 3 0.0 210.96 1.0  (add new - inserts 4 points at 0dB)
+  
+  Verification: After execution, expect "Volume Automation: 4 points" (clean flat line at 0dB)
+
+• Gap: "Create volume dip from 10-15s on track 1"
+  
+  Reasoning chain:
+  - State shows "Track 1 - Volume Automation: 37 points" (existing automation!)
+  - RULE #1: Existing automation will conflict with new dip
+  - VOL_DIP inserts 4 new points - it does NOT intelligently merge or replace
+  - If we don't clear first: 37 existing + 4 new = 41 messy overlapping points
+  - Must clear ALL automation first, then create clean dip
+  
+  Commands (IN THIS ORDER):
+    Step 1: CLEAR_AUTOMATION 1 Volume  (neutralize - removes all 37 points)
+    Step 2: VOL_DIP 1 10.0 15.0 0.3  (add new - creates dip at 30% from 10-15s)
+  
+  Why this order matters: Clearing first gives you a blank slate. VOL_DIP then adds 4 points cleanly.
+  Verification: After execution, expect "Volume Automation: 4 points" (clean dip, no conflicts)
+
+EQ COMMAND EXAMPLES:
+• Gap: "Add high shelf +3dB at 8kHz for brightness"
+  
+  Reasoning chain (if Pro-Q 3 already exists at FX index 0):
+  - Check state for unused band: "Band 5 Used = 0.0 (Unused)"
+  - Band 5 params start at: 5 × 13 = param 65
+  - Need to set: Used (p65), Frequency (p67), Gain (p68), Shape (p73)
+  - Frequency: 8000Hz normalized = (log10(8000) - log10(20)) / (log10(20000) - log10(20)) = 0.7959
+  - Gain: +3dB normalized = (3 + 12) / 24 = 0.625 (assuming ±12dB range)
+  - Shape: High Shelf ≈ 0.67 in Pro-Q 3
+  
+  Commands:
+    1. SET_FX_PARAM 2 0 65 1.0     (enable band)
+    2. SET_FX_PARAM 2 0 67 0.7959  (freq 8kHz)
+    3. SET_FX_PARAM 2 0 68 0.625   (gain +3dB)
+    4. SET_FX_PARAM 2 0 73 0.67    (high shelf)
+  
+  Why detailed: Each parameter must be set correctly for band to work
+
+• Gap: "Remove muddy 300Hz"
+  
+  Reasoning chain:
+  - Mud = excess low-mids
+  - Need narrow cut at problem frequency
+  - If Pro-Q 3 doesn't exist: ADD_FX first
+  - If exists: Find unused band, configure as Bell cut at 300Hz, -3 to -4dB, Q=2-3
+  
+  Commands (if needs adding):
+    1. ADD_FX 1 VST3: Pro-Q 3 (FabFilter)
+    2. Wait for retry to see param indices
+    3. On retry: Configure band with 300Hz, -3.5dB, Bell shape
+  
+  Why wait: Don't know exact param indices until plugin loads and state refreshes
+
+COMPLEX CHAIN EXAMPLES:
+• Gap: "Make vocals warm, bright, and spacious"
+  
+  Reasoning chain (building signal flow):
+  - Warmth = low-mid boost + saturation
+  - Brightness = high shelf
+  - Spacious = reverb + stereo width
+  - Order matters: EQ → Saturation → Reverb (standard chain)
+  
+  Step 1: ADD_FX Pro-Q 3
+    - Band 1: 300Hz, +2.5dB, Bell (warmth - low-mid body)
+    - Band 2: 8kHz, +3dB, High Shelf (brightness - air)
+  Step 2: ADD_FX Saturn 2
+    - Band 1: 20-30% drive, Tape mode (warmth - harmonics)
+  Step 3: ADD_FX ValhallaRoom
+    - Decay: 2.5s, Mix: 30% (space)
+  
+  Why this order: Clean tone (EQ) → color it (saturation) → place it in space (reverb)
+  NOT: Reverb before EQ (reverbs the problems) ✗
+
+• Gap: "Drake-style vocal production"
+  
+  Reasoning chain (genre-specific):
+  - Dark = reduce highs, emphasize low-mids
+  - Compressed = heavy ratio, controlled dynamics
+  - Atmospheric = long reverb, low mix
+  - De-essed = reduce sibilance 6-8kHz
+  
+  Step 1: ADD_FX Pro-Q 3
+    - HP filter 80Hz (clean sub)
+    - Cut 6kHz -2dB (reduce sibilance)
+    - Shelf 10kHz -1.5dB (darken)
+  Step 2: ADD_FX Compressor
+    - Ratio 4:1, Threshold -15dB (heavy compression)
+  Step 3: ADD_FX Valhalla Plate
+    - Decay: 3.5s, Mix: 18% (subtle atmosphere)
+  
+  Why specific: Drake's sound has signature characteristics, not generic "add reverb"
+
+**═══════════════════════════════════════════════════════════════════════════════**
+**CRITICAL: MULTIPLE PATHS TO SAME GOAL - THINK CREATIVELY, NOT RIGIDLY**
+**═══════════════════════════════════════════════════════════════════════════════**
+
+**GOLDEN RULE: Focus on the GOAL, not the METHOD. If one path is blocked, find another.**
+
+Example: Goal = "Automation at 0dB flat line across track"
+
+Method 1: CLEAR_AUTOMATION + VOL_DIP (clear then create approach)
+  - Step 1: CLEAR_AUTOMATION 3 Volume (removes all existing points)
+  - Step 2: VOL_DIP 3 0.0 211.0 1.0 (creates clean flat line)
+Method 2: Delete all automation points → track defaults to static 0dB volume
+Method 3: Modify existing automation points → set each point's value to 0dB
+Method 4: Delete problem points (dips to -∞dB) → remaining points stay at 0dB
+Method 5: Use action 40205 "Delete all points on envelope" after showing envelope
+
+**IF METHOD 1 FAILS → TRY METHOD 2. IF THAT FAILS → TRY METHOD 3. Don't loop on same approach!**
+
+**MULTI-PATH REASONING EXAMPLES:**
+
+**Problem: "Flatten automation to 0dB" (5 different solutions)**
+
+Path 1: CLEAR_AUTOMATION + VOL_DIP (clear then create)
+  - Commands:
+    Step 1: CLEAR_AUTOMATION 3 Volume
+    Step 2: VOL_DIP 3 0.0 211.0 1.0
+  - When: First attempt, cleanest way
+  - If fails: CLEAR_AUTOMATION command not working or VOL_DIP didn't create automation
+
+Path 2: Delete automation entirely (reset to static approach)
+  - Reasoning: If automation points gone → track uses static volume (0dB)
+  - Commands: 
+    1. SELECT_TRACK 3
+    2. Show volume envelope: 6 or 40406
+    3. Delete all points: 40205
+  - When: CLEAR_AUTOMATION failed, trying alternative delete method
+  - If fails: Action 40205 didn't execute or envelope not selected
+
+Path 3: Modify existing points in place
+  - Reasoning: Automation has 17 points → set all 17 to 0dB value
+  - Commands: (would need custom Lua script or manual point editing)
+  - When: Can't delete, can modify
+  - Limitation: No direct command for this, would need scripting
+
+Path 4: Delete problem points only
+  - Reasoning: Points at -∞dB and -10dB are the problem → delete those, keep 0dB points
+  - Commands: Select specific points → delete selected points
+  - When: Want to keep some automation structure
+  - Limitation: Requires selecting specific points (complex)
+
+Path 5: Override with automation item
+  - Reasoning: Create automation item with flat value
+  - Commands: Create automation item at 0dB covering full range
+  - When: Other methods unavailable
+  - Complexity: Medium
+
+**ON RETRIES - SWITCH METHODS:**
+- Attempt 1: Try CLEAR_AUTOMATION + VOL_DIP (cleanest, follows RULE #1)
+- Attempt 2: If CLEAR_AUTOMATION didn't work, try DELETE approach (action 40205)
+- Attempt 3: If delete doesn't work, try different delete action
+- Attempt 4: If nothing works, try custom solution or ask user to manually fix
+
+**NEVER loop on same failed method more than twice!**
+
+**Problem: "Add reverb" (4 different plugin options)**
+
+Path 1: Valhalla Room (if available)
+  - Best for: Natural room sounds
+  - Command: ADD_FX 2 VST3: ValhallaRoom (Valhalla DSP, LLC)
+
+Path 2: Valhalla VintageVerb (if Room not available)
+  - Best for: Vintage character
+  - Command: ADD_FX 2 VST3: ValhallaVintageVerb (Valhalla DSP, LLC)
+
+Path 3: FabFilter Pro-R (if Valhalla not available)
+  - Best for: Precise control
+  - Command: ADD_FX 2 VST3: Pro-R (FabFilter)
+
+Path 4: ReaVerb (stock Reaper, always available)
+  - Best for: Fallback when nothing else exists
+  - Command: ADD_FX 2 ReaVerb
+
+**Strategy: Try preferred plugins first, fall back to alternatives if not found**
+
+**Problem: "Brighten vocals" (5 different approaches)**
+
+Path 1: High shelf on existing Pro-Q 3 (if exists)
+  - Find unused band → configure as high shelf +3dB at 8kHz
+  - Fastest: Uses existing plugin
+
+Path 2: Add Pro-Q 3 with high shelf (if doesn't exist)
+  - ADD_FX → configure band
+  - Clean: Dedicated EQ for this task
+
+Path 3: Modify existing EQ band (if exists but all bands used)
+  - Find band closest to 8kHz → adjust to high shelf +3dB
+  - Pragmatic: Reuse existing band
+
+Path 4: Add exciter plugin (different approach to brightness)
+  - ADD_FX Aphex Vintage Exciter → harmonic enhancement
+  - Alternative: Adds harmonics instead of just boosting
+
+Path 5: Saturation on highs (creative alternative)
+  - ADD_FX Saturn 2 → configure band 2 for high frequency saturation
+  - Creative: Adds brightness through harmonics, not just gain
+
+**WHEN TO SWITCH PATHS (retry decision tree):**
+
+IF (attempt 1 failed):
+  → Check WHY it failed (read feedback/state)
+  → If plugin not found: Try alternative plugin (Path 2)
+  → If command didn't execute: Try different command type
+  → If executed but no effect: Try completely different approach
+
+IF (attempt 2 with Path 2 failed):
+  → Don't try Path 1 again!
+  → Jump to Path 3 or 4
+  → Consider: Is the GOAL achievable with available tools?
+
+IF (attempt 3+ still failing):
+  → Step back: Re-analyze the GOAL
+  → Question: Is there a blocker? (conflicting FX, wrong track, etc.)
+  → Consider: Ask user for clarification OR try manual workaround
+
+**CREATIVE PROBLEM SOLVING EXAMPLES:**
+
+• Problem: "Can't delete automation" (tried actions 40205, 42084, 40651 - none work)
+  
+  Attempt 1: Action 40205 "Delete all points on envelope"
+    → Failed (action didn't execute or wrong envelope selected)
+  
+  Attempt 2: Don't try more delete actions - SWITCH METHOD
+    → Try CLEAR_AUTOMATION + VOL_DIP instead of manual delete actions
+    → Commands: CLEAR_AUTOMATION 3 Volume, then VOL_DIP 3 0.0 211.0 1.0
+    → Why different: Uses custom command instead of relying on Reaper actions
+  
+  Attempt 3: If CLEAR_AUTOMATION + VOL_DIP also fails:
+    → Try setting track volume AND trim envelope
+    → OR ask user: "I can't modify automation with available commands. Can you manually delete the automation lane?"
+
+• Problem: "Don't know exact param indices for new plugin"
+  
+  Creative solution: ADD_FX → let it fail → read NEW STATE on retry → see exact indices
+  Why it works: State updates after plugin loads, shows all param names/numbers
+  When to use: First time adding unfamiliar plugin
+
+• Problem: "User wants warmth but track has aggressive HP filter"
+  
+  Solution: Remove the blocker (HP filter) FIRST, THEN add warmth
+  Why it works: Clear the path for the effect to work
+  Sequence: REMOVE_FX or disable HP band → ADD saturation + low-mid boost
+
+• Problem: "Pro-Q 3 has 24 bands but all are used"
+  
+  Path A: Modify existing band that's closest to target
+  Path B: Remove least important band, add new one
+  Path C: Add second EQ plugin
+  Choose: A if close match exists, C if need precise control
+
+**CONVERGENCE VS EXPLORATION (when to persist vs pivot):**
+
+PERSIST (keep refining same approach) when:
+- You're making progress (getting closer to goal each retry)
+- Just need parameter tuning (frequency off by 100Hz, gain off by 1dB)
+- State shows the change IS happening, just not calibrated yet
+
+PIVOT (try completely different approach) when:
+- Same command fails 2+ times with same result
+- State shows NOTHING changed
+- Feedback says "command not found" or "plugin not available"
+- You're in retry loop 5+ with no progress
+
+Example of WHEN TO PIVOT:
+- Retry 1-2: Try CLEAR_AUTOMATION + VOL_DIP → automation unchanged
+- Retry 3: PIVOT to delete approach (action 40205) ← DON'T try CLEAR_AUTOMATION + VOL_DIP again!
+- Retry 4: If delete failed, PIVOT to asking for clarification ← DON'T try same methods again!
+
+**GOAL-ORIENTED THINKING:**
+
+Always ask yourself:
+1. "What is the END STATE I need?" (e.g., flat 0dB automation)
+2. "What are ALL the ways to achieve that end state?" (overwrite, delete, modify, reset)
+3. "Which method haven't I tried yet?"
+4. "Am I stuck in a loop trying the same thing?"
+
+If you catch yourself planning the SAME command type 3+ times → STOP. You're in a loop. Try DIFFERENT approach.
+
+**WHEN USER REFERENCES CURRENT STATE (they're looking at it!):**
+
+Examples of implicit knowledge:
+• "gaps we did" / "dips we made" / "that automation" / "those cuts"
+  → User SEES automation in Reaper, you don't need to check if it exists
+  → Focus on WHAT to do with it, not WHETHER it exists
+
+• "put it back" / "reset it" / "remove those"
+  → User wants to UNDO something they're currently seeing
+  → Look for the most recent/obvious thing that matches description
+
+• "the reverb is too much" / "dial back the compression"
+  → User sees plugin in FX chain and wants parameter adjusted
+  → Don't add new plugin - modify existing one
+
+**MULTI-PHASE REQUEST EXAMPLES:**
+
+• "make the vocals warm and bright with space"
+  
+  PHASE 1 (Intent): Three sonic qualities requested
+    - Warm = low-mid body + harmonic richness
+    - Bright = high frequency presence
+    - Space = reverb/delay depth
+  
+  PHASE 2 (State): Check what exists
+    - If vocal track is dry with no FX: Start from scratch
+    - If some FX exist: Build around them
+  
+  PHASE 3 (Goal): Vocal with:
+    - Body in 200-500Hz
+    - Air in 8-12kHz  
+    - Harmonic saturation
+    - Reverb tail
+  
+  PHASE 4 (Gap): Need to add all three characteristics
+  
+  PHASE 5 (Technical):
+    1. ADD_FX Pro-Q 3: +2dB at 300Hz (warmth-body), +3dB at 9kHz high shelf (brightness)
+    2. ADD_FX Saturn 2: 25% drive, tape mode (warmth-harmonics)
+    3. ADD_FX Valhalla: 2.8s decay, 28% mix (space)
+  
+  Why this order: Shape tone → add color → add space
+
+**CRITICAL: NO GUESSING OR HALLUCINATING STEPS**
+- **ONLY execute what the user EXPLICITLY requested**
+- If request is ambiguous or unclear, set "already_complete": false and add ONE step asking for clarification
+- Example: User says "drop out from normal to 0 and then back" (unclear timing)
+  - DO NOT invent timestamps like "will use 50-54s for fadeout"
+  - INSTEAD: reasoning: "User wants fadeout but didn't specify when. Need clarification."
+  - steps: [] (or ask in reasoning for user to specify)
+- **NEVER add "extra" steps the user didn't ask for**
+- **NEVER assume what user "probably" wants**
+- If you catch yourself thinking "user didn't specify X, will use reasonable Y" → STOP. That's hallucination.
+
+**CRITICAL INSTRUCTIONS:**
+1. **MULTIPLE PLUGINS/COMMANDS**: When user says "open X and Y" or "add A, B, and C", create SEPARATE steps for each plugin/action.
+   - User: "open pro q and timeless 3" → Step 1: ADD_FX Pro-Q 3, Step 2: ADD_FX Timeless 3
+   - User: "add reverb and delay" → Step 1: ADD_FX reverb, Step 2: ADD_FX delay
+   - ALWAYS handle each plugin/action as its own command in the steps array
+
+2. **ADD PLUGIN + ADJUST PARAMETERS IN SAME REQUEST**: When user wants to add a plugin AND adjust it (e.g., "add saturn with 30% drive"), you have TWO options:
+   
+   **OPTION A - If plugin is NOT in current state (need to add it):**
+   - Step 1: ADD_FX (adds the plugin)
+   - Step 2: Wait for retry - on retry, NEW STATE will show all plugin parameters with names and indices
+   - Step 3 (in retry): Search the parameter names to find "Drive" or whatever, then SET_FX_PARAM with correct index
+   
+   **OPTION B - If you're confident about parameter layout:**
+   - Step 1: ADD_FX
+   - Step 2-N: SET_FX_PARAM (but accept it might fail - retry will fix it)
+   
+   **CRITICAL:** For multi-band plugins like Saturn (Band 1 Drive, Band 2 Drive), don't guess - wait for state on retry to find exact param names/indices
+
+3. **RETRY LOGIC** (if on a retry after previous failure):
+   **STEP 1: ANALYZE FEEDBACK** - Parse line by line:
+   - Lines with "✅" or "🎛️ Added FX" = SUCCEEDED (skip these)
+   - Lines with "❌" = FAILED (need to retry)
+   - Missing commands = NEED TO ADD
+   
+   **STEP 2: CROSS-REFERENCE WITH NEW STATE**:
+   - The CURRENT STATE now shows the added plugin with ALL parameters listed
+   - Example: You tried param index 2 for gain but failed
+   - Look in state for "Band 1 Gain" → See it's at param index 3 → Use 3, not 2
+   
+   **STEP 3: CONVERGENCE - INTERPOLATE TO TARGET**:
+   When adjusting parameter values, use INTERPOLATION not random guessing:
+   
+   **INTERPOLATION MATH:**
+   Look at RETRY HISTORY and STATE to find two known data points:
+   - Point A: Param value 0.35 → got 164Hz
+   - Point B: Param value 0.44 → got 338Hz
+   - Target: 300Hz
+   
+   **Linear interpolation:**
+   - Range: 164Hz to 338Hz (difference = 174Hz)
+   - Target 300Hz is at: (300 - 164) / (338 - 164) = 136/174 = 78% of the way from A to B
+   - Param value: 0.35 + (0.44 - 0.35) × 0.78 = 0.35 + 0.07 = 0.42
+   - **Try 0.42** - should land close to 300Hz!
+   
+   **RULES:**
+   - Use data from previous attempts to interpolate, don't guess randomly
+   - If you have 2+ data points, calculate the exact value needed
+   - Each retry should get significantly closer (within 10% of target)
+   - If you overshoot, interpolate back between the two closest values
+   - **NEVER:**
+     * Repeat a failed value
+     * Go backwards in wrong direction
+     * Use random values when you have data to interpolate from
+   
+   **STEP 4: OUTPUT ONLY RETRY COMMANDS**:
+   - Don't repeat successful commands
+   - Only add commands for what FAILED or is MISSING
+   - Keep successful parameter changes, only fix what's off
+   
+   **EXAMPLE RETRY:**
+   Feedback showed:
+   ```
+   ✅ Added Pro-Q 3 to track 0
+   ✅ Set param 0: Band 1 Used
+   ❌ Could not find parameter at index 2
+   ```
+   
+   Analysis: Plugin added ✅, Band enabled ✅, Gain failed (wrong index)
+   New State shows: `p3 Band 1 Gain: 0% [0.0 dB]`
+   Retry command: Only SET_FX_PARAM 0 3 3 0.6 (gain to +6dB using correct index 3)
+
+4. If user mentions a SPECIFIC TRACK NUMBER (e.g., "track 7"):
+   - Look for EXACT MATCH in action descriptions
+   - "Toggle solo for track 07" or "Toggle solo for track 7" = EXACT MATCH
+   - "Toggle solo for selected tracks" = GENERIC (only use if no exact match!)
+   
+5. CHAIN OF THOUGHT in your reasoning:
+   - User asked for: [extract exact track number]
+   - Available actions: [list the top 3 matches]
+   - EXACT match is: [action ID] because [why]
+   
+6. Read state BEFORE acting:
+   - Is the track already in desired state? If yes, do nothing!
+   
+7. For track-specific actions (NOT generic "selected tracks"):
+   - Do NOT use SELECT_TRACK first
+   - Use the direct track action ID
+
+**CRITICAL: CHECK IF ALREADY COMPLETE FIRST**
+BEFORE planning ANY actions, check if CURRENT STATE already has what user wants.
+
+Example 1: User wants "Pro-Q 3 open with +3dB mid boost"
+- State shows: Pro-Q 3 at index [3], Band 1 at 1039Hz with +3.00 dB gain
+- Result: ALREADY COMPLETE! Set "already_complete": true, "steps": []
+- DO NOT add "just to be sure" commands or "open plugin" steps
+
+Example 2: User wants "boost mids +3db" (plugin not specified)
+- State shows: Pro-Q 3 with mid band at +3dB
+- Result: ALREADY COMPLETE! They didn't say which plugin, but mids are boosted
+- Set "already_complete": true
+
+Rule: If your reasoning says "already at +3dB" or "already configured" → USE THE FLAG, NO STEPS
+
+{retry_alert if previous_issues else ""}
+
+**OUTPUT ONLY THIS JSON:**
+{{
+  "reasoning": "CHAIN OF THOUGHT: [your analysis]",
+  "already_complete": true/false,
+  "steps": [
+    {{"command": "23", "description": "Toggle solo for track 07"}},
+    {{"command": "ADD_FX 2 ReaVerb", "description": "Add ReaVerb plugin"}}
+  ]
+}}
+
+If already_complete=true, reasoning must explain WHY (what state shows) and steps must be empty [].
+
+CRITICAL: Return ONLY valid JSON. No text before or after."""
 
     try:
         response = client.messages.create(
@@ -5524,8 +5693,8 @@ Recommendations: {', '.join(analysis.get('recommendations', [])) if analysis.get
     print(f"💪 Loaded {len(known_actions)} total actions")
     print(f"🎛️ Loaded {len(available_plugins)} available plugins")
     
-    # Retry loop (up to 6 attempts - if it's not working by then, it won't work)
-    max_retries = 6
+    # Retry loop (up to 20 attempts for complex parameter tuning - blind parameter mapping needs iterations)
+    max_retries = 20
     retry_count = 0
     previous_issues = ""
     previous_feedback = ""
@@ -5558,11 +5727,7 @@ Recommendations: {', '.join(analysis.get('recommendations', [])) if analysis.get
         if failed_actions:
             print(f"🚫 Blocking {len(failed_actions)} previously failed action IDs from retry")
         if failed_commands:
-            print(f"🚫 Blocking {len(failed_commands)} previously failed command variants from retry")
-        
-        # DEBUG: Log what we're sending to planner
-        log_debug(f"Sending to planner: user_input='{technical_input[:100]}...', state_len={len(initial_state)}, plugins={len(available_plugins)}")
-        print(f"🔍 DEBUG: Sending user request to planner: '{technical_input[:100]}...'")
+            print(f"🚫 Blocking {len(failed_commands)} previously failed custom commands from retry")
         
         plan_response = plan_actions(technical_input, initial_state, available_actions_filtered, available_plugins, previous_issues, previous_feedback, lyric_context, analysis_context, retry_history, conversation_history, failed_commands)
         
@@ -5578,19 +5743,11 @@ Recommendations: {', '.join(analysis.get('recommendations', [])) if analysis.get
         
         try:
             plan = json.loads(plan_response_clean)
+            reasoning = plan.get("reasoning", "")
             already_complete = plan.get("already_complete", False)
             steps = plan.get("steps", [])
             
-            # Display CoT steps
-            print(f"\n💭 Chain of Thought:")
-            for i in range(6):
-                step_key = f"step_{i}_{['preflight', 'understand', 'current_state', 'gap', 'conflicts', 'shortest_path'][i]}"
-                if step_key in plan:
-                    step_name = ['Pre-flight', 'Understand', 'Current State', 'Gap', 'Conflicts', 'Path'][i]
-                    print(f"   {i}. {step_name}: {plan[step_key]}")
-            
-            # Fallback to old reasoning field if CoT fields missing
-            reasoning = plan.get("reasoning", "") or plan.get("step_3_gap", "")
+            print(f"\n💭 Reasoning: {reasoning}")
             
             # Check if agent needs clarification
             clarification_keywords = ["need clarification", "unclear", "ambiguous", "specify", "which", "please clarify"]
@@ -5863,8 +6020,6 @@ Recommendations: {', '.join(analysis.get('recommendations', [])) if analysis.get
 
         # Send remaining commands to Reaper
         if reaper_commands:
-            # Executor-level guardrail: neutralize conflicts and enforce goal state where needed
-            reaper_commands = _enforce_goal_and_neutralize(user_input, initial_state, reaper_commands)
             # Reset no-recommendations counter since we're actually doing something
             no_recommendations_count = 0
             
@@ -5888,22 +6043,6 @@ Recommendations: {', '.join(analysis.get('recommendations', [])) if analysis.get
         feedback = get_reaper_feedback()
         if feedback != "No feedback available":
             print(f"📢 Reaper says: {feedback}")
-        
-        # If Pro-Q 3 is involved, rewrite and resend with calibrated values
-        # We do this after initial send to ensure the plugin instance exists for calibration
-        if reaper_commands and any(("ADD_FX" in c and "Pro-Q 3" in c) or re.search(r"SET_FX_PARAM\s+\d+\s+\d+\s+(8|9|21|22)\s+", c) for c in reaper_commands):
-            # Rewrite commands with calibrated values and re-send if there were changes
-            rewritten = _rewrite_proq3_commands_with_calibration(reaper_commands)
-            if rewritten != reaper_commands:
-                print("🛠️ Calibrated Pro-Q 3 mapping → resending corrected commands")
-                if not send_reaper_commands(rewritten):
-                    print("❌ Failed to send calibrated commands")
-                else:
-                    print("✅ Calibrated commands sent")
-                time.sleep(0.8)
-                feedback2 = get_reaper_feedback()
-                if feedback2 != "No feedback available":
-                    print(f"📢 Reaper says: {feedback2}")
         
         # Display lyrics if extracted (only show ONCE, not on every retry)
         if lyrics_results and not lyrics_already_displayed:
@@ -5973,27 +6112,21 @@ Recommendations: {', '.join(analysis.get('recommendations', [])) if analysis.get
 
         # Quick check: If Reaper feedback confirms success, trust it and stop
         if feedback and feedback != "No feedback available":
-            feedback_lines = [line.strip() for line in feedback.splitlines() if line.strip()]
-            success_lines = [line for line in feedback_lines if feedback_contains_success(line)]
-            failure_lines = [line for line in feedback_lines if '❌' in line or 'Could not' in line or 'Unknown command' in line]
-            unknown_lines = [line for line in feedback_lines if '❓' in line]
-
-            automation_success = any('VOL_DIP' in line and '✓' in line for line in feedback_lines) or ('Automated' in feedback and 'mix:' in feedback)
-            fx_added = any('Added FX' in line for line in feedback_lines)
-            cleared_automation = any('Cleared' in line and 'automation' in line for line in feedback_lines)
-
-            if success_lines and len(failure_lines) <= len(unknown_lines):
-                print(f"\n✅ SUCCESS: Reaper feedback confirms {len(success_lines)} successful operations")
-                for line in success_lines[:5]:
-                    print(f"   • {line}")
-                if len(success_lines) > 5:
-                    print(f"   • ... ({len(success_lines) - 5} more)")
+            # Count success indicators in feedback
+            success_count = feedback.count('✅') + feedback.count('🎛️') + feedback.count('🎚️') + feedback.count('🗑️')
+            failure_count = feedback.count('❌')
+            
+            # Check for specific automation success messages
+            automation_success = 'Automated' in feedback and 'mix:' in feedback
+            fx_added = 'Added FX' in feedback
+            
+            # If we see clear success indicators and no failures, we're done
+            if (success_count >= 2 and failure_count == 0) or (automation_success and fx_added):
+                print(f"\n✅ SUCCESS: Reaper feedback confirms {success_count} successful operations")
                 if automation_success:
-                    print(f"   🎛️ Volume automation created successfully")
+                    print(f"   🎛️ Automation created on mix parameter")
                 if fx_added:
                     print(f"   🔌 Plugin added successfully")
-                if cleared_automation:
-                    print(f"   🗑️ Cleared existing automation")
                 if lyrics_results and lyrics_already_displayed:
                     print(f"   📝 Lyrics extracted ({len(lyrics_results[0]['lyrics'])} words)")
                 break  # Don't even run verification - feedback is truth
@@ -6169,18 +6302,6 @@ Recommendations: {', '.join(analysis.get('recommendations', [])) if analysis.get
             if issues:
                 print(f"📌 What's wrong: {issues}")
                 print(f"🔄 Will retry with this information...")
-
-            # Guardrail: if our commands changed state but verification failed, auto-revert to pre-send snapshot
-            try:
-                state_changed = (initial_state != final_state)
-                changed_by_us = any(("SET_FX_PARAM" in c) or ("ADD_FX" in c) or ("REMOVE_FX" in c) for c in reaper_commands)
-                if state_changed and changed_by_us:
-                    print("↩️  Auto-reverting to last snapshot (guardrail)...")
-                    ok, msg = revert_to_snapshot(-1)
-                    print(f"{'✅' if ok else '❌'} {msg}")
-                    time.sleep(0.6)
-            except Exception as _:
-                pass
             
             # Track failed action IDs and custom commands so we don't retry them
             for cmd in commands:
@@ -6188,10 +6309,11 @@ Recommendations: {', '.join(analysis.get('recommendations', [])) if analysis.get
                     failed_actions.add(cmd.strip())
                     log_debug(f"Added action {cmd.strip()} to blocklist")
                 else:
-                    cmd_text = cmd.strip()
-                    if cmd_text:
-                        failed_commands.add(cmd_text)
-                        log_debug(f"Added command '{cmd_text}' to blocklist")
+                    # Custom command (VOL_DIP, CLEAR_AUTOMATION, etc.)
+                    cmd_name = cmd.split()[0] if cmd else ""
+                    if cmd_name:
+                        failed_commands.add(cmd_name)
+                        log_debug(f"Added command {cmd_name} to blocklist")
             
             # Prepare for retry - preserve ALL context
             # Track what we tried and what happened (include commands and outcome)
