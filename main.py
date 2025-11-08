@@ -868,8 +868,8 @@ async def root():
             }
             
             try {
-                // Always use raw endpoint (enhancer is now a separate button)
-                const response = await fetch('/api/chat_raw', {
+                // Non-blocking execution so the UI can stream live events
+                const response = await fetch('/api/chat_raw_async', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ session_id: getSessionId(), text: message })
@@ -877,17 +877,8 @@ async def root():
                 
                 if (response.ok) {
                     const data = await response.json();
-                    
-                    // Show the full agent output (all reasoning, logs, everything)
-                    if (data.full_output && data.full_output.trim()) {
-                        addMessage(data.full_output, 'agent');
-                    } else if (data.reply) {
-                        addMessage(data.reply, 'agent');
-                    } else {
-                        addMessage('Queued ' + (data.plan?.steps?.length || 0) + ' steps', 'agent');
-                    }
-                    
-                    addEvent('Message sent → ' + (data.plan?.steps?.length || 0) + ' commands');
+                    addEvent('🟣 Agent started (plan ' + (data.plan_id || 'n/a') + '), queued=' + (data.queued_commands?.length || 0));
+                    addMessage('Agent started. Watch Events for live steps…', 'agent');
                 } else {
                     addMessage('Error: ' + response.status, 'agent');
                 }
@@ -956,8 +947,44 @@ async def root():
             }
         }
         
-        // Check connection on load
-        checkConnection();
+        // Live event stream via SSE
+        let es = null;
+        function startEventStream() {
+            const sid = getSessionId();
+            if (es) { try { es.close(); } catch(e){} }
+            addEvent('🔌 Connecting event stream for session ' + sid + '…');
+            es = new EventSource('/api/events/stream?session_id=' + encodeURIComponent(sid));
+            es.onmessage = (evt) => {
+                try {
+                    const e = JSON.parse(evt.data);
+                    const kind = e.kind || 'event';
+                    // Compact rendering for common kinds
+                    if (kind === 'command_sent_to_reaper' && e.data?.command) {
+                        addEvent('➡️ ' + kind + ': ' + e.data.command);
+                    } else if (kind === 'command_queued_for_reaper' && e.data?.commands) {
+                        addEvent('📝 queued ' + e.data.commands.length + ' cmd(s)');
+                    } else if (kind === 'reaper_state_update') {
+                        addEvent('📊 state update');
+                    } else if (kind === 'plan_started_async') {
+                        addEvent('🟣 plan started ' + (e.data?.plan_id || ''));
+                    } else if (kind === 'plan_created') {
+                        addEvent('✅ plan created');
+                    } else {
+                        addEvent(kind);
+                    }
+                } catch (err) {
+                    addEvent('event parse error');
+                }
+            };
+            es.onerror = () => {
+                addEvent('⚠️ stream error, retrying in 2s…');
+                try { es.close(); } catch(e){}
+                setTimeout(startEventStream, 2000);
+            };
+        }
+        
+        // Check connection on load and start stream
+        checkConnection().then(startEventStream);
         
         // Enter key support
         document.getElementById('messageInput').addEventListener('keypress', function(e) {
@@ -965,6 +992,11 @@ async def root():
                 e.preventDefault();
                 sendMessage();
             }
+        });
+        
+        // Restart stream when session changes
+        document.getElementById('sessionInput').addEventListener('change', () => {
+            startEventStream();
         });
     </script>
 </body>
