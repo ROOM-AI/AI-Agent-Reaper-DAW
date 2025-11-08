@@ -344,6 +344,19 @@ def log_debug(message):
     except:
         pass
 
+# UI logging mode: FULL (default), COT (only chain-of-thought + summary), MIN (summary only)
+AGENT_LOG_MODE = os.getenv("AGENT_LOG_MODE", "FULL").upper()
+def ui_print(message: str, section: str = "GENERAL"):
+    mode = AGENT_LOG_MODE
+    if mode == "FULL":
+        print(message)
+    elif mode == "COT":
+        if section in ("COT", "SUMMARY"):
+            print(message)
+    elif mode == "MIN":
+        if section == "SUMMARY":
+            print(message)
+
 
 @contextmanager
 def open_file_when_ready(path, mode='rb', timeout=15.0, poll_interval=0.5):
@@ -1109,6 +1122,70 @@ def _rewrite_proq3_commands_with_calibration(reaper_commands: list) -> list:
         rewritten.append(c)
 
     return rewritten
+
+def _enforce_goal_and_neutralize(user_input: str, initial_state: str, reaper_commands: list) -> list:
+    """
+    Executor-level guardrail. Ensures neutralization for automation and EQ band-pass goals.
+    - Volume automation: if VOL_DIP is present and Volume automation already exists → prepend CLEAR_AUTOMATION.
+    - Telephone/band-pass (HP+LP): ignore planner's micro-steps and replace with generic EQ band-pass commands.
+    """
+    if not reaper_commands:
+        return reaper_commands
+
+    cmds = list(reaper_commands)
+    text = (user_input or "").lower()
+
+    # 1) Automation neutralization: Volume
+    needs_clear = False
+    tracks_to_clear = set()
+    for c in cmds:
+        if c.startswith("VOL_DIP"):
+            parts = c.split()
+            if len(parts) >= 2 and parts[1].isdigit():
+                tr = int(parts[1])
+                # Look in state for volume automation on this track
+                if re.search(rf'--- Track {tr}:\s+.*?Volume Automation:', initial_state, flags=re.S):
+                    needs_clear = True
+                    tracks_to_clear.add(tr)
+    if needs_clear:
+        clear_cmds = [f"CLEAR_AUTOMATION {tr} Volume" for tr in sorted(tracks_to_clear)]
+        # Prepend clears if not already included
+        if not any(cmd.startswith("CLEAR_AUTOMATION") for cmd in cmds):
+            cmds = clear_cmds + cmds
+
+    # 2) Telephone/band-pass enforcement across EQ
+    mentions_bandpass = any(k in text for k in ["telephone", "band-pass", "band pass"])
+    if mentions_bandpass:
+        # Try to detect track index from user_input or from commands (first that mentions a track)
+        tr_match = re.search(r'track\s+(\d+)', text)
+        if tr_match:
+            target_tr = int(tr_match.group(1))
+        else:
+            target_tr = None
+            for c in cmds:
+                m = re.match(r'^(?:ADD_FX|SET_FX_PARAM|VOL_DIP|FX_PARAM_AUTO|REMOVE_FX)\s+(\d+)\b', c)
+                if m:
+                    target_tr = int(m.group(1))
+                    break
+        if target_tr is not None:
+            preferred_eqs = [
+                "VST3: Pro-Q 3 (FabFilter)",
+                "Pro-Q 3",
+                "VST3: ReaEQ (Cockos)",
+                "ReaEQ",
+                "VST: ReaEQ (Cockos)"
+            ]
+            # Use default 300–3000 if not specified in text
+            hp, lp = 300.0, 3000.0
+            hp_match = re.search(r'(\d{2,5})\s*[-–to]+\s*(\d{2,5})\s*hz', text)
+            if hp_match:
+                a = float(hp_match.group(1)); b = float(hp_match.group(2))
+                hp, lp = min(a, b), max(a, b)
+            enforced = ensure_eq_bandpass_generic(target_tr, preferred_eqs, hp, lp, slope_label="48")
+            if enforced:
+                cmds = enforced  # Replace planner steps with deterministic goal enforcement
+
+    return cmds
 
 SUCCESS_TOKENS = (
     "✓",
@@ -5764,6 +5841,8 @@ Recommendations: {', '.join(analysis.get('recommendations', [])) if analysis.get
 
         # Send remaining commands to Reaper
         if reaper_commands:
+            # Executor-level guardrail: neutralize conflicts and enforce goal state where needed
+            reaper_commands = _enforce_goal_and_neutralize(user_input, initial_state, reaper_commands)
             # Reset no-recommendations counter since we're actually doing something
             no_recommendations_count = 0
             
