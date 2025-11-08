@@ -3,9 +3,11 @@ from collections import defaultdict, deque
 from typing import Optional, Dict, Any, List
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
+import asyncio
+import threading, uuid
 
 # Load environment variables
 load_dotenv()
@@ -227,6 +229,33 @@ def api_chat_raw(body: ChatIn):
         add_event("error", {"prompt": body.text, "error": str(e)}, session_id=body.session_id)
         return {"reply": f"❌ Error: {str(e)}\n\n{error_output}", "plan": plan, "status": "error"}
 
+@app.post("/api/chat_raw_async")
+def api_chat_raw_async(body: ChatIn):
+    """Start agent in background and return immediately to avoid 504s."""
+    _ensure_agent_loaded()
+    plan_id = f"plan-{uuid.uuid4().hex[:8]}"
+    RUNNING_TASKS[plan_id] = {"session_id": body.session_id, "text": body.text, "started_ts": time.time(), "status": "running"}
+
+    def _runner():
+        try:
+            agent._CURRENT_SESSION_ID = body.session_id  # type: ignore
+            agent.execute_user_command(body.text)        # type: ignore
+            RUNNING_TASKS[plan_id]["status"] = "done"
+        except Exception as e:
+            RUNNING_TASKS[plan_id]["status"] = f"error: {e}"
+
+    t = threading.Thread(target=_runner, daemon=True)
+    t.start()
+    add_event("plan_started_async", {"plan_id": plan_id, "text": body.text}, session_id=body.session_id)
+    queued = list(REAPER_SESSIONS.get(body.session_id, []))
+    return {"status": "started", "plan_id": plan_id, "queued_commands": queued}
+
+@app.get("/api/progress")
+def api_progress(session_id: str, plan_id: str = ""):
+    """Lightweight progress probe: queue length and task status."""
+    qlen = len(REAPER_SESSIONS.get(session_id, []))
+    status = RUNNING_TASKS.get(plan_id, {}).get("status") if plan_id else None
+    return {"session_id": session_id, "queued_commands": qlen, "status": status or "unknown"}
 # -------------------- Lua client: pull next command --------------------
 @app.get("/v1/next")
 def v1_next(session_id: str, x_api_key: Optional[str] = Header(default="")):
@@ -261,6 +290,7 @@ def admin_queue(body: AdminCmd, x_api_key: Optional[str] = Header(default="")):
 # -------------------- Reaper Cloud Connection --------------------
 REAPER_SESSIONS = {}  # session_id -> [commands]
 REAPER_STATE = {}  # session_id -> state dict
+RUNNING_TASKS = {}  # plan_id -> metadata
 
 # Lazy-load the heavy agent module so the container can start fast
 agent = None  # type: ignore
@@ -338,7 +368,7 @@ def _ensure_agent_loaded():
     global agent
     if agent is None:
         import importlib.util
-        # Load legacy robust agent (old.py) instead of local_agent.py
+        # Load legacy robust agent (old.py)
         spec = importlib.util.spec_from_file_location("old", "old.py")
         _agent = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(_agent)
@@ -445,6 +475,25 @@ def debug_state(session_id: str = "demo"):
         "all_keys": list(st.keys())
     }
 
+# -------------------- Live event stream (SSE) --------------------
+@app.get("/api/events/stream")
+async def events_stream(session_id: Optional[str] = None, since: Optional[float] = None):
+    """
+    Server-Sent Events stream of agent/bridge lifecycle.
+    Filters by session_id if provided. Use curl -N to follow.
+    """
+    async def gen():
+        last_ts = since or 0.0
+        while True:
+            # Snapshot to minimize contention
+            snapshot = list(EVENTS)
+            new_events = [e for e in snapshot if e.get("t", 0) > last_ts and (session_id is None or e.get("session_id") == session_id)]
+            if new_events:
+                for e in new_events:
+                    yield f"data: {json.dumps(e)}\n\n"
+                last_ts = new_events[-1]["t"]
+            await asyncio.sleep(0.5)
+    return StreamingResponse(gen(), media_type="text/event-stream")
 # -------------------- Static UI for investors --------------------
 @app.get("/", response_class=HTMLResponse)
 async def root():

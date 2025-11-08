@@ -1,0 +1,26 @@
+﻿# VCS / env / caches
+.git/
+.venv/
+venv/
+**/__pycache__/
+**/*.py[cod]
+**/.DS_Store
+
+# Huge/local data
+temp_audio/**
+references/**
+lyrics_cache/**
+ReaperAI_CloudClient/**
+ReaperAI_CloudClient.zip
+AI-Agent-Reaper-DAW.zip
+AI-Agent-Reaper-DAW-v2.zip
+
+# Media
+*.wav
+*.mp3
+*.mp4
+*.flac
+*.m4a
+*.ogg
+*.aiff
+*.aif
