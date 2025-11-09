@@ -119,7 +119,8 @@ def api_chat(body: ChatIn):
         }
         
         add_event("plan_created", {"prompt": body.text, **plan}, session_id=body.session_id)
-        add_event("command_queued_for_reaper", {"commands": commands, "session_id": body.session_id}, session_id="reaper")
+        # Tag with the actual session so UI filters show it
+        add_event("command_queued_for_reaper", {"commands": commands, "session_id": body.session_id}, session_id=body.session_id)
         
         return {
             "reply": agent_output if agent_output else f"✅ {result['message']}",
@@ -206,7 +207,8 @@ def api_chat_raw(body: ChatIn):
         }
 
         add_event("plan_created", {"prompt": body.text, **plan}, session_id=body.session_id)
-        add_event("command_queued_for_reaper", {"commands": commands, "session_id": body.session_id}, session_id="reaper")
+        # Tag with the actual session so UI filters show it
+        add_event("command_queued_for_reaper", {"commands": commands, "session_id": body.session_id}, session_id=body.session_id)
 
         return {
             "reply": agent_output if agent_output else f"✅ {result['message']}",
@@ -237,12 +239,49 @@ def api_chat_raw_async(body: ChatIn):
     RUNNING_TASKS[plan_id] = {"session_id": body.session_id, "text": body.text, "started_ts": time.time(), "status": "running"}
 
     def _runner():
+        import io, sys
+        class _EventingWriter(io.TextIOBase):
+            def __init__(self, session_id: str):
+                self._buf = ""
+                self._sid = session_id
+            def write(self, s: str):
+                if not isinstance(s, str):
+                    s = str(s)
+                self._buf += s
+                while "\n" in self._buf:
+                    line, self._buf = self._buf.split("\n", 1)
+                    if line.strip():
+                        add_event("agent_stdout", {"line": line}, session_id=self._sid)
+                return len(s)
+            def flush(self):
+                return
         try:
+            # Tee stdout/stderr to SSE
+            old_out, old_err = sys.stdout, sys.stderr
+            tee = _EventingWriter(body.session_id)
+            sys.stdout = tee
+            sys.stderr = tee
             agent._CURRENT_SESSION_ID = body.session_id  # type: ignore
             agent.execute_user_command(body.text)        # type: ignore
+            # Flush any remaining partial line
+            try:
+                if getattr(tee, "_buf", "").strip():
+                    add_event("agent_stdout", {"line": tee._buf}, session_id=body.session_id)
+            except Exception:
+                pass
             RUNNING_TASKS[plan_id]["status"] = "done"
         except Exception as e:
             RUNNING_TASKS[plan_id]["status"] = f"error: {e}"
+            add_event("error", {"prompt": body.text, "error": str(e)}, session_id=body.session_id)
+        finally:
+            try:
+                # Restore stdio
+                sys.stdout = old_out
+                sys.stderr = old_err
+            except Exception:
+                pass
+            # Emit a completion marker so UI can pull final logs if needed
+            add_event("agent_completed", {"plan_id": plan_id}, session_id=body.session_id)
 
     t = threading.Thread(target=_runner, daemon=True)
     t.start()
@@ -347,6 +386,9 @@ def _command_sink(commands, session_id: str) -> bool:
             REAPER_SESSIONS[session_id] = []
         # Queue commands from agent
         REAPER_SESSIONS[session_id].extend(commands)
+        # Emit events for UI (one per command for visibility)
+        for c in commands:
+            add_event("command_queued_for_reaper", {"command": c, "session_id": session_id}, session_id=session_id)
         return True
     except Exception:
         return False
@@ -389,7 +431,7 @@ def reaper_poll(session_id: str = "default"):
     
     if REAPER_SESSIONS[session_id]:
         cmd = REAPER_SESSIONS[session_id].pop(0)
-        add_event("command_sent_to_reaper", {"command": cmd, "session_id": session_id}, session_id="reaper")
+        add_event("command_sent_to_reaper", {"command": cmd, "session_id": session_id}, session_id=session_id)
         return cmd
     return ""  # Empty = no command
 
@@ -403,7 +445,7 @@ def reaper_execute(cmd: dict):
         if session_id not in REAPER_SESSIONS:
             REAPER_SESSIONS[session_id] = []
         REAPER_SESSIONS[session_id].append(command)
-        add_event("command_queued_for_reaper", {"command": command, "session_id": session_id}, session_id="reaper")
+        add_event("command_queued_for_reaper", {"command": command, "session_id": session_id}, session_id=session_id)
     return {"status": "queued", "command": command, "session_id": session_id}
 
 @app.post("/api/reaper/state")
@@ -791,6 +833,7 @@ async def root():
 
     <script>
         let isConnected = false;
+        let agentLogBuffer = [];
         
         // Load session ID from localStorage or default to 'demo'
         window.onload = function() {
@@ -959,10 +1002,26 @@ async def root():
                     const e = JSON.parse(evt.data);
                     const kind = e.kind || 'event';
                     // Compact rendering for common kinds
-                    if (kind === 'command_sent_to_reaper' && e.data?.command) {
+                    if (kind === 'agent_stdout' && e.data?.line) {
+                        agentLogBuffer.push(e.data.line);
+                        addEvent('🧠 ' + e.data.line);
+                    } else if (kind === 'agent_completed') {
+                        addEvent('✅ agent completed');
+                        if (agentLogBuffer.length) {
+                            addMessage(agentLogBuffer.join('\\n'), 'agent');
+                            agentLogBuffer = [];
+                        }
+                    } else if (kind === 'command_sent_to_reaper' && e.data?.command) {
                         addEvent('➡️ ' + kind + ': ' + e.data.command);
                     } else if (kind === 'command_queued_for_reaper' && e.data?.commands) {
-                        addEvent('📝 queued ' + e.data.commands.length + ' cmd(s)');
+                        // show each queued command
+                        try {
+                            (e.data.commands || []).forEach((c) => addEvent('📝 queued: ' + c));
+                        } catch (_) {
+                            addEvent('📝 queued ' + (e.data.commands?.length || 0) + ' cmd(s)');
+                        }
+                    } else if (kind === 'command_queued_for_reaper' && e.data?.command) {
+                        addEvent('📝 queued: ' + e.data.command);
                     } else if (kind === 'reaper_state_update') {
                         addEvent('📊 state update');
                     } else if (kind === 'plan_started_async') {
