@@ -689,6 +689,302 @@ def parse_fx_list(state):
     
     return fx_list
 
+def _find_track_eq_fx_section(state_text: str, track_idx: int):
+    """
+    Find an EQ-like FX on the given track and return (fx_idx, section_lines, fx_name).
+    Preference order: Pro-Q 3; then anything with 'eq' or 'filter' in name.
+    """
+    import re as _re
+    lines = state_text.splitlines()
+    in_track = False
+    current_fx_idx = None
+    current_fx_name = None
+    collected = []
+    chosen_fx = None
+    chosen_section = None
+    chosen_name = ""
+
+    def commit_section(idx, name, section):
+        nonlocal chosen_fx, chosen_section, chosen_name
+        lname = name.lower()
+        score = 0
+        if "pro-q 3" in lname or "pro q 3" in lname:
+            score = 3
+        elif "eq" in lname:
+            score = 2
+        elif "filter" in lname:
+            score = 1
+        else:
+            score = 0
+        # Choose only if it looks like EQ
+        if score > 0:
+            # Prefer highest score; if equal, prefer first encountered
+            if chosen_fx is None or score > (3 if "pro-q 3" in chosen_name.lower() or "pro q 3" in chosen_name.lower() else (2 if "eq" in chosen_name.lower() else 1)):
+                chosen_fx = idx
+                chosen_section = list(section)
+                chosen_name = name
+
+    fx_header_re = _re.compile(r"\s*\[(\d+)\]\s+(.+)")
+    for ln in lines:
+        if ln.startswith("--- Track "):
+            # entering or leaving tracks
+            if in_track and current_fx_idx is not None:
+                # commit previous unfinished section
+                commit_section(current_fx_idx, current_fx_name, collected)
+            in_track = (f"--- Track {track_idx}:" in ln)
+            current_fx_idx = None
+            current_fx_name = None
+            collected = []
+            continue
+        if not in_track:
+            continue
+        m = fx_header_re.match(ln)
+        if m:
+            # starting a new FX
+            if current_fx_idx is not None:
+                commit_section(current_fx_idx, current_fx_name, collected)
+            current_fx_idx = int(m.group(1))
+            current_fx_name = m.group(2).strip()
+            collected = [ln]
+            continue
+        if current_fx_idx is not None:
+            # still within current FX
+            if ln.startswith("    [") or ln.startswith("--- Track ") or ln.startswith("=== END STATE"):
+                # defensive stop; but we handle commit when next FX header seen
+                pass
+            collected.append(ln)
+    # Commit tail section if we ended inside track
+    if in_track and current_fx_idx is not None:
+        commit_section(current_fx_idx, current_fx_name, collected)
+
+    return chosen_fx, (chosen_section or []), chosen_name
+
+def _collect_active_band_used_params(section_lines):
+    """
+    From an FX section dump, return list of param indices (ints) for bands that are active.
+    Matches lines like:
+      'p65 Band 6 Used: 100% [Used]'
+      'p12 Band 2 Enable: 100%'
+      'p33 Band 4 On: 100%'
+    """
+    import re as _re
+    active = []
+    pat = _re.compile(r"\s*p(\d+)\s+.*Band\s+\d+.*\b(Used|Enable|On)\b:\s+(\d+)%", _re.IGNORECASE)
+    for ln in section_lines:
+        m = pat.match(ln)
+        if m and int(m.group(3)) > 0:
+            active.append(int(m.group(1)))
+    return active
+
+def _get_fx_section_by_index(state_text: str, track_idx: int, fx_idx: int):
+    """
+    Get section lines and FX name for a specific (track_idx, fx_idx).
+    Returns (section_lines, fx_name) or ([], "").
+    """
+    import re as _re
+    lines = state_text.splitlines()
+    in_track = False
+    current_fx_idx = None
+    current_fx_name = ""
+    collected = []
+    fx_header_re = _re.compile(r"\s*\[(\d+)\]\s+(.+)")
+    for ln in lines:
+        if ln.startswith("--- Track "):
+            if in_track and current_fx_idx == fx_idx:
+                return collected, current_fx_name
+            in_track = (f"--- Track {track_idx}:" in ln)
+            current_fx_idx = None
+            current_fx_name = ""
+            collected = []
+            continue
+        if not in_track:
+            continue
+        m = fx_header_re.match(ln)
+        if m:
+            if current_fx_idx == fx_idx:
+                return collected, current_fx_name
+            current_fx_idx = int(m.group(1))
+            current_fx_name = m.group(2).strip()
+            collected = [ln]
+            continue
+        if current_fx_idx is not None:
+            collected.append(ln)
+    if in_track and current_fx_idx == fx_idx:
+        return collected, current_fx_name
+    return [], ""
+
+def _build_param_name_map(section_lines):
+    """
+    From an FX section, build {param_idx:int -> param_name:str}.
+    Expects lines like 'p67 Band 6 Frequency: ...'
+    """
+    import re as _re
+    name_map = {}
+    pat = _re.compile(r"\s*p(\d+)\s+([^:]+):")
+    for ln in section_lines:
+        m = pat.match(ln)
+        if m:
+            name_map[int(m.group(1))] = m.group(2).strip()
+    return name_map
+
+def _fx_looks_like_eq(fx_name: str, name_map: dict) -> bool:
+    lname = (fx_name or "").lower()
+    if "pro-q 3" in lname or "pro q 3" in lname:
+        return True
+    if "eq" in lname or "filter" in lname:
+        return True
+    # Fallback: param names contain bands/frequency cues
+    for n in name_map.values():
+        ln = n.lower()
+        if "band" in ln or "frequency" in ln or "slope" in ln or "type" in ln or "shape" in ln:
+            return True
+    return False
+
+def _volume_has_points_in_window(state_text: str, track_idx: int, t_start: float, t_end: float) -> bool:
+    """
+    Inspect Volume section of given track to see if any points exist in [t_start, t_end].
+    """
+    import re as _re
+    in_track = False
+    inside_vol = False
+    for ln in state_text.splitlines():
+        if ln.startswith("--- Track "):
+            in_track = (f"--- Track {track_idx}:" in ln)
+            inside_vol = False
+        elif in_track and ln.strip().startswith("Volume Automation:"):
+            inside_vol = True
+        elif in_track and inside_vol:
+            s = ln.strip()
+            if s.startswith("[") or s.startswith("===") or s.startswith("---"):
+                break
+            m = _re.match(r"(\d+\.\d+)s:\s+([\-+]?\d+\.\d+)dB", s)
+            if m:
+                ts = float(m.group(1))
+                if t_start - 0.01 <= ts <= t_end + 0.01:
+                    return True
+    return False
+
+def _fx_param_has_envelope(state_text: str, track_idx: int, fx_idx: int, param_idx: int) -> bool:
+    """
+    Inspect 'AUTOMATED PARAMETERS' section for this FX and param.
+    """
+    import re as _re
+    in_track = False
+    in_fx = False
+    in_auto = False
+    for ln in state_text.splitlines():
+        if ln.startswith("--- Track "):
+            in_track = (f"--- Track {track_idx}:" in ln)
+            in_fx = False
+            in_auto = False
+        elif in_track:
+            mfx = _re.match(r"\s*\[(\d+)\]\s+.+", ln)
+            if mfx:
+                in_fx = (int(mfx.group(1)) == fx_idx)
+                in_auto = False
+                continue
+            if in_fx and "=== AUTOMATED PARAMETERS ===" in ln:
+                in_auto = True
+                continue
+            if in_fx and in_auto:
+                if ln.strip().startswith("===") or ln.strip().startswith("[") or ln.startswith("---"):
+                    break
+                mp = _re.match(r"\s*p(\d+)\s+.+:\s+(\d+)\s+automation\s+points", ln, _re.IGNORECASE)
+                if mp and int(mp.group(1)) == param_idx and int(mp.group(2)) > 0:
+                    return True
+    return False
+
+def compute_neutralizers(state_text: str, commands: list):
+    """
+    Given current state and planned reaper_commands (strings), return:
+      neutralizers: list[str]
+      reasons: list[str]  (human short lines for COT)
+    This is principle-driven: only direct conflicts are neutralized.
+    """
+    neutralizers = []
+    reasons = []
+    import re as _re
+
+    # 1) Volume windows
+    for c in commands:
+        if c.startswith("VOL_DIP"):
+            parts = c.split()
+            if len(parts) >= 5:
+                t = int(parts[1]); t_start = float(parts[2]); t_end = float(parts[3])
+                if _volume_has_points_in_window(state_text, t, t_start, t_end):
+                    neutralizers.append(f"CLEAR_AUTOMATION_RANGE {t} Volume {t_start} {t_end}")
+                    reasons.append(f"Volume conflict: points in {t}:{t_start}-{t_end} → clear range")
+
+    # 2) FX param envelopes
+    for c in commands:
+        if c.startswith("SET_FX_PARAM"):
+            parts = c.split()
+            if len(parts) >= 5:
+                t = int(parts[1]); fx = int(parts[2]); p = int(parts[3])
+                if _fx_param_has_envelope(state_text, t, fx, p):
+                    neutralizers.append(f"CLEAR_FX_PARAM_AUTOMATION {t} {fx} {p}")
+                    reasons.append(f"Param conflict: t{t} fx{fx} p{p} has automation → clear")
+
+    # 3) EQ reconfigure (command-based, not keyword-based)
+    # Group param sets per (track, fx)
+    group = {}
+    for c in commands:
+        if c.startswith("SET_FX_PARAM"):
+            parts = c.split()
+            if len(parts) >= 5:
+                t = int(parts[1]); fx = int(parts[2]); p = int(parts[3])
+                group.setdefault((t, fx), set()).add(p)
+    for (t, fx), param_indices in group.items():
+        # Examine section and param names to judge if this looks like EQ reconfiguration
+        section, fx_name = _get_fx_section_by_index(state_text, t, fx)
+        if not section:
+            continue
+        name_map = _build_param_name_map(section)
+        if not _fx_looks_like_eq(fx_name, name_map):
+            continue
+        # Treat ANY band-related param edit as an EQ (re)configuration for this FX
+        band_related = 0
+        for p in param_indices:
+            n = name_map.get(p, "").lower()
+            if any(k in n for k in ["band", "frequency", "type", "shape", "slope", "gain", "q", "resonance"]):
+                band_related += 1
+        if band_related >= 1:
+            active_params = _collect_active_band_used_params(section)
+            if active_params:
+                # Prepend SET_FX_PARAM ... 0.0 for each active band flag
+                for ap in active_params:
+                    neutralizers.append(f"SET_FX_PARAM {t} {fx} {ap} 0.0")
+                reasons.append(f"EQ conflict: t{t} fx{fx} ({fx_name}) has active bands → disable {len(active_params)} band(s)")
+
+    # Deduplicate while preserving order
+    seen = set()
+    uniq_neutralizers = []
+    for n in neutralizers:
+        if n not in seen:
+            uniq_neutralizers.append(n)
+            seen.add(n)
+
+    # 4) MIDI selection / velocity workflow
+    for c in commands:
+        if c.startswith("MIDI_SELECT_PITCHES"):
+            parts = c.split()
+            if len(parts) >= 3:
+                track_idx = int(parts[1])
+                t_start = float(parts[3]) if len(parts) >= 4 else None
+                t_end = float(parts[4]) if len(parts) >= 5 else None
+                cmd = None
+                if t_start is not None and t_end is not None:
+                    cmd = f"MIDI_CLEAR_SELECTION {track_idx} {t_start} {t_end}"
+                    reasons.append(f"MIDI conflict: reset selection track {track_idx} {t_start}-{t_end}")
+                else:
+                    cmd = f"MIDI_CLEAR_SELECTION {track_idx}"
+                    reasons.append(f"MIDI conflict: reset selection track {track_idx}")
+                if cmd and cmd not in seen:
+                    uniq_neutralizers.append(cmd)
+                    seen.add(cmd)
+
+    return uniq_neutralizers, reasons
+
 def send_reaper_commands(commands):
     """Send commands to Reaper or cloud sink"""
     try:
@@ -5704,7 +6000,8 @@ Recommendations: {', '.join(analysis.get('recommendations', [])) if analysis.get
     print(f"🎛️ Loaded {len(available_plugins)} available plugins")
     
     # Retry loop (up to 20 attempts for complex parameter tuning - blind parameter mapping needs iterations)
-    max_retries = 20
+    # Limit retries (user prefers tighter cap). Overridable via env.
+    max_retries = int(os.getenv("AGENT_MAX_RETRIES", "8"))
     retry_count = 0
     previous_issues = ""
     previous_feedback = ""
@@ -6027,6 +6324,19 @@ Recommendations: {', '.join(analysis.get('recommendations', [])) if analysis.get
                         
             else:
                 reaper_commands.append(cmd)
+
+        # Principle-based conflict detector → minimal neutralizers (command-driven)
+        # Run once to produce COT explanation before mutating the command list
+        try:
+            preview_neutralizers, preview_reasons = compute_neutralizers(initial_state, reaper_commands)
+            if preview_neutralizers:
+                print("🧩 Gap/conflict analysis: " + " | ".join(preview_reasons[:3]))
+            # Apply them
+            if preview_neutralizers:
+                reaper_commands = preview_neutralizers + reaper_commands
+                print("🧭 Conflict check → neutralize applied")
+        except Exception:
+            pass
 
         # Send remaining commands to Reaper
         if reaper_commands:

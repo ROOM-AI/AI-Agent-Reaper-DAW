@@ -565,6 +565,208 @@ function process_command(line)
             msg(failMsg)
             add_feedback(failMsg)
         end
+    
+    elseif cmd == "CLEAR_AUTOMATION_RANGE" then
+        -- CLEAR_AUTOMATION_RANGE <trackIdx> <envelopeName> <tStart> <tEnd>
+        local trackIdx = tonumber(parts[2]) or 0
+        local envName = parts[3] or "Volume"
+        local tStart = tonumber(parts[4]) or 0
+        local tEnd = tonumber(parts[5]) or tStart
+
+        local track = reaper.GetTrack(0, trackIdx)
+        if track then
+            local env = reaper.GetTrackEnvelopeByName(track, envName)
+            if env then
+                reaper.DeleteEnvelopePointRange(env, tStart, tEnd)
+                local successMsg = string.format("🧹 Cleared automation range %.2fs–%.2fs on %s (track %d)", tStart, tEnd, envName, trackIdx)
+                msg(successMsg)
+                add_feedback(successMsg)
+            else
+                local failMsg = string.format("❌ No %s envelope on track %d", envName, trackIdx)
+                msg(failMsg)
+                add_feedback(failMsg)
+            end
+        else
+            local failMsg = string.format("❌ Track %d not found", trackIdx)
+            msg(failMsg)
+            add_feedback(failMsg)
+        end
+
+    elseif cmd == "MIDI_CLEAR_SELECTION" then
+        -- MIDI_CLEAR_SELECTION <trackIdx> [tStart] [tEnd]
+        local trackIdx = tonumber(parts[2]) or 0
+        local tStart = tonumber(parts[3]) or nil
+        local tEnd = tonumber(parts[4]) or nil
+        local track = reaper.GetTrack(0, trackIdx)
+        if not track then
+            msg(string.format("❌ Track %d not found", trackIdx))
+            return
+        end
+        local itemCount = reaper.CountTrackMediaItems(track)
+        for i = 0, itemCount - 1 do
+            local item = reaper.GetTrackMediaItem(track, i)
+            local take = reaper.GetMediaItemTake(item, 0)
+            if take and reaper.TakeIsMIDI(take) then
+                reaper.MIDI_SelectAll(take, false)
+                if tStart and tEnd then
+                    -- Unselect notes in time range to ensure clean slate
+                    local noteCount = reaper.MIDI_CountNotes(take)
+                    for n = noteCount - 1, 0, -1 do
+                        local retval, selected, muted, startppqpos, endppqpos, chan, pitch, vel = reaper.MIDI_GetNote(take, n)
+                        if selected then
+                            local startTime = reaper.MIDI_GetProjTimeFromPPQPos(take, startppqpos)
+                            if startTime >= tStart and startTime <= tEnd then
+                                reaper.MIDI_SetNote(take, n, false, muted, startppqpos, endppqpos, chan, pitch, vel, true)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        local msgText = tStart and string.format("🧹 Cleared MIDI selection on track %d (%.2f–%.2fs)", trackIdx, tStart, tEnd)
+            or string.format("🧹 Cleared MIDI selection on track %d", trackIdx)
+        msg(msgText)
+        add_feedback(msgText)
+
+    elseif cmd == "MIDI_SELECT_PITCHES" then
+        -- MIDI_SELECT_PITCHES <trackIdx> <pitchesCsv> [tStart] [tEnd]
+        local trackIdx = tonumber(parts[2]) or 0
+        local pitchList = {}
+        for pitch in string.gmatch(parts[3] or "", "([^,]+)") do
+            local n = tonumber(pitch)
+            if n then table.insert(pitchList, n) end
+        end
+        if #pitchList == 0 then
+            msg("❌ MIDI_SELECT_PITCHES: no pitches provided")
+            return
+        end
+        local tStart = tonumber(parts[4]) or nil
+        local tEnd = tonumber(parts[5]) or nil
+        local track = reaper.GetTrack(0, trackIdx)
+        if not track then
+            msg(string.format("❌ Track %d not found", trackIdx))
+            return
+        end
+        local itemCount = reaper.CountTrackMediaItems(track)
+        local selectedCount = 0
+        for i = 0, itemCount - 1 do
+            local item = reaper.GetTrackMediaItem(track, i)
+            local take = reaper.GetMediaItemTake(item, 0)
+            if take and reaper.TakeIsMIDI(take) then
+                -- Clear existing selection in range
+                reaper.MIDI_SelectAll(take, false)
+                local noteCount = reaper.MIDI_CountNotes(take)
+                for n = 0, noteCount - 1 do
+                    local retval, selected, muted, startppq, endppq, chan, pitch, vel = reaper.MIDI_GetNote(take, n)
+                    local startTime = reaper.MIDI_GetProjTimeFromPPQPos(take, startppq)
+                    local inRange = true
+                    if tStart and startTime < tStart - 1e-6 then inRange = false end
+                    if tEnd and startTime > tEnd + 1e-6 then inRange = false end
+                    if inRange then
+                        for _, targetPitch in ipairs(pitchList) do
+                            if pitch == targetPitch then
+                                reaper.MIDI_SetNote(take, n, true, muted, startppq, endppq, chan, pitch, vel, false)
+                                selectedCount = selectedCount + 1
+                                break
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        local msgText = tStart and string.format("✅ Selected %d MIDI notes on track %d pitches %s (%.2f–%.2fs)", selectedCount, trackIdx, parts[3], tStart, tEnd)
+            or string.format("✅ Selected %d MIDI notes on track %d pitches %s", selectedCount, trackIdx, parts[3])
+        msg(msgText); add_feedback(msgText)
+
+    elseif cmd == "MIDI_SET_VELOCITY_CONST" then
+        -- MIDI_SET_VELOCITY_CONST <trackIdx> <velocity 1-127>
+        local trackIdx = tonumber(parts[2]) or 0
+        local velocity = math.max(1, math.min(127, tonumber(parts[3]) or 100))
+        local track = reaper.GetTrack(0, trackIdx)
+        if not track then
+            msg(string.format("❌ Track %d not found", trackIdx)); return
+        end
+        local itemCount = reaper.CountTrackMediaItems(track)
+        local changed = 0
+        for i = 0, itemCount - 1 do
+            local item = reaper.GetTrackMediaItem(track, i)
+            local take = reaper.GetMediaItemTake(item, 0)
+            if take and reaper.TakeIsMIDI(take) then
+                local noteCount = reaper.MIDI_CountNotes(take)
+                for n = 0, noteCount - 1 do
+                    local retval, selected, muted, startppq, endppq, chan, pitch, vel = reaper.MIDI_GetNote(take, n)
+                    if selected then
+                        reaper.MIDI_SetNote(take, n, true, muted, startppq, endppq, chan, pitch, velocity, true)
+                        changed = changed + 1
+                    end
+                end
+            end
+        end
+        msg(string.format("🎹 Set velocity=%d on %d MIDI notes (track %d)", velocity, changed, trackIdx))
+        add_feedback(string.format("✓ Set velocity %d on %d notes (track %d)", velocity, changed, trackIdx))
+
+    elseif cmd == "MIDI_SET_VELOCITY_RAMP" then
+        -- MIDI_SET_VELOCITY_RAMP <trackIdx> <startVel> <endVel>
+        local trackIdx = tonumber(parts[2]) or 0
+        local startVel = math.max(1, math.min(127, tonumber(parts[3]) or 80))
+        local endVel = math.max(1, math.min(127, tonumber(parts[4]) or 100))
+        local track = reaper.GetTrack(0, trackIdx)
+        if not track then
+            msg(string.format("❌ Track %d not found", trackIdx)); return
+        end
+        local itemCount = reaper.CountTrackMediaItems(track)
+        for i = 0, itemCount - 1 do
+            local item = reaper.GetTrackMediaItem(track, i)
+            local take = reaper.GetMediaItemTake(item, 0)
+            if take and reaper.TakeIsMIDI(take) then
+                -- Collect selected notes with their start time
+                local selectedNotes = {}
+                local noteCount = reaper.MIDI_CountNotes(take)
+                for n = 0, noteCount - 1 do
+                    local retval, selected, muted, startppq, endppq, chan, pitch, vel = reaper.MIDI_GetNote(take, n)
+                    if selected then
+                        local startTime = reaper.MIDI_GetProjTimeFromPPQPos(take, startppq)
+                        table.insert(selectedNotes, {index = n, startTime = startTime, info = {startppq, endppq, chan, pitch, vel}})
+                    end
+                end
+                table.sort(selectedNotes, function(a, b) return a.startTime < b.startTime end)
+                local count = #selectedNotes
+                for idx, note in ipairs(selectedNotes) do
+                    local frac = (count <= 1) and 0 or (idx - 1) / (count - 1)
+                    local vel = math.floor(startVel + (endVel - startVel) * frac + 0.5)
+                    local startppq, endppq, chan, pitch, _ = table.unpack(note.info)
+                    reaper.MIDI_SetNote(take, note.index, true, false, startppq, endppq, chan, pitch, vel, true)
+                end
+            end
+        end
+        msg(string.format("🎛️ Velocity ramp %d→%d applied to selected MIDI notes on track %d", startVel, endVel, trackIdx))
+        add_feedback(string.format("✓ Velocity ramp %d→%d applied to selected notes (track %d)", startVel, endVel, trackIdx))
+
+    elseif cmd == "CLEAR_FX_PARAM_AUTOMATION" then
+        -- CLEAR_FX_PARAM_AUTOMATION <trackIdx> <fxIdx> <paramIdx> [tStart] [tEnd]
+        local trackIdx = tonumber(parts[2]) or 0
+        local fxIdx = tonumber(parts[3]) or 0
+        local paramIdx = tonumber(parts[4]) or 0
+        local tStart = tonumber(parts[5] or "0") or 0
+        local tEnd = tonumber(parts[6] or "999999") or 999999
+
+        local track = reaper.GetTrack(0, trackIdx)
+        if not track then
+            local failMsg = string.format("❌ Track %d not found", trackIdx)
+            msg(failMsg); add_feedback(failMsg); return
+        end
+        local env = reaper.GetFXEnvelope(track, fxIdx, paramIdx, false)
+        if env then
+            reaper.DeleteEnvelopePointRange(env, tStart, tEnd)
+            local _, fxName = reaper.TrackFX_GetFXName(track, fxIdx, "")
+            local _, paramName = reaper.TrackFX_GetParamName(track, fxIdx, paramIdx, "")
+            local successMsg = string.format("🧹 Cleared automation on %s > %s (p%d) track %d in %.2f–%.2fs",
+                fxName, paramName, paramIdx, trackIdx, tStart, tEnd)
+            msg(successMsg); add_feedback(successMsg)
+        else
+            local infoMsg = string.format("ℹ️ No automation envelope for FX#%d p%d on track %d", fxIdx, paramIdx, trackIdx)
+            msg(infoMsg); add_feedback(infoMsg)
+        end
         
     elseif cmd == "FX_PARAM_AUTO" then
         -- FX_PARAM_AUTO <trackIdx> <fxIdx> <paramIdx> <tStart> <tEnd> <startValue> <endValue>
