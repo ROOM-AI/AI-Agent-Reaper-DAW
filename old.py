@@ -3895,8 +3895,18 @@ def filter_relevant_actions(user_input, all_actions, max_actions=50):
 def plan_actions(user_input, state, known_actions, available_plugins, previous_issues="", feedback="", lyric_context="", analysis_context="", retry_history=[], conversation_history=[], failed_commands=set()):
     """Phase 1: AI Plans what to do"""
     
-    # Use smart index search instead of old filter (MUCH faster!)
-    relevant_actions = smart_index_search(user_input, max_results=100)
+    # Use only reaper_actions.txt-derived list (no action_index.json dependency)
+    # This avoids failures when the index file is missing/misaligned.
+    relevant_actions = filter_relevant_actions(user_input, known_actions, max_actions=100)
+    if not relevant_actions:
+        # Fallback curated core actions to guarantee non-zero set
+        core_ids = {
+            "1007", "1016", "1013",             # transport
+            "40280", "40294", "40340",          # mute all, unsolo all, add FX to selected
+            "40062", "40210", "40058",          # split, select all items, remove items
+            "40406", "40205"                    # show vol envelope, delete envelope points
+        }
+        relevant_actions = {aid: desc for aid, desc in known_actions.items() if aid in core_ids}
     
     # Check if user explicitly mentioned an action ID (e.g., "use 40005", "action 40005", "40005")
     explicit_action_ids = re.findall(r'\b(\d{4,})\b', user_input)
