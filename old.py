@@ -5,6 +5,7 @@ import re
 import shutil
 import numpy as np
 import heapq
+import math
 from pathlib import Path
 from contextlib import contextmanager
 from anthropic import Anthropic
@@ -893,6 +894,95 @@ def _fx_param_has_envelope(state_text: str, track_idx: int, fx_idx: int, param_i
                 if mp and int(mp.group(1)) == param_idx and int(mp.group(2)) > 0:
                     return True
     return False
+
+def _parse_volume_automation(state_text: str, track_idx: int):
+    """
+    Return list of automation points for track's volume envelope.
+    Each entry: {'time': float, 'raw': str, 'db': Optional[float], 'is_infinite': bool}
+    """
+    import re as _re
+    lines = state_text.splitlines()
+    in_track = False
+    in_volume = False
+    points = []
+    time_val_re = _re.compile(r'\s*([0-9]+\.[0-9]+)s:\s*([^\s]+)')
+    for ln in lines:
+        if ln.startswith("--- Track "):
+            in_track = (f"--- Track {track_idx}:" in ln)
+            in_volume = False
+            continue
+        if not in_track:
+            continue
+        stripped = ln.strip()
+        if stripped.startswith("Volume Automation"):
+            in_volume = True
+            continue
+        if in_volume:
+            if not stripped or not ln.startswith("    "):
+                in_volume = False
+                continue
+            m = time_val_re.match(ln)
+            if m:
+                time_val = float(m.group(1))
+                raw = m.group(2)
+                raw_clean = raw.replace("dB", "").strip()
+                is_inf = any(token in raw_clean.lower() for token in ["-inf", "nan", "$", "#"])
+                db = None
+                try:
+                    db = float(raw_clean.replace("$", ""))
+                except ValueError:
+                    if is_inf:
+                        db = -200.0
+                points.append({
+                    "time": time_val,
+                    "raw": raw,
+                    "db": db,
+                    "is_infinite": is_inf or (db is not None and db <= -120.0)
+                })
+    return points
+
+def _volume_dip_satisfied(state_text: str, track_idx: int, t_start: float, t_end: float, target_norm: float) -> bool:
+    points = _parse_volume_automation(state_text, track_idx)
+    if not points:
+        return False
+    def find_point(target_time: float):
+        for pt in points:
+            if abs(pt["time"] - target_time) <= 0.2:
+                return pt
+        return None
+    start_pt = find_point(t_start)
+    end_pt = find_point(t_end)
+    if not start_pt or not end_pt:
+        return False
+    if target_norm <= 0.0005:
+        return start_pt["is_infinite"] and end_pt["is_infinite"]
+    target_db = 20.0 * math.log10(max(target_norm, 1e-6))
+    tolerance = 3.0  # dB tolerance
+    for pt in (start_pt, end_pt):
+        if pt["db"] is None:
+            return False
+        if abs(pt["db"] - target_db) > tolerance:
+            return False
+    return True
+
+def auto_verify(commands, final_state: str):
+    """
+    Lightweight deterministic verification for common command patterns.
+    Returns (True, explanation, issues) if success can be confirmed locally, else None.
+    """
+    for cmd in commands:
+        if cmd.startswith("VOL_DIP"):
+            parts = cmd.split()
+            if len(parts) >= 5:
+                track_idx = int(parts[1])
+                t_start = float(parts[2])
+                t_end = float(parts[3])
+                target_norm = float(parts[4])
+                if _volume_dip_satisfied(final_state, track_idx, t_start, t_end, target_norm):
+                    level_desc = "silence" if target_norm <= 0.0005 else f"{target_norm*100:.1f}% level"
+                    explanation = f"Volume automation on track {track_idx} shows dip {t_start:.1f}-{t_end:.1f}s reaching {level_desc}."
+                    return True, explanation, ""
+    return None
 
 def compute_neutralizers(state_text: str, commands: list):
     """
@@ -4416,6 +4506,7 @@ User wants: "create volume dip from 10-15s"
 ╔═══════════════════════════════════════════════════════════════════════════════╗
 
 You are an AI controlling Reaper DAW. THINK STEP-BY-STEP and pick EXACT matches.
+
 {retry_alert}
 {failed_cmd_section}
 {conversation_section}
@@ -5573,6 +5664,8 @@ def verify_result(user_input, initial_state, final_state, executed_commands, fee
 **STATE AFTER (relevant sections only):**
 {relevant_after}
 
+**GAP CHECK PRINCIPLE:** Compare the requested goal to the current DAW state, reason about the audible gap, and stop once the goal is effectively met. Treat values that land inside tight, musically sane tolerances as success unless the user explicitly demands pixel-perfect settings. When terminology differs between the user and Reaper (e.g. "-inf dB" vs "-1.$ dB"), reconcile them before declaring failure. If the state already satisfies the goal, explicitly state that and stop instead of recommending more commands.
+
 **CRITICAL:** Check the AUTOMATED PARAMETERS section in STATE AFTER (near the end) to see if automation was created.
 {lyrics_note}
 
@@ -5599,6 +5692,7 @@ Compare before/after states. BE STRICT - only say success if the EXACT goal was 
    SUCCESS criteria:
    - If goal was "flat 0dB": automation points should all be at ~0dB or ~57dB (Reaper's way of showing 0dB)
    - If goal was "dip at 20s": should see point at 20s with low dB value
+- Treat "-1.$ dB", "0%", or similar Reaper formatting as "-inf dB" (complete silence) when user asked for infinite attenuation.
    - Point count may increase (new automation added) or stay same (overwrite)
    
    FAILURE signs:
@@ -5713,6 +5807,7 @@ Compare before/after states. BE STRICT - only say success if the EXACT goal was 
 4. **Don't accept "close enough":**
    - If user wanted low-pass filter, ONLY low-pass filter = success
    - Similar-sounding names don't count
+5. **If STATE AFTER already meets the goal within sane tolerances (volume, frequency, velocity, etc.), call that success instead of proposing more commands. If the same mismatch repeats, point it out rather than suggesting the identical fix again.**
 
 **NO CHANGE RULE:** If states are identical but BEFORE state already matches the user's goal exactly, it's SUCCESS with explanation: "Already in desired state."
 
@@ -6465,6 +6560,14 @@ Recommendations: {', '.join(analysis.get('recommendations', [])) if analysis.get
                 "issues": "The commands had no effect on the project. State is identical to before."
             }
         else:
+            auto = auto_verify(commands, final_state)
+            if auto:
+                auto_success, auto_expl, auto_issues = auto
+                if auto_success:
+                    print(f"\n✅ SUCCESS: {auto_expl}")
+                    if auto_issues:
+                        print(f"📌 Notes: {auto_issues}")
+                    break
             # Tell verification if lyrics were extracted at any point (so it doesn't claim failure when they were shown)
             lyrics_were_extracted = len(lyrics_results) > 0 or lyrics_already_displayed
             verify_response = verify_result(technical_input, initial_state, final_state, "\n".join(commands), feedback, lyrics_were_extracted)
