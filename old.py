@@ -6106,6 +6106,7 @@ Recommendations: {', '.join(analysis.get('recommendations', [])) if analysis.get
     failed_actions = set()  # Track action IDs that failed (don't retry these)
     failed_commands = set()  # Track custom commands that failed (don't retry these)
     reasoning = ""  # Initialize reasoning variable
+    neutralizers_applied = False  # Ensure neutralizers run only once per request
     
     while retry_count < max_retries:
         if retry_count == 0:
@@ -6420,18 +6421,17 @@ Recommendations: {', '.join(analysis.get('recommendations', [])) if analysis.get
             else:
                 reaper_commands.append(cmd)
 
-        # Principle-based conflict detector → minimal neutralizers (command-driven)
-        # Run once to produce COT explanation before mutating the command list
-        try:
-            preview_neutralizers, preview_reasons = compute_neutralizers(initial_state, reaper_commands)
-            if preview_neutralizers:
-                print("🧩 Gap/conflict analysis: " + " | ".join(preview_reasons[:3]))
-            # Apply them
-            if preview_neutralizers:
-                reaper_commands = preview_neutralizers + reaper_commands
-                print("🧭 Conflict check → neutralize applied")
-        except Exception:
-            pass
+        # Principle-based conflict detector → minimal neutralizers (command-driven, first pass only)
+        if not neutralizers_applied:
+            try:
+                preview_neutralizers, preview_reasons = compute_neutralizers(initial_state, reaper_commands)
+                if preview_neutralizers:
+                    print("🧩 Gap/conflict analysis: " + " | ".join(preview_reasons[:3]))
+                    reaper_commands = preview_neutralizers + reaper_commands
+                    neutralizers_applied = True
+                    print("🧭 Conflict check → neutralize applied")
+            except Exception:
+                pass
 
         # Send remaining commands to Reaper
         if reaper_commands:
