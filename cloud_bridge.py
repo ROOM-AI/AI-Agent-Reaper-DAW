@@ -180,11 +180,11 @@ def _prepare_upload_file(wav_path: Path) -> Path:
         return wav_path
     try:
         audio, sr = librosa.load(str(wav_path), sr=None, mono=False)
-    if audio is None or np.size(audio) == 0:
+        if audio is None or np.size(audio) == 0:
             return wav_path
 
-    if audio.ndim > 1:
-        audio = np.mean(audio, axis=0)
+        if audio.ndim > 1:
+            audio = np.mean(audio, axis=0)
 
         target_sr = 16000
         if sr != target_sr:

@@ -1325,11 +1325,23 @@ def analyze_lyrics(track_idx, track_name, time_start=None, time_end=None):
     Path(TEMP_AUDIO_DIR).mkdir(exist_ok=True)
     temp_audio_folder = Path(TEMP_AUDIO_DIR) / f"track_{track_idx}_{int(time.time())}"
     temp_audio_folder.mkdir(parents=True, exist_ok=True)
+
+    # Kick transport to Play briefly so render isn't empty
+    try:
+        send_reaper_commands(["1007"])  # Play
+    except Exception:
+        pass
+    time.sleep(0.4)
     
     print(f"📤 Exporting track {track_idx} audio...")
     if not send_reaper_commands([f"EXPORT_AUDIO {track_idx} {temp_audio_folder}"]):
         print("❌ Failed to export audio")
         return []
+    # Stop transport after triggering export
+    try:
+        send_reaper_commands(["1016"])  # Stop
+    except Exception:
+        pass
 
     # Wait for audio file to become available
     wait_timeout = 60.0 if is_cloud else 30.0
