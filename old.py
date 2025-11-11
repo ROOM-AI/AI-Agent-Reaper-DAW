@@ -1287,8 +1287,12 @@ def load_plugin_list():
     
     return plugins
 
-def analyze_lyrics(track_idx, track_name):
-    """Analyze vocals with Whisper API, return word timestamps"""
+def analyze_lyrics(track_idx, track_name, time_start=None, time_end=None):
+    """Analyze vocals with Whisper API, return word timestamps.
+    
+    If time_start/time_end (seconds) are provided, only that window is transcribed.
+    Word timestamps are adjusted to project time by adding the base offset.
+    """
     global lyrics_cache
     
     # Check cache first
@@ -1339,46 +1343,102 @@ def analyze_lyrics(track_idx, track_name):
         print(f"❌ No WAV file found in export folder after {wait_timeout}s")
         return []
 
-    # Check file size - if > 24MB, need to chunk it
-    file_size_mb = temp_audio.stat().st_size / (1024 * 1024)
-    MAX_SIZE_MB = 24  # Leave buffer under 25MB limit
-    
+    base_offset = 0.0
+    window_start = None
+    window_end = None
+    if (time_start is not None) and (time_end is not None):
+        try:
+            ts = float(time_start)
+            te = float(time_end)
+            if te > ts:
+                window_start = ts
+                window_end = te
+                base_offset = ts
+        except Exception:
+            window_start = None
+            window_end = None
+            base_offset = 0.0
+
     try:
+        # Load exported audio (preserve native sample rate and channels)
+        try:
+            audio, sr = librosa.load(str(temp_audio), sr=None, mono=False)
+        except Exception as e:
+            print(f"❌ Failed to load exported audio: {e}")
+            log_debug(f"Whisper load error ({temp_audio}): {e}")
+            return []
+        
+        if audio is None or np.size(audio) == 0:
+            print("❌ Exported audio is empty")
+            return []
+        
+        if len(audio.shape) > 1:
+            total_samples = audio.shape[1]
+        else:
+            total_samples = audio.shape[0]
+        
+        # Apply requested window if provided
+        if window_start is not None and window_end is not None:
+            start_sample = max(0, int(window_start * sr))
+            end_sample = min(total_samples, int(window_end * sr))
+            if end_sample <= start_sample:
+                print(f"⚠️ Requested window {window_start:.2f}s–{window_end:.2f}s is empty")
+                return []
+            if len(audio.shape) > 1:
+                segment = audio[:, start_sample:end_sample]
+            else:
+                segment = audio[start_sample:end_sample]
+        else:
+            segment = audio
+            base_offset = 0.0  # ensure offset resets when using full track
+        
+        if segment is None or np.size(segment) == 0:
+            print("❌ Audio segment after windowing is empty")
+            return []
+        
+        if len(segment.shape) > 1:
+            segment_samples = segment.shape[1]
+        else:
+            segment_samples = segment.shape[0]
+        segment_duration = segment_samples / sr
+        print(f"🎧 Segment duration: {segment_duration:.1f}s (offset {base_offset:.1f}s of project time)")
+        
+        # Always chunk into ~30s windows to stay under API limits
+        chunk_duration = 30.0
+        chunk_samples = max(int(chunk_duration * sr), 1)
+        num_chunks = int(np.ceil(segment_samples / chunk_samples))
+        
+        if num_chunks > 1:
+            print(f"📦 Splitting lyrics export into {num_chunks} chunks (~{chunk_duration:.0f}s each)")
+        else:
+            print(f"📦 Single chunk ({segment_duration:.1f}s) for transcription")
+        
         lyrics_data = []
         
-        if file_size_mb > MAX_SIZE_MB:
-            print(f"📦 File is {file_size_mb:.1f}MB (over {MAX_SIZE_MB}MB limit) - splitting into chunks...")
+        for chunk_idx in range(num_chunks):
+            start_sample = chunk_idx * chunk_samples
+            end_sample = min(segment_samples, start_sample + chunk_samples)
+            if end_sample <= start_sample:
+                continue
+
+            if len(segment.shape) > 1:
+                chunk_audio = segment[:, start_sample:end_sample]
+            else:
+                chunk_audio = segment[start_sample:end_sample]
             
-            # Load audio with librosa
-            audio, sr = librosa.load(str(temp_audio), sr=None, mono=False)
-            duration = len(audio[0] if len(audio.shape) > 1 else audio) / sr
+            chunk_offset_sec = start_sample / sr
+            chunk_length_sec = (end_sample - start_sample) / sr
+            chunk_start_global = base_offset + chunk_offset_sec
+            chunk_end_global = chunk_start_global + chunk_length_sec
             
-            # Calculate chunk duration (aim for ~3 minute chunks)
-            chunk_duration = 180  # 3 minutes in seconds
-            num_chunks = int(np.ceil(duration / chunk_duration))
+            chunk_file = temp_audio_folder / f"chunk_{chunk_idx}.wav"
+            if len(chunk_audio.shape) > 1:
+                sf.write(str(chunk_file), chunk_audio.T, sr)
+            else:
+                sf.write(str(chunk_file), chunk_audio, sr)
+            print(f"  Chunk {chunk_idx + 1}/{num_chunks}: {chunk_start_global:.1f}s - {chunk_end_global:.1f}s ({chunk_length_sec:.1f}s)")
             
-            print(f"📊 Audio is {duration:.1f}s - splitting into {num_chunks} chunks")
-            
-            for chunk_idx in range(num_chunks):
-                start_time = chunk_idx * chunk_duration
-                end_time = min((chunk_idx + 1) * chunk_duration, duration)
-                
-                # Extract chunk samples
-                start_sample = int(start_time * sr)
-                end_sample = int(end_time * sr)
-                
-                if len(audio.shape) > 1:
-                    audio_chunk = audio[:, start_sample:end_sample]
-                else:
-                    audio_chunk = audio[start_sample:end_sample]
-                
-                # Save chunk to temp file
-                chunk_file = temp_audio_folder / f"chunk_{chunk_idx}.wav"
-                sf.write(str(chunk_file), audio_chunk.T if len(audio.shape) > 1 else audio_chunk, sr)
-                
-                print(f"  Chunk {chunk_idx + 1}/{num_chunks}: {start_time:.1f}s - {end_time:.1f}s")
-                
-                # Transcribe chunk
+            try:
                 with open(chunk_file, 'rb') as audio_file:
                     transcript = openai_client.audio.transcriptions.create(
                         model="whisper-1",
@@ -1386,42 +1446,25 @@ def analyze_lyrics(track_idx, track_name):
                         response_format="verbose_json",
                         timestamp_granularities=["word"]
                     )
-                
-                # Extract words and adjust timestamps
-                if hasattr(transcript, 'words') and transcript.words:
-                    for word_obj in transcript.words:
-                        lyrics_data.append({
-                            "word": word_obj.word.strip(),
-                            "start": word_obj.start + start_time,  # Adjust timestamp
-                            "end": word_obj.end + start_time
-                        })
-                
-                # Clean up chunk file
-                chunk_file.unlink()
+            except Exception as e:
+                print(f"❌ Whisper API error on chunk {chunk_idx + 1}: {e}")
+                log_debug(f"Whisper error chunk {chunk_idx + 1}: {e}")
+                return []
+            finally:
+                try:
+                    chunk_file.unlink()
+                except Exception:
+                    pass
             
-            print(f"✅ Processed {num_chunks} chunks, found {len(lyrics_data)} words total")
-            
-        else:
-            # File is small enough - process normally
-            with open_file_when_ready(temp_audio, 'rb', timeout=wait_timeout, poll_interval=poll_interval) as (audio_file, waited):
-                wait_msg = f" ({waited:.1f}s wait)" if waited >= poll_interval else ""
-                print(f"✅ Audio file ready{wait_msg} ({file_size_mb:.1f}MB)")
-                print(f"🔍 Analyzing vocals with Whisper API...")
-                transcript = openai_client.audio.transcriptions.create(
-                    model="whisper-1",
-                    file=audio_file,
-                    response_format="verbose_json",
-                    timestamp_granularities=["word"]
-                )
-            
-            # Extract word-level timestamps
             if hasattr(transcript, 'words') and transcript.words:
                 for word_obj in transcript.words:
                     lyrics_data.append({
                         "word": word_obj.word.strip(),
-                        "start": word_obj.start,
-                        "end": word_obj.end
+                        "start": chunk_start_global + (word_obj.start or 0.0),
+                        "end": chunk_start_global + (word_obj.end or 0.0)
                     })
+        
+        print(f"✅ Processed {num_chunks} chunk(s), found {len(lyrics_data)} words total")
         
         # Display lyrics
         print(f"\n📝 Lyrics found ({len(lyrics_data)} words):")
@@ -1460,7 +1503,6 @@ def analyze_lyrics(track_idx, track_name):
     except Exception as e:
         print(f"❌ Whisper API error: {e}")
         log_debug(f"Whisper error: {e}")
-        return []
         return []
 
 def find_word_timestamp(lyrics_data, word):
@@ -6281,13 +6323,23 @@ Recommendations: {', '.join(analysis.get('recommendations', [])) if analysis.get
                 parts = cmd.split()
                 if len(parts) >= 2:
                     track_idx = int(parts[1])
+                    time_start = None
+                    time_end = None
+                    # Optional: start/end seconds → GET_LYRICS <trackIdx> <start> <end>
+                    if len(parts) >= 4:
+                        try:
+                            time_start = float(parts[2])
+                            time_end = float(parts[3])
+                        except Exception:
+                            time_start = None
+                            time_end = None
 
                     # Get track name from state
                     track_name_match = re.search(rf'--- Track {track_idx}: (.+) ---', initial_state)
                     track_name = track_name_match.group(1) if track_name_match else f"Track_{track_idx}"
 
                     print(f"🎵 Extracting lyrics from track {track_idx} ({track_name})...")
-                    lyrics_data = analyze_lyrics(track_idx, track_name)
+                    lyrics_data = analyze_lyrics(track_idx, track_name, time_start, time_end)
 
                     if lyrics_data:
                         lyrics_results.append({
