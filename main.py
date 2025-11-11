@@ -1,7 +1,8 @@
 import os, time, json
 from collections import defaultdict, deque
 from typing import Optional, Dict, Any, List
-from fastapi import FastAPI, HTTPException, Header
+from pathlib import Path
+from fastapi import FastAPI, HTTPException, Header, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
@@ -457,6 +458,42 @@ def reaper_state(state: dict):
     REAPER_STATE[session_id] = state_copy
     add_event("reaper_state_update", state, session_id=session_id)
     return {"status": "received"}
+
+@app.post("/api/upload/audio")
+async def upload_audio(session_id: str = "demo", track_idx: Optional[str] = None, file: UploadFile = File(...)):
+    """
+    Bridge uploads rendered audio here so Cloud Run can process lyrics/analysis.
+    Files are saved under /tmp/uploads/<session_id>/[track_<idx>/] for the agent to pick up.
+    """
+    MAX_UPLOAD_MB = 30  # keep comfortably below Cloud Run's ~32MB limit
+    MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
+
+    upload_root = Path("/tmp/uploads") / session_id
+    if track_idx:
+        upload_root = upload_root / f"track_{track_idx}"
+    upload_root.mkdir(parents=True, exist_ok=True)
+
+    data = await file.read()
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Upload too large ({len(data)/(1024*1024):.1f}MB). Convert/export in smaller range before retrying."
+        )
+
+    file_path = upload_root / file.filename
+    file_path.write_bytes(data)
+    size_mb = len(data) / (1024 * 1024)
+    add_event(
+        "audio_uploaded",
+        {
+            "filename": file.filename,
+            "size_mb": round(size_mb, 3),
+            "track_idx": track_idx,
+            "session_id": session_id,
+        },
+        session_id=session_id,
+    )
+    return {"uploaded": str(file_path), "size_mb": size_mb}
 
 # -------------------- Debug endpoints (file presence, counts) --------------------
 @app.get("/debug/files")

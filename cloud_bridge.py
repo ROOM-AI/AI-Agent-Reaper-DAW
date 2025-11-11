@@ -11,6 +11,15 @@ from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
+import numpy as np
+
+try:
+    import soundfile as sf
+    import librosa
+    AUDIO_TOOLS_AVAILABLE = True
+except ImportError:
+    AUDIO_TOOLS_AVAILABLE = False
+
 CLOUD_URL = "https://feelings36lex36slo14moossolo-97692729550.europe-west1.run.app"
 SESSION_ID = "demo"  # Default session - change this if multiple users
 
@@ -23,6 +32,7 @@ if not BASE_DIR_STR:
 BASE_DIR = Path(BASE_DIR_STR)
 COMMAND_FILE = BASE_DIR / "reaper_commands.txt"
 STATE_FILE = BASE_DIR / "reaper_state.txt"
+TEMP_AUDIO_DIR = BASE_DIR / "temp_audio"
 
 print("=" * 50)
 print("  CursorDAW Cloud Bridge")
@@ -46,6 +56,7 @@ MIN_SEND_INTERVAL = 1.5  # seconds, to avoid spam on partial writes
 BASE_DIR.mkdir(parents=True, exist_ok=True)
 COMMAND_FILE.touch(exist_ok=True)
 STATE_FILE.touch(exist_ok=True)
+TEMP_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
 def _send_state_if_changed(force: bool = False):
     global _last_state_sent
@@ -160,6 +171,102 @@ def state_pump():
         _send_state_if_changed()
         time.sleep(2.0)
 
+def _prepare_upload_file(wav_path: Path) -> Path:
+    """
+    Downsample + downmix large exports to keep uploads under Cloud Run limits.
+    Returns path to file to upload (may be original path).
+    """
+    if not AUDIO_TOOLS_AVAILABLE:
+        return wav_path
+    try:
+        audio, sr = librosa.load(str(wav_path), sr=None, mono=False)
+    if audio is None or np.size(audio) == 0:
+            return wav_path
+
+    if audio.ndim > 1:
+        audio = np.mean(audio, axis=0)
+
+        target_sr = 16000
+        if sr != target_sr:
+            audio = librosa.resample(audio, orig_sr=sr, target_sr=target_sr)
+            sr = target_sr
+
+        temp_path = wav_path.with_name(wav_path.stem + "_16k.wav")
+        sf.write(str(temp_path), audio, sr, subtype="PCM_16")
+        size_mb = temp_path.stat().st_size / (1024 * 1024)
+        orig_mb = wav_path.stat().st_size / (1024 * 1024)
+        print(f"🎚️ Prepared upload {temp_path.name}: {size_mb:.2f}MB (orig {orig_mb:.2f}MB)")
+        return temp_path
+    except Exception as e:
+        print(f"⚠️ Downsample failed ({wav_path.name}): {e}")
+        return wav_path
+
+
+def upload_audio_worker():
+    """Watch local temp_audio exports and upload new WAV files to cloud"""
+    print("✓ Audio upload thread running")
+    seen_files = set()
+    session_dir = Path("/tmp/uploads") / SESSION_ID
+    session_dir.mkdir(parents=True, exist_ok=True)
+    while True:
+        try:
+            if TEMP_AUDIO_DIR.exists():
+                for wav_path in TEMP_AUDIO_DIR.glob("track_*/*.wav"):
+                    resolved = wav_path.resolve()
+                    if str(resolved) in seen_files:
+                        continue
+
+                    track_idx = None
+                    parent = wav_path.parent.name
+                    if parent.startswith("track_"):
+                        parts = parent.split("_")
+                        if len(parts) >= 2 and parts[1].isdigit():
+                            track_idx = parts[1]
+
+                    try:
+                        upload_path = _prepare_upload_file(wav_path)
+                        if upload_path != wav_path:
+                            target = session_dir / upload_path.name
+                            target.write_bytes(upload_path.read_bytes())
+                            try:
+                                upload_path.unlink()
+                            except Exception:
+                                pass
+                            upload_path = target
+                        else:
+                            target = session_dir / wav_path.name
+                            target.write_bytes(wav_path.read_bytes())
+                            upload_path = target
+
+                        with upload_path.open("rb") as f:
+                            files = {"file": (upload_path.name, f, "audio/wav")}
+                            params = {"session_id": SESSION_ID}
+                            if track_idx is not None:
+                                params["track_idx"] = track_idx
+                            resp = requests.post(
+                                f"{CLOUD_URL}/api/upload/audio",
+                                params=params,
+                                files=files,
+                                timeout=60,
+                            )
+                        if resp.status_code == 200:
+                            seen_files.add(str(resolved))
+                            size_mb = upload_path.stat().st_size / (1024 * 1024)
+                            print(f"→ Uploaded {upload_path.name} ({size_mb:.2f} MB) for session {SESSION_ID}")
+                        else:
+                            print(f"⚠️ Upload failed ({resp.status_code}): {resp.text[:120]}")
+                        try:
+                            upload_path.unlink()
+                        except Exception:
+                            pass
+                    except FileNotFoundError:
+                        continue  # File removed between glob and open
+                    except Exception as e:
+                        print(f"⚠️ Upload error: {e}")
+        except Exception as outer_err:
+            print(f"⚠️ Audio watcher error: {outer_err}")
+        time.sleep(1.5)
+
 if __name__ == "__main__":
     # Start watching state file
     observer = Observer()
@@ -169,6 +276,7 @@ if __name__ == "__main__":
     
     # Start periodic state pump fallback
     threading.Thread(target=state_pump, daemon=True).start()
+    threading.Thread(target=upload_audio_worker, daemon=True).start()
     
     # Kick an initial state to the cloud: request export if file is empty, otherwise force-send
     def _kick_initial_state():

@@ -1313,34 +1313,61 @@ def analyze_lyrics(track_idx, track_name, time_start=None, time_end=None):
         except:
             pass
     
-    # Export audio from Reaper
+    # Determine execution context
+    is_cloud = _CLOUD_COMMAND_SINK is not None
+    upload_root = Path("/tmp/uploads") / _CURRENT_SESSION_ID if is_cloud else None
+    track_upload_dir = upload_root / f"track_{track_idx}" if is_cloud else None
+    existing_uploaded_files = set()
+    if is_cloud and track_upload_dir and track_upload_dir.exists():
+        existing_uploaded_files = {p.name for p in track_upload_dir.glob("*.wav")}
+
+    # Export audio from Reaper (remote Reaper will render and bridge will upload)
     Path(TEMP_AUDIO_DIR).mkdir(exist_ok=True)
-    # Reaper exports to a FOLDER with project_name.wav inside
     temp_audio_folder = Path(TEMP_AUDIO_DIR) / f"track_{track_idx}_{int(time.time())}"
+    temp_audio_folder.mkdir(parents=True, exist_ok=True)
     
     print(f"📤 Exporting track {track_idx} audio...")
     if not send_reaper_commands([f"EXPORT_AUDIO {track_idx} {temp_audio_folder}"]):
         print("❌ Failed to export audio")
         return []
 
-    # Wait for folder to be created and find the .wav file inside
-    wait_timeout = 30.0
+    # Wait for audio file to become available
+    wait_timeout = 60.0 if is_cloud else 30.0
     poll_interval = 0.5
     start_time = time.time()
     temp_audio = None
-    
-    while time.time() - start_time < wait_timeout:
-        if temp_audio_folder.exists():
-            # Find any .wav file in the folder
-            wav_files = list(temp_audio_folder.glob("*.wav"))
-            if wav_files:
-                temp_audio = wav_files[0]
-                print(f"✅ Found exported audio: {temp_audio.name}")
+
+    if is_cloud:
+        print("🕓 Waiting for uploaded audio from bridge...")
+        while time.time() - start_time < wait_timeout:
+            candidates = []
+            if track_upload_dir and track_upload_dir.exists():
+                candidates = list(track_upload_dir.glob("*.wav"))
+            if not candidates and upload_root and upload_root.exists():
+                candidates = list(upload_root.glob("*.wav"))
+            if candidates:
+                candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+                newest = candidates[0]
+                if newest.name in existing_uploaded_files and time.time() - start_time < 1.0:
+                    # Avoid immediately reusing an older file
+                    time.sleep(poll_interval)
+                    continue
+                temp_audio = newest
+                print(f"✅ Received uploaded audio: {temp_audio.name}")
                 break
-        time.sleep(poll_interval)
+            time.sleep(poll_interval)
+    else:
+        while time.time() - start_time < wait_timeout:
+            if temp_audio_folder.exists():
+                wav_files = list(temp_audio_folder.glob("*.wav"))
+                if wav_files:
+                    temp_audio = wav_files[0]
+                    print(f"✅ Found exported audio: {temp_audio.name}")
+                    break
+            time.sleep(poll_interval)
     
     if not temp_audio or not temp_audio.exists():
-        print(f"❌ No WAV file found in export folder after {wait_timeout}s")
+        print(f"❌ No audio file received after {wait_timeout}s")
         return []
 
     base_offset = 0.0
@@ -1396,10 +1423,7 @@ def analyze_lyrics(track_idx, track_name, time_start=None, time_end=None):
             print("❌ Audio segment after windowing is empty")
             return []
         
-        if len(segment.shape) > 1:
-            segment_samples = segment.shape[1]
-        else:
-            segment_samples = segment.shape[0]
+        segment_samples = segment.shape[1] if len(segment.shape) > 1 else segment.shape[0]
         segment_duration = segment_samples / sr
         print(f"🎧 Segment duration: {segment_duration:.1f}s (offset {base_offset:.1f}s of project time)")
         
@@ -1421,10 +1445,7 @@ def analyze_lyrics(track_idx, track_name, time_start=None, time_end=None):
             if end_sample <= start_sample:
                 continue
 
-            if len(segment.shape) > 1:
-                chunk_audio = segment[:, start_sample:end_sample]
-            else:
-                chunk_audio = segment[start_sample:end_sample]
+            chunk_audio = segment[:, start_sample:end_sample] if len(segment.shape) > 1 else segment[start_sample:end_sample]
             
             chunk_offset_sec = start_sample / sr
             chunk_length_sec = (end_sample - start_sample) / sr
@@ -1433,9 +1454,9 @@ def analyze_lyrics(track_idx, track_name, time_start=None, time_end=None):
             
             chunk_file = temp_audio_folder / f"chunk_{chunk_idx}.wav"
             if len(chunk_audio.shape) > 1:
-                sf.write(str(chunk_file), chunk_audio.T, sr)
+                sf.write(str(chunk_file), chunk_audio.T, sr, subtype='PCM_16')
             else:
-                sf.write(str(chunk_file), chunk_audio, sr)
+                sf.write(str(chunk_file), chunk_audio, sr, subtype='PCM_16')
             print(f"  Chunk {chunk_idx + 1}/{num_chunks}: {chunk_start_global:.1f}s - {chunk_end_global:.1f}s ({chunk_length_sec:.1f}s)")
             
             try:
@@ -1487,8 +1508,13 @@ def analyze_lyrics(track_idx, track_name, time_start=None, time_end=None):
         # Clean up temp folder and files
         try:
             shutil.rmtree(temp_audio_folder)
-        except:
+        except Exception:
             pass
+        if is_cloud:
+            try:
+                temp_audio.unlink()
+            except Exception:
+                pass
         
         return lyrics_data
         
