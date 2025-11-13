@@ -1326,22 +1326,28 @@ def analyze_lyrics(track_idx, track_name, time_start=None, time_end=None):
     temp_audio_folder = Path(TEMP_AUDIO_DIR) / f"track_{track_idx}_{int(time.time())}"
     temp_audio_folder.mkdir(parents=True, exist_ok=True)
 
-    # Kick transport to Play briefly so render isn't empty
+    # Kick transport to Play so render isn't empty (give a couple seconds of audio)
+    play_started = False
     try:
-        send_reaper_commands(["1007"])  # Play
+        if send_reaper_commands(["1007"]):
+            play_started = True
     except Exception:
         pass
-    time.sleep(0.4)
+    if play_started:
+        time.sleep(2.0)  # let transport run so export captures material
+    else:
+        time.sleep(0.5)
     
     print(f"📤 Exporting track {track_idx} audio...")
     if not send_reaper_commands([f"EXPORT_AUDIO {track_idx} {temp_audio_folder}"]):
         print("❌ Failed to export audio")
         return []
-    # Stop transport after triggering export
-    try:
-        send_reaper_commands(["1016"])  # Stop
-    except Exception:
-        pass
+    if play_started:
+        time.sleep(1.0)  # allow render to finish while still playing
+        try:
+            send_reaper_commands(["1016"])  # Stop
+        except Exception:
+            pass
 
     # Wait for audio file to become available
     wait_timeout = 60.0 if is_cloud else 30.0
@@ -4670,7 +4676,7 @@ When user says "add Waves distortion", search for: Manny M, Kramer Tape, J37 Tap
 - "fix muddy 300Hz" → Need BELL cut at 300Hz → Use any parametric EQ
 - "show spectrum" → Use analyzer/visualizer (NOT an EQ)
 
-**CUSTOM COMMANDS (use these for plugins and automation):**
+**CUSTOM COMMANDS (use these for instruments, plugins, and automation):**
 - SELECT_TRACK <trackIdx> - Select track (REQUIRED before track actions!)
 - VOL_DIP <trackIdx> <tStart> <tEnd> <value0-1> - INSERTS 4 automation points (does NOT remove existing!)
   * CRITICAL: If automation already exists, use CLEAR_AUTOMATION first or you'll get overlapping points
@@ -4694,6 +4700,10 @@ When user says "add Waves distortion", search for: Manny M, Kramer Tape, J37 Tap
   * Default jsonPath: current_track_analysis.json
   * Example: APPLY_FROM_JSON 2 → applies settings from current_track_analysis.json to track 2
   * Example: APPLY_FROM_JSON 1 reference_audio_analysis.json → applies reference settings to track 1
+- INSERT_INSTRUMENT <trackIdx> <instrumentName> - Insert or focus a virtual instrument on the target track
+  * Creates the track if it doesn't exist, auto-arms and monitors it, and loads the instrument to slot 0
+  * Search the AVAILABLE PLUGINS list for EXACT instrument names (e.g., "VST3i: Diva (u-he)", "VST: Serum (Xfer Records)")
+  * Use this whenever the user says "load/add/open [instrument/synth/piano]"—do NOT use ADD_FX for instruments
 - ADD_FX <trackIdx> <pluginName> - Add FX plugin by searching the AVAILABLE PLUGINS list above
   * CRITICAL: Search the AVAILABLE PLUGINS list and use the EXACT name from that list
   * Example: User says "open ssl channel" → Search list → Find "VST: SSLChannel Stereo (x86) (Waves)" → Use that exact name
@@ -4767,7 +4777,7 @@ Reaper uses normalized 0-1 values, but each plugin displays different ranges. DO
 - Sub Bass: 20-60Hz | Bass: 60-250Hz | Low Mids: 250-500Hz
 - Mids: 500Hz-2kHz | High Mids: 2-5kHz | Highs: 5-20kHz
 
-**IMPORTANT: For adding/removing plugins, ALWAYS use ADD_FX/REMOVE_FX commands, NOT action IDs!**
+**IMPORTANT: For instruments use INSERT_INSTRUMENT, for effects use ADD_FX, and for removal use REMOVE_FX—never rely on raw action IDs!**
 
 **CRITICAL: MULTIPLE FX AUTOMATIONS:**
 When user wants automation on multiple FX parameters, use FX_PARAM_AUTO for each one:

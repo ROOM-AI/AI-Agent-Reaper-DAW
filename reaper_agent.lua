@@ -370,6 +370,117 @@ function process_command(line)
             execute_with_feedback("SET_TRACK_PAN", false, string.format("Track %d not found", trackIdx))
         end
         
+    elseif cmd == "INSERT_INSTRUMENT" then
+        -- INSERT_INSTRUMENT <trackIdx> <instrumentName>
+        local trackIdx = tonumber(parts[2]) or 0
+        if trackIdx < 0 then trackIdx = 0 end
+        local instName = table.concat(parts, " ", 3)
+
+        if instName == nil or instName == "" then
+            execute_with_feedback("INSERT_INSTRUMENT", false, "No instrument name provided")
+            return
+        end
+
+        local function ensure_track_exists(index)
+            local track = reaper.GetTrack(0, index)
+            if track then return track end
+
+            local total = reaper.CountTracks(0)
+            -- Insert new tracks until requested index is available
+            while reaper.CountTracks(0) <= index do
+                reaper.InsertTrackAtIndex(reaper.CountTracks(0), true)
+            end
+            reaper.TrackList_AdjustWindows(false)
+            return reaper.GetTrack(0, index)
+        end
+
+        local track = ensure_track_exists(trackIdx)
+        if not track then
+            execute_with_feedback("INSERT_INSTRUMENT", false, string.format("Could not access track %d", trackIdx))
+            return
+        end
+
+        reaper.SetOnlyTrackSelected(track)
+
+        -- Build candidate names (favor instrument variants)
+        local function append_unique(tbl, value, seen)
+            if value and value ~= "" and not seen[value] then
+                table.insert(tbl, value)
+                seen[value] = true
+            end
+        end
+
+        local namesToTry = {}
+        local seenNames = {}
+        append_unique(namesToTry, instName, seenNames)
+
+        local prefixes = {"VST3i: ", "VSTi: ", "VST3: ", "VST: ", "CLAPi: ", "CLAP: "}
+        for _, prefix in ipairs(prefixes) do
+            append_unique(namesToTry, prefix .. instName, seenNames)
+        end
+
+        local vendors = {
+            "Arturia", "Native Instruments", "u-he", "Spectrasonics",
+            "XLN Audio", "Spitfire Audio", "Tone2.com", "Initial Audio",
+            "Ample Sound", "FabFilter", "Waves", "Cockos", "iZotope"
+        }
+        for _, vendor in ipairs(vendors) do
+            for _, prefix in ipairs(prefixes) do
+                append_unique(namesToTry, prefix .. instName .. " (" .. vendor .. ")", seenNames)
+            end
+        end
+
+        -- If the name already includes a vendor prefix, strip it and retry
+        local stripped = instName
+        stripped = stripped:gsub("^%s*", "")
+        stripped = stripped:gsub("^VST3[iI]?:%s*", "")
+        stripped = stripped:gsub("^VST[iI]?:%s*", "")
+        stripped = stripped:gsub("^CLAP[iI]?:%s*", "")
+        if stripped ~= instName then
+            append_unique(namesToTry, stripped, seenNames)
+            for _, prefix in ipairs(prefixes) do
+                append_unique(namesToTry, prefix .. stripped, seenNames)
+            end
+            for _, vendor in ipairs(vendors) do
+                for _, prefix in ipairs(prefixes) do
+                    append_unique(namesToTry, prefix .. stripped .. " (" .. vendor .. ")", seenNames)
+                end
+            end
+        end
+
+        local matchedName = nil
+        local fxIdx = -1
+        for _, tryName in ipairs(namesToTry) do
+            fxIdx = reaper.TrackFX_AddByName(track, tryName, false, -1)
+            if fxIdx >= 0 then
+                matchedName = tryName
+                break
+            end
+        end
+
+        if fxIdx >= 0 then
+            -- Move instrument to top slot so it behaves like a normal instrument chain
+            if fxIdx > 0 then
+                reaper.TrackFX_CopyToTrack(track, fxIdx, track, 0, true)
+                fxIdx = 0
+            end
+
+            reaper.TrackFX_Show(track, fxIdx, 3)
+
+            -- Arm and enable monitoring so the instrument is immediately playable
+            reaper.SetMediaTrackInfo_Value(track, "I_RECARM", 1)
+            reaper.SetMediaTrackInfo_Value(track, "I_RECMON", 1)
+
+            local _, finalName = reaper.TrackFX_GetFXName(track, fxIdx, "")
+            local successMsg = string.format("🎹 Inserted instrument '%s' on track %d (matched '%s')", finalName ~= "" and finalName or instName, trackIdx, matchedName or instName)
+            msg(successMsg)
+            add_feedback(successMsg)
+        else
+            local failMsg = string.format("❌ Could not find instrument matching '%s'", instName)
+            msg(failMsg)
+            add_feedback(failMsg)
+        end
+
     elseif cmd == "ADD_FX" then
         -- ADD_FX <trackIdx> <fxName>
         local trackIdx = tonumber(parts[2]) or 0
