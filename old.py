@@ -828,6 +828,50 @@ def _build_param_name_map(section_lines):
             name_map[int(m.group(1))] = m.group(2).strip()
     return name_map
 
+
+def _get_fx_param_name_map(state_text: str, track_idx: int, fx_idx: int) -> dict:
+    """
+    Convenience helper: returns {param_idx -> param_name} for a given track/fx combo.
+    """
+    section, _ = _get_fx_section_by_index(state_text, track_idx, fx_idx)
+    if not section:
+        return {}
+    return _build_param_name_map(section)
+
+
+def _mix_keyword_score(name: str) -> int:
+    lname = (name or "").lower()
+    if not lname:
+        return 0
+    if "mix" in lname:
+        return 5
+    if "dry/wet" in lname or "dry wet" in lname or "drywet" in lname:
+        return 4
+    if "wet" in lname and ("level" in lname or "amount" in lname or "send" in lname):
+        return 3
+    if "dry" in lname and ("level" in lname or "amount" in lname):
+        return 2
+    if "blend" in lname or "balance" in lname:
+        return 2
+    return 0
+
+
+def _param_name_is_mix(name: str) -> bool:
+    return _mix_keyword_score(name) > 0
+
+
+def _find_mix_param_in_map(name_map: dict):
+    best_idx = None
+    best_name = ""
+    best_score = 0
+    for idx, name in name_map.items():
+        score = _mix_keyword_score(name)
+        if score > best_score:
+            best_idx = idx
+            best_name = name
+            best_score = score
+    return best_idx, best_name
+
 def _fx_looks_like_eq(fx_name: str, name_map: dict) -> bool:
     lname = (fx_name or "").lower()
     if "pro-q 3" in lname or "pro q 3" in lname:
@@ -1075,6 +1119,73 @@ def compute_neutralizers(state_text: str, commands: list):
 
     return uniq_neutralizers, reasons
 
+
+_AUTO_PARAM_KEYWORDS = [
+    "drive", "tone", "decay", "feedback", "cutoff", "filter", "gain",
+    "resonance", "attack", "release", "threshold", "ratio", "predelay",
+    "pre-delay", "speed", "depth", "color", "formant", "glide", "detune",
+    "sustain", "bandwidth", "q ", " q", "frequency", "hz", "ms", "bypass",
+    "enable", "disable", "slope", "shape", "size", "texture", "wow",
+    "flutter", "crush", "bit", "spread", "pan", "width"
+]
+
+
+def _text_mentions_specific_param(text: str) -> bool:
+    if not text:
+        return False
+    lower = text.lower()
+    return any(keyword in lower for keyword in _AUTO_PARAM_KEYWORDS)
+
+
+def _bias_fx_automation_to_mix(commands, contexts, state_text, user_input):
+    """
+    Ensure generic FX automation defaults to the mix/dry-wet parameter.
+    """
+    if not commands:
+        return commands
+
+    user_specified_param = _text_mentions_specific_param(user_input)
+    fx_param_maps = {}
+    new_commands = []
+
+    for idx, cmd in enumerate(commands):
+        ctx = contexts[idx] if idx < len(contexts) else {}
+        new_cmd = cmd
+        if (
+            cmd
+            and cmd.startswith("FX_PARAM_AUTO")
+            and not user_specified_param
+            and not _text_mentions_specific_param(ctx.get("description", ""))
+        ):
+            parts = cmd.split()
+            if len(parts) >= 8:
+                try:
+                    track_idx = int(parts[1])
+                    fx_idx = int(parts[2])
+                    param_idx = int(parts[3])
+                except ValueError:
+                    track_idx = fx_idx = param_idx = None
+                if track_idx is not None:
+                    key = (track_idx, fx_idx)
+                    name_map = fx_param_maps.get(key)
+                    if name_map is None:
+                        name_map = _get_fx_param_name_map(state_text, track_idx, fx_idx)
+                        fx_param_maps[key] = name_map
+                    if name_map:
+                        current_name = name_map.get(param_idx, "")
+                        if not _param_name_is_mix(current_name):
+                            mix_idx, mix_name = _find_mix_param_in_map(name_map)
+                            if mix_idx is not None:
+                                parts[3] = str(mix_idx)
+                                new_cmd = " ".join(parts)
+                                print(
+                                    f"   🎯 Defaulting automation to mix parameter p{mix_idx} ({mix_name}) on track {track_idx}, fx {fx_idx}"
+                                )
+        new_commands.append(new_cmd)
+
+    return new_commands
+
+
 def send_reaper_commands(commands):
     """Send commands to Reaper or cloud sink"""
     try:
@@ -1286,6 +1397,42 @@ def load_plugin_list():
         log_debug(f"Plugin load error: {e}")
     
     return plugins
+
+def find_best_plugin_match(query_text: str, plugins: list, instruments_only: bool = False):
+    """
+    Lightweight fuzzy search to pick the best plugin candidate from available list.
+    """
+    import re as _re
+    if not plugins:
+        return None
+    
+    words = [w for w in _re.split(r'[^a-z0-9]+', query_text.lower()) if len(w) >= 2]
+    if not words:
+        return None
+    
+    matches = []
+    for plugin in plugins:
+        plugin_lower = plugin.lower()
+        if instruments_only:
+            if not any(tag in plugin_lower for tag in ["vsti:", "vst3i", "clapi", "instrument", "kontakt", "expansion"]):
+                continue
+        
+        score = 0
+        for word in words:
+            if word in plugin_lower:
+                score += 3
+            elif len(word) > 3 and word[:-1] in plugin_lower:
+                score += 2
+            elif len(word) > 4 and word[:4] in plugin_lower:
+                score += 1
+        if score > 0:
+            matches.append((score, -len(plugin), plugin))
+    
+    if not matches:
+        return None
+    
+    matches.sort(reverse=True)
+    return matches[0][2]
 
 def analyze_lyrics(track_idx, track_name, time_start=None, time_end=None):
     """Analyze vocals with Whisper API, return word timestamps.
@@ -4722,6 +4869,7 @@ When user says "add Waves distortion", search for: Manny M, Kramer Tape, J37 Tap
     2. Find the parameter by name (e.g., "p11 Dry/Wet" = index 11)
     3. DO NOT GUESS parameter indices - they vary by plugin!
   * Example: State shows "[1] MannyM Reverb" with "p11 Dry/Wet" → use fxIdx=1, paramIdx=11
+  * DEFAULT RULE: If the user says "add/apply/bring in [effect] between Xs-Ys" without naming a different knob, AUTOMATE THE MIX/DRY-WET parameter. Keep mix at 0% before/after the requested window and ramp to the requested value inside it. Only touch other parameters (drive, tone, decay, feedback, etc.) when the user explicitly calls them out.
   
   **INSTANT CHANGES (most common):**
   When user says "turn on X at/after [word/time]" or "X from 0% before [word] to 100% at [time]", they want INSTANT jump:
@@ -6326,10 +6474,32 @@ Recommendations: {', '.join(analysis.get('recommendations', [])) if analysis.get
                         print(f"   User's request likely cannot be fulfilled with available commands.")
                         break
                 else:
-                    print(f"\n⚠️ No steps planned but task not marked complete. Will retry.")
-                    previous_issues = "No steps were generated. Check state and plan appropriate actions."
-                    retry_count += 1
-                    continue
+                    # Fallback: detect instrument intent and auto-plan INSERT_INSTRUMENT
+                    instrument_keywords = ["instrument", "synth", "piano", "keys", "keyboard", "vsti", "tone2", "kontakt", "midi"]
+                    wants_instrument = any(keyword in user_lower for keyword in instrument_keywords)
+                    if wants_instrument:
+                        track_match = re.search(r'track\s+(\d+)', user_lower)
+                        track_idx = int(track_match.group(1)) if track_match else 0
+                        best_plugin = find_best_plugin_match(user_input, available_plugins, instruments_only=True)
+                        if not best_plugin:
+                            best_plugin = find_best_plugin_match(user_input, available_plugins, instruments_only=False)
+                        if best_plugin:
+                            print(f"\n🎹 Fallback planner: inserting instrument '{best_plugin}' on track {track_idx}")
+                            steps = [{
+                                "description": f"Insert instrument {best_plugin} on track {track_idx}",
+                                "command": f"INSERT_INSTRUMENT {track_idx} {best_plugin}"
+                            }]
+                            reasoning += " | Fallback: auto-selected instrument command"
+                        else:
+                            print(f"\n⚠️ No steps planned and no suitable instrument plugin found. Will retry.")
+                            previous_issues = "No steps were generated. Check state and plan appropriate actions."
+                            retry_count += 1
+                            continue
+                    else:
+                        print(f"\n⚠️ No steps planned but task not marked complete. Will retry.")
+                        previous_issues = "No steps were generated. Check state and plan appropriate actions."
+                        retry_count += 1
+                        continue
             
             print(f"📝 Steps ({len(steps)}):")
             for i, step in enumerate(steps, 1):
@@ -6358,14 +6528,24 @@ Recommendations: {', '.join(analysis.get('recommendations', [])) if analysis.get
         
         # PHASE 2: EXECUTE
         print(f"\n⚡ Executing...")
-        commands = [step.get("command", "") for step in steps]
+        commands = []
+        command_contexts = []
+        for step in steps:
+            cmd = step.get("command", "")
+            commands.append(cmd)
+            command_contexts.append({
+                "command": cmd,
+                "description": step.get("description", "")
+            })
 
         # Handle GET_LYRICS and ANALYZE_TRACK commands separately (Python functions, not Reaper commands)
         lyrics_results = []
         analysis_results = []
         reaper_commands = []
 
-        for cmd in commands:
+        reaper_command_contexts = []
+        for idx, cmd in enumerate(commands):
+            ctx = command_contexts[idx] if idx < len(command_contexts) else {}
             if cmd.startswith("GET_LYRICS"):
                 # Extract track index
                 parts = cmd.split()
@@ -6520,6 +6700,16 @@ Recommendations: {', '.join(analysis.get('recommendations', [])) if analysis.get
                         
             else:
                 reaper_commands.append(cmd)
+                reaper_command_contexts.append(ctx)
+
+        # Bias FX automation commands toward mix/dry-wet when user didn't specify a parameter
+        if reaper_commands:
+            reaper_commands = _bias_fx_automation_to_mix(
+                reaper_commands,
+                reaper_command_contexts,
+                initial_state,
+                user_input
+            )
 
         # Principle-based conflict detector → minimal neutralizers (command-driven, first pass only)
         if not neutralizers_applied:
@@ -6832,11 +7022,15 @@ Recommendations: {', '.join(analysis.get('recommendations', [])) if analysis.get
                     failed_actions.add(cmd.strip())
                     log_debug(f"Added action {cmd.strip()} to blocklist")
                 else:
-                    # Custom command (VOL_DIP, CLEAR_AUTOMATION, etc.)
+                    # Custom command (VOL_DIP, CLEAR_AUTOMATION, INSERT_INSTRUMENT, etc.)
                     cmd_name = cmd.split()[0] if cmd else ""
                     if cmd_name:
-                        failed_commands.add(cmd_name)
-                        log_debug(f"Added command {cmd_name} to blocklist")
+                        retryable_commands = {"GET_LYRICS", "ANALYZE_TRACK", "INSERT_INSTRUMENT"}
+                        if cmd_name in retryable_commands:
+                            log_debug(f"Command {cmd_name} failed but remains retryable (whitelisted)")
+                        else:
+                            failed_commands.add(cmd_name)
+                            log_debug(f"Added command {cmd_name} to blocklist")
             
             # Prepare for retry - preserve ALL context
             # Track what we tried and what happened (include commands and outcome)
