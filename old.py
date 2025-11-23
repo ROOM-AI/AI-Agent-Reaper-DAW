@@ -4851,6 +4851,16 @@ When user says "add Waves distortion", search for: Manny M, Kramer Tape, J37 Tap
   * Creates the track if it doesn't exist, auto-arms and monitors it, and loads the instrument to slot 0
   * Search the AVAILABLE PLUGINS list for EXACT instrument names (e.g., "VST3i: Diva (u-he)", "VST: Serum (Xfer Records)")
   * Use this whenever the user says "load/add/open [instrument/synth/piano]"—do NOT use ADD_FX for instruments
+- MIDI_CREATE_ITEM <trackIdx> <start> <end> - Create a new empty MIDI clip
+  * Use before inserting notes if no clip exists
+  * Example: MIDI_CREATE_ITEM 2 0.0 4.0 (create 4s clip on track 2)
+- MIDI_INSERT_NOTE <trackIdx> <pitch> <vel> <start> <end> [chan] - Insert a single MIDI note
+  * Pitch: 60=C4, 61=C#4, etc. Velocity: 1-127
+  * Example: MIDI_INSERT_NOTE 2 60 100 0.0 0.5 (insert C4 quarter note)
+- MIDI_GET_NOTES <trackIdx> [start] [end] - Read all MIDI notes in range
+  * Returns CSV list of notes: pitch,vel,start,end
+- MIDI_QUANTIZE <trackIdx> <grid> <strength> - Quantize selected notes (grid: 0.25=1/16, 1.0=1/4)
+- MIDI_CORRECT_PITCH <trackIdx> <scale> <key> - Snap selected notes to scale (e.g. "minor" "C")
 - ADD_FX <trackIdx> <pluginName> - Add FX plugin by searching the AVAILABLE PLUGINS list above
   * CRITICAL: Search the AVAILABLE PLUGINS list and use the EXACT name from that list
   * Example: User says "open ssl channel" → Search list → Find "VST: SSLChannel Stereo (x86) (Waves)" → Use that exact name
@@ -4926,6 +4936,16 @@ Reaper uses normalized 0-1 values, but each plugin displays different ranges. DO
 - Mids: 500Hz-2kHz | High Mids: 2-5kHz | Highs: 5-20kHz
 
 **IMPORTANT: For instruments use INSERT_INSTRUMENT, for effects use ADD_FX, and for removal use REMOVE_FX—never rely on raw action IDs!**
+
+**MIDI COMPOSITION & EDITING:**
+- To write music (chords, melodies):
+  1. Create item: MIDI_CREATE_ITEM <track> <start> <end>
+  2. Insert notes: MIDI_INSERT_NOTE for each note
+  3. Pitch Guide: C3=48, C4=60, C5=72.
+  4. Example "C Major Chord":
+     MIDI_INSERT_NOTE 2 60 100 0.0 1.0 (C4)
+     MIDI_INSERT_NOTE 2 64 100 0.0 1.0 (E4)
+     MIDI_INSERT_NOTE 2 67 100 0.0 1.0 (G4)
 
 **CRITICAL: MULTIPLE FX AUTOMATIONS:**
 When user wants automation on multiple FX parameters, use FX_PARAM_AUTO for each one:
