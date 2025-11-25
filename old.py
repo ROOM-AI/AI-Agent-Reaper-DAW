@@ -762,7 +762,7 @@ def _find_track_eq_fx_section(state_text: str, track_idx: int):
 
 def _collect_active_band_used_params(section_lines):
     """
-    From an FX section dump, return list of param indices (ints) for bands that are active.
+    From an FX section dump, return list of (param_idx, band_number) for bands that are active.
     Matches lines like:
       'p65 Band 6 Used: 100% [Used]'
       'p12 Band 2 Enable: 100%'
@@ -770,12 +770,139 @@ def _collect_active_band_used_params(section_lines):
     """
     import re as _re
     active = []
-    pat = _re.compile(r"\s*p(\d+)\s+.*Band\s+\d+.*\b(Used|Enable|On)\b:\s+(\d+)%", _re.IGNORECASE)
+    pat = _re.compile(r"\s*p(\d+)\s+.*Band\s+(\d+).*\b(Used|Enable|On)\b:\s+(\d+)%", _re.IGNORECASE)
     for ln in section_lines:
         m = pat.match(ln)
-        if m and int(m.group(3)) > 0:
-            active.append(int(m.group(1)))
+        if m and int(m.group(4)) > 0:
+            active.append((int(m.group(1)), int(m.group(2))))
     return active
+
+
+def _eq_conflict_expected(user_input: str) -> bool:
+    if not user_input:
+        return False
+    lower = user_input.lower()
+    keywords = [
+        "clear eq",
+        "reset eq",
+        "start fresh",
+        "start from scratch",
+        "neutralize eq",
+        "telephone",
+        "radio effect",
+        "bandpass",
+        "band-pass",
+        "low pass",
+        "low-pass",
+        "lowpass",
+        "high pass",
+        "high-pass",
+        "highpass",
+        "underwater",
+        "submerged",
+    ]
+    return any(keyword in lower for keyword in keywords)
+
+
+def _collect_eq_band_targets(state_text: str, commands: list) -> dict:
+    import re as _re
+
+    targets: dict[tuple[int, int], set[int]] = {}
+    name_cache = {}
+    band_pattern = _re.compile(r"band\s+(\d+)", _re.IGNORECASE)
+
+    for cmd in commands:
+        if cmd.startswith("SET_FX_PARAM"):
+            parts = cmd.split()
+            if len(parts) < 4:
+                continue
+            try:
+                track_idx = int(parts[1])
+                fx_idx = int(parts[2])
+                param_idx = int(parts[3])
+            except ValueError:
+                continue
+            key = (track_idx, fx_idx)
+            if key not in name_cache:
+                section, fx_name = _get_fx_section_by_index(state_text, track_idx, fx_idx)
+                name_map = _build_param_name_map(section) if section else {}
+                name_cache[key] = (name_map, fx_name or "", section)
+            name_map, fx_name, _ = name_cache[key]
+            if not name_map:
+                continue
+            param_name = name_map.get(param_idx, "")
+            band_match = band_pattern.search(param_name)
+            if band_match:
+                try:
+                    band_num = int(band_match.group(1))
+                    if band_num >= 1:
+                        targets.setdefault(key, set()).add(band_num)
+                except ValueError:
+                    continue
+        elif cmd.startswith("EQ_LOWPASS") or cmd.startswith("EQ_NEUTRALIZE_BAND"):
+            parts = cmd.split()
+            if len(parts) < 4:
+                continue
+            try:
+                track_idx = int(parts[1])
+                fx_idx = int(parts[2])
+                band_num = int(parts[3])
+            except ValueError:
+                continue
+            targets.setdefault((track_idx, fx_idx), set()).add(band_num)
+
+    return targets
+
+
+def _find_param_line(section_lines, param_idx):
+    prefix = f"p{param_idx}"
+    for ln in section_lines:
+        stripped = ln.strip()
+        if stripped.startswith(prefix):
+            return stripped
+    return ""
+
+
+def _build_eq_band_neutralizers(state_text: str, track_idx: int, fx_idx: int, band_num: int):
+    section, fx_name = _get_fx_section_by_index(state_text, track_idx, fx_idx)
+    if not section:
+        return [], ""
+    name_map = _build_param_name_map(section)
+    if not _fx_looks_like_eq(fx_name, name_map):
+        return [], ""
+    active_params = _collect_active_band_used_params(section)
+    band_param_idx = None
+    for param_idx, active_band in active_params:
+        if active_band == band_num:
+            band_param_idx = param_idx
+            break
+    if band_param_idx is None:
+        return [], ""
+    info_line = _find_param_line(section, band_param_idx) or "active"
+    return [f"EQ_NEUTRALIZE_BAND {track_idx} {fx_idx} {band_num}"], info_line
+
+
+def _find_band_param_indices(name_map: dict, band_number: int) -> dict:
+    """
+    Given {param_idx -> label}, return mapping of useful knobs (gain, shape, freq, etc.) for a band.
+    """
+    idxs = {}
+    band_token = f"band {band_number}"
+    band_token_compact = f"band{band_number}"
+    for idx, label in name_map.items():
+        lname = (label or "").lower()
+        if band_token in lname or band_token_compact in lname:
+            if "gain" in lname:
+                idxs.setdefault("gain", idx)
+            elif "shape" in lname or "type" in lname:
+                idxs.setdefault("shape", idx)
+            elif "freq" in lname:
+                idxs.setdefault("freq", idx)
+            elif "slope" in lname:
+                idxs.setdefault("slope", idx)
+            elif " q" in lname or lname.endswith("q") or "resonance" in lname:
+                idxs.setdefault("q", idx)
+    return idxs
 
 def _get_fx_section_by_index(state_text: str, track_idx: int, fx_idx: int):
     """
@@ -1028,13 +1155,21 @@ def auto_verify(commands, final_state: str):
                     return True, explanation, ""
     return None
 
-def compute_neutralizers(state_text: str, commands: list):
+def compute_neutralizers(
+    state_text: str,
+    commands: list,
+    user_input: str = "",
+    first_attempt: bool = True,
+):
     """
     Given current state and planned reaper_commands (strings), return:
       neutralizers: list[str]
       reasons: list[str]  (human short lines for COT)
     This is principle-driven: only direct conflicts are neutralized.
     """
+    if not first_attempt:
+        return [], []
+
     neutralizers = []
     reasons = []
     import re as _re
@@ -1059,36 +1194,17 @@ def compute_neutralizers(state_text: str, commands: list):
                     neutralizers.append(f"CLEAR_FX_PARAM_AUTOMATION {t} {fx} {p}")
                     reasons.append(f"Param conflict: t{t} fx{fx} p{p} has automation → clear")
 
-    # 3) EQ reconfigure (command-based, not keyword-based)
-    # Group param sets per (track, fx)
-    group = {}
-    for c in commands:
-        if c.startswith("SET_FX_PARAM"):
-            parts = c.split()
-            if len(parts) >= 5:
-                t = int(parts[1]); fx = int(parts[2]); p = int(parts[3])
-                group.setdefault((t, fx), set()).add(p)
-    for (t, fx), param_indices in group.items():
-        # Examine section and param names to judge if this looks like EQ reconfiguration
-        section, fx_name = _get_fx_section_by_index(state_text, t, fx)
-        if not section:
-            continue
-        name_map = _build_param_name_map(section)
-        if not _fx_looks_like_eq(fx_name, name_map):
-            continue
-        # Treat ANY band-related param edit as an EQ (re)configuration for this FX
-        band_related = 0
-        for p in param_indices:
-            n = name_map.get(p, "").lower()
-            if any(k in n for k in ["band", "frequency", "type", "shape", "slope", "gain", "q", "resonance"]):
-                band_related += 1
-        if band_related >= 1:
-            active_params = _collect_active_band_used_params(section)
-            if active_params:
-                # Prepend SET_FX_PARAM ... 0.0 for each active band flag
-                for ap in active_params:
-                    neutralizers.append(f"SET_FX_PARAM {t} {fx} {ap} 0.0")
-                reasons.append(f"EQ conflict: t{t} fx{fx} ({fx_name}) has active bands → disable {len(active_params)} band(s)")
+    # 3) EQ reconfigure (conflict-aware, never disables bands)
+    if _eq_conflict_expected(user_input):
+        eq_targets = _collect_eq_band_targets(state_text, commands)
+        for (t, fx), band_set in eq_targets.items():
+            for band_num in band_set:
+                band_cmds, info_desc = _build_eq_band_neutralizers(state_text, t, fx, band_num)
+                if band_cmds:
+                    neutralizers.extend(band_cmds)
+                    reasons.append(
+                        f"EQ conflict: track {t} fx {fx} band {band_num} currently {info_desc} → neutralize before reuse"
+                    )
 
     # Deduplicate while preserving order
     seen = set()
@@ -1183,6 +1299,69 @@ def _bias_fx_automation_to_mix(commands, contexts, state_text, user_input):
                                 )
         new_commands.append(new_cmd)
 
+    return new_commands
+
+
+def _fix_underwater_commands(commands, user_input):
+    """
+    Auto-fix underwater effect commands when LLM gets Pro-Q 3 params wrong.
+    Detects ADD_FX Pro-Q 3 followed by manual SET_FX_PARAM and replaces with EQ_LOWPASS.
+    """
+    if not commands:
+        return commands
+    
+    new_commands = []
+    i = 0
+    while i < len(commands):
+        cmd = commands[i]
+        
+        # Look for ADD_FX Pro-Q 3
+        if cmd and "ADD_FX" in cmd and "Pro-Q" in cmd:
+            # Extract track index
+            parts = cmd.split()
+            track_idx = None
+            for j, p in enumerate(parts):
+                if p == "ADD_FX" and j + 1 < len(parts):
+                    try:
+                        track_idx = int(parts[j + 1])
+                    except ValueError:
+                        pass
+                    break
+            
+            if track_idx is not None:
+                # Keep the ADD_FX command
+                new_commands.append(cmd)
+                
+                # Skip any following SET_FX_PARAM commands for this track's FX 0
+                # and replace with EQ_LOWPASS
+                skipped_params = []
+                while i + 1 < len(commands):
+                    next_cmd = commands[i + 1]
+                    if next_cmd and next_cmd.startswith("SET_FX_PARAM"):
+                        next_parts = next_cmd.split()
+                        if len(next_parts) >= 3:
+                            try:
+                                next_track = int(next_parts[1])
+                                next_fx = int(next_parts[2])
+                                if next_track == track_idx and next_fx == 0:
+                                    skipped_params.append(next_cmd)
+                                    i += 1
+                                    continue
+                            except ValueError:
+                                pass
+                    break
+                
+                if skipped_params:
+                    # Replace manual params with EQ_LOWPASS
+                    print(f"   🔧 Auto-fix: Replacing {len(skipped_params)} manual Pro-Q params with EQ_LOWPASS")
+                    new_commands.append(f"EQ_LOWPASS {track_idx} 0 1000 1.0")
+                
+                i += 1
+                continue
+        
+        new_commands.append(cmd)
+        i += 1
+    
     return new_commands
 
 
@@ -4637,27 +4816,29 @@ When user requests effects like "underwater", "drake style", "lo-fi", "sidechain
 3. **DO NOT work around with existing plugins** - if the knowledge base says "remove existing pitch shifters", DO IT
 4. **Use EXACT parameters** from the knowledge base - don't guess or substitute
 
-**UNDERWATER EXAMPLE - KEEP IT SIMPLE:**
+**UNDERWATER EXAMPLE - USE EQ_LOWPASS COMMAND:**
 - User says: "make it underwater"
 - **The entire effect:** LOW-PASS filter at 1000Hz with BRICKWALL slope. That's it. One filter.
-- **CORRECT approach (simple):**
-  1. ADD_FX Pro-Q 3
-  2. Configure: Enable band, set to "High Cut (Low-Pass)" filter type, 1000Hz, slope "Brickwall" or "96 dB/oct"
-  3. DONE - verify it works with audio analysis
-  4. If user wants MORE (reverb, pitch, etc.), add those AFTER the basic effect works
-- **Why Brickwall:** Pro-Q 3 has slopes from 6dB/oct up to Brickwall. For underwater, you need the STEEPEST possible cutoff (Brickwall or 96dB/oct) to aggressively remove all highs. 24dB/oct is too gentle. Check plugin_encyclopedia for Pro-Q 3 slope options.
+- **CORRECT approach (2 commands only!):**
+  1. ADD_FX <trackIdx> VST3: Pro-Q 3 (FabFilter)
+  2. EQ_LOWPASS <trackIdx> 0 1000 1.0
+  3. DONE - the EQ_LOWPASS command configures everything automatically!
+- **Example for track 2:**
+  Step 1: ADD_FX 2 VST3: Pro-Q 3 (FabFilter)
+  Step 2: EQ_LOWPASS 2 0 1000 1.0
+- **Why this works:** EQ_LOWPASS sets up Pro-Q 3's band 0 as a low-pass filter with the correct shape (High Cut), frequency, and slope. No need to manually configure 6+ parameters!
 - **WRONG approaches (what NOT to do):**
   * Using Little AlterBoy or pitch shifters → Pitch does NOT create muffling
   * Using high-shelf with negative gain → That's GRADUAL reduction, not STEEP cutoff
-  * Using ReaEQ without knowing if it has low-pass → Just use Pro-Q 3
+  * Manually setting SET_FX_PARAM for 6+ parameters → Use EQ_LOWPASS instead!
   * Adding reverb/formant/multiple plugins → Overcomplicating, do the simple low-pass FIRST
 
 **CRITICAL RULES FOR UNDERWATER:**
-1. Do NOT add Little AlterBoy for underwater - it's a pitch shifter, not a filter
-2. Do NOT use "high-shelf" filter type - use "LOW-PASS" or "High-Cut" filter type
-3. Keep it simple: Add one EQ, set one low-pass filter, verify it works, then add extras if needed
+1. Use EQ_LOWPASS command - it does all the Pro-Q 3 configuration for you!
+2. Do NOT add Little AlterBoy for underwater - it's a pitch shifter, not a filter
+3. Do NOT use "high-shelf" filter type - EQ_LOWPASS uses the correct Low-Pass shape
 
-**KEY PRINCIPLE:** Underwater = LOW-PASS filter at 1kHz. Everything else is optional enhancement. Don't overcomplicate.
+**KEY PRINCIPLE:** Underwater = ADD_FX Pro-Q 3 + EQ_LOWPASS. Two commands, done.
 """
     
     # Load audio analysis JSON if available
@@ -4872,6 +5053,14 @@ When user says "add Waves distortion", search for: Manny M, Kramer Tape, J37 Tap
 - SET_FX_PARAM <trackIdx> <fxIdx> <paramIdx> <value0-1> - Set FX parameter (STATIC VALUE, NO AUTOMATION)
   * Example: SET_FX_PARAM 2 0 5 0.8 (track 2, first FX, param 5, 80%)
   * This sets a static value - use FX_PARAM_AUTO for automation over time
+- EQ_LOWPASS <trackIdx> <fxIdx> <freqHz> [slope] - Configure Pro-Q 3 band as low-pass filter (UNDERWATER EFFECT!)
+  * **USE THIS FOR UNDERWATER EFFECT** - one command does everything!
+  * Example: EQ_LOWPASS 0 0 1000 1.0 (track 0, first FX, 1000Hz, Brickwall slope)
+  * slope: 0.0=6dB/oct, 0.2=12dB, 0.4=24dB, 0.6=48dB, 0.8=96dB, 1.0=Brickwall (default)
+  * WORKFLOW: 1) ADD_FX Pro-Q 3, 2) EQ_LOWPASS to configure low-pass
+- EQ_HIGHPASS <trackIdx> <fxIdx> <freqHz> [slope] - Configure Pro-Q 3 band as high-pass filter
+  * Example: EQ_HIGHPASS 0 0 80 0.6 (track 0, first FX, 80Hz, 48dB/oct slope)
+  * Use for cleaning up rumble/sub-bass
 - FX_PARAM_AUTO <trackIdx> <fxIdx> <paramIdx> <tStart> <tEnd> <startValue> <endValue> - Automate FX parameter over time
   * CRITICAL: Use this for FX parameter automation, NOT SET_FX_PARAM
   * **MUST READ CURRENT STATE FIRST** to find correct fxIdx and paramIdx:
@@ -6731,10 +6920,20 @@ Recommendations: {', '.join(analysis.get('recommendations', [])) if analysis.get
                 user_input
             )
 
+        # AUTO-FIX: If user wants underwater effect and agent is manually setting Pro-Q params wrong,
+        # replace with EQ_LOWPASS command
+        if reaper_commands and any(kw in user_input.lower() for kw in ['underwater', 'muffled', 'submerged']):
+            reaper_commands = _fix_underwater_commands(reaper_commands, user_input)
+
         # Principle-based conflict detector → minimal neutralizers (command-driven, first pass only)
-        if not neutralizers_applied:
+        if not neutralizers_applied and retry_count == 0:
             try:
-                preview_neutralizers, preview_reasons = compute_neutralizers(initial_state, reaper_commands)
+                preview_neutralizers, preview_reasons = compute_neutralizers(
+                    initial_state,
+                    reaper_commands,
+                    user_input=user_input,
+                    first_attempt=(retry_count == 0),
+                )
                 if preview_neutralizers:
                     print("🧩 Gap/conflict analysis: " + " | ".join(preview_reasons[:3]))
                     reaper_commands = preview_neutralizers + reaper_commands
