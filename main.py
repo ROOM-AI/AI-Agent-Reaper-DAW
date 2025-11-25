@@ -426,14 +426,18 @@ def _ensure_agent_loaded():
 
 @app.get("/api/reaper/poll")
 def reaper_poll(session_id: str = "default"):
-    """Lua script polls this for commands"""
+    """Lua script polls this for commands - returns ALL pending commands at once"""
     if session_id not in REAPER_SESSIONS:
         REAPER_SESSIONS[session_id] = []
     
     if REAPER_SESSIONS[session_id]:
-        cmd = REAPER_SESSIONS[session_id].pop(0)
-        add_event("command_sent_to_reaper", {"command": cmd, "session_id": session_id}, session_id=session_id)
-        return cmd
+        # Return ALL pending commands as newline-separated string
+        all_cmds = REAPER_SESSIONS[session_id][:]
+        REAPER_SESSIONS[session_id].clear()
+        for cmd in all_cmds:
+            add_event("command_sent_to_reaper", {"command": cmd, "session_id": session_id}, session_id=session_id)
+        # Join with newlines so bridge/Lua can process each line
+        return "\n".join(all_cmds)
     return ""  # Empty = no command
 
 @app.post("/api/reaper/execute")

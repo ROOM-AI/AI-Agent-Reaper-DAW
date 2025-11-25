@@ -150,7 +150,16 @@ def poll_commands():
                         last_cmd_time = now_ts
                     else:
                         COMMAND_FILE.write_text(cmd_text)
-                        print(f"← Received command: {cmd_text.strip()[:80]}")
+                        # Count commands (newline-separated)
+                        cmd_count = len([c for c in cmd_text.strip().split('\n') if c.strip()])
+                        if cmd_count > 1:
+                            print(f"← Received {cmd_count} commands:")
+                            for i, c in enumerate(cmd_text.strip().split('\n')[:5], 1):
+                                print(f"   {i}. {c.strip()[:60]}")
+                            if cmd_count > 5:
+                                print(f"   ... and {cmd_count - 5} more")
+                        else:
+                            print(f"← Received command: {cmd_text.strip()[:80]}")
                         last_cmd_text = cmd_text
                         last_cmd_time = now_ts
 

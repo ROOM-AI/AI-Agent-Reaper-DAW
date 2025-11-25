@@ -950,6 +950,7 @@ function process_command(line)
                 local startppq = reaper.MIDI_GetPPQPosFromProjTime(take, tStart)
                 local endppq = reaper.MIDI_GetPPQPosFromProjTime(take, tEnd)
                 reaper.MIDI_InsertNote(take, false, false, startppq, endppq, chan, pitch, vel, true)
+                add_feedback(string.format("✓ Inserted note pitch=%d on track %d", pitch, trackIdx))
             end
         end
 
@@ -1073,102 +1074,6 @@ function process_command(line)
         end
         msg(string.format("🎤 Corrected %d notes to %s %s on track %d", fixedCount, keyName, scaleName, trackIdx))
         add_feedback(string.format("✓ Pitch corrected %d notes to %s %s", fixedCount, keyName, scaleName))
-
-    elseif cmd == "MIDI_CREATE_ITEM" then
-        -- MIDI_CREATE_ITEM <trackIdx> <start> <end>
-        local trackIdx = tonumber(parts[2]) or 0
-        local tStart = tonumber(parts[3]) or 0
-        local tEnd = tonumber(parts[4]) or (tStart + 4.0)
-        
-        local track = reaper.GetTrack(0, trackIdx)
-        if not track then
-            msg(string.format("❌ Track %d not found", trackIdx))
-            add_feedback(string.format("✗ Track %d not found", trackIdx))
-            return
-        end
-        
-        local item = reaper.CreateNewMIDIItemInProj(track, tStart, tEnd, false)
-        if item then
-            msg(string.format("🎹 Created MIDI item on track %d (%.2fs-%.2fs)", trackIdx, tStart, tEnd))
-            add_feedback(string.format("✓ Created MIDI item on track %d", trackIdx))
-        else
-            msg("❌ Failed to create MIDI item")
-            add_feedback("❌ Failed to create MIDI item")
-        end
-
-    elseif cmd == "MIDI_INSERT_NOTE" then
-        -- MIDI_INSERT_NOTE <trackIdx> <pitch> <vel> <start> <end> <channel>
-        local trackIdx = tonumber(parts[2]) or 0
-        local pitch = tonumber(parts[3]) or 60
-        local vel = tonumber(parts[4]) or 100
-        local tStart = tonumber(parts[5]) or 0
-        local tEnd = tonumber(parts[6]) or (tStart + 0.25)
-        local chan = (tonumber(parts[7]) or 1) - 1
-        
-        local track = reaper.GetTrack(0, trackIdx)
-        if not track then return end
-        
-        -- Find item at start time
-        local item = nil
-        local count = reaper.CountTrackMediaItems(track)
-        for i=0, count-1 do
-            local it = reaper.GetTrackMediaItem(track, i)
-            local pos = reaper.GetMediaItemInfo_Value(it, "D_POSITION")
-            local len = reaper.GetMediaItemInfo_Value(it, "D_LENGTH")
-            if tStart >= pos and tStart < (pos + len) then
-                local tk = reaper.GetActiveTake(it)
-                if tk and reaper.TakeIsMIDI(tk) then
-                    item = it
-                    break
-                end
-            end
-        end
-        
-        -- Auto-create if missing
-        if not item then
-             item = reaper.CreateNewMIDIItemInProj(track, tStart, math.max(tEnd, tStart + 4.0), false)
-        end
-        
-        if item then
-            local take = reaper.GetActiveTake(item)
-            if take and reaper.TakeIsMIDI(take) then
-                local startppq = reaper.MIDI_GetPPQPosFromProjTime(take, tStart)
-                local endppq = reaper.MIDI_GetPPQPosFromProjTime(take, tEnd)
-                reaper.MIDI_InsertNote(take, false, false, startppq, endppq, chan, pitch, vel, true)
-                -- No feedback spam for single notes
-            end
-        end
-
-    elseif cmd == "MIDI_GET_NOTES" then
-        -- MIDI_GET_NOTES <trackIdx> [start] [end]
-        local trackIdx = tonumber(parts[2]) or 0
-        local tStart = tonumber(parts[3])
-        local tEnd = tonumber(parts[4])
-        
-        local track = reaper.GetTrack(0, trackIdx)
-        if track then
-            local note_list = {}
-            local count = reaper.CountTrackMediaItems(track)
-            for i=0, count-1 do
-                local item = reaper.GetTrackMediaItem(track, i)
-                local take = reaper.GetActiveTake(item)
-                if take and reaper.TakeIsMIDI(take) then
-                    local _, noteCount = reaper.MIDI_CountNotes(take)
-                    for n=0, noteCount-1 do
-                        local _, sel, muted, startppq, endppq, chan, pitch, vel = reaper.MIDI_GetNote(take, n)
-                        local startTime = reaper.MIDI_GetProjTimeFromPPQPos(take, startppq)
-                        local endTime = reaper.MIDI_GetProjTimeFromPPQPos(take, endppq)
-                        
-                        if (not tStart or startTime >= tStart) and (not tEnd or startTime <= tEnd) then
-                            table.insert(note_list, string.format("%d,%d,%.3f,%.3f", pitch, vel, startTime, endTime))
-                        end
-                    end
-                end
-            end
-            local out = "MIDI_NOTES: " .. table.concat(note_list, ";")
-            add_feedback(out)
-            msg("🎼 Read " .. #note_list .. " notes from track " .. trackIdx)
-        end
 
     elseif cmd == "CLEAR_FX_PARAM_AUTOMATION" then
         -- CLEAR_FX_PARAM_AUTOMATION <trackIdx> <fxIdx> <paramIdx> [tStart] [tEnd]
