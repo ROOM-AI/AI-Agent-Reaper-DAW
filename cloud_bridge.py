@@ -34,6 +34,7 @@ COMMAND_FILE = BASE_DIR / "reaper_commands.txt"
 STATE_FILE = BASE_DIR / "reaper_state.txt"
 FEEDBACK_FILE = BASE_DIR / "reaper_feedback.txt"
 TEMP_AUDIO_DIR = BASE_DIR / "temp_audio"
+LYRICS_CACHE_DIR = BASE_DIR / "AI-Agent-Reaper-DAW" / "lyrics_cache"
 
 print("=" * 50)
 print("  CursorDAW Cloud Bridge")
@@ -62,6 +63,7 @@ COMMAND_FILE.touch(exist_ok=True)
 STATE_FILE.touch(exist_ok=True)
 FEEDBACK_FILE.touch(exist_ok=True)
 TEMP_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+LYRICS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 def _trim_state(content: str, max_chars: int = 60000) -> str:
     """Trim large state to prevent upload timeouts while keeping all tracks visible."""
@@ -386,6 +388,43 @@ def state_pump():
         _send_state_if_changed()
         time.sleep(2.0)
 
+def lyrics_cache_worker():
+    """Poll cloud for lyrics to cache locally"""
+    print("✓ Lyrics cache thread running")
+    while True:
+        try:
+            r = requests.get(
+                f"{CLOUD_URL}/api/lyrics/pending",
+                params={"session_id": SESSION_ID},
+                timeout=5
+            )
+            if r.status_code == 200:
+                data = r.json()
+                pending = data.get("lyrics", [])
+                for item in pending:
+                    track_name = item.get("track_name", "")
+                    lyrics = item.get("lyrics", [])
+                    if track_name and lyrics:
+                        # Save to local cache
+                        # Sanitize track name for filename
+                        safe_name = "".join(c if c.isalnum() or c in " -_()[]." else "_" for c in track_name)
+                        cache_file = LYRICS_CACHE_DIR / f"{safe_name}.json"
+                        try:
+                            with open(cache_file, 'w', encoding='utf-8') as f:
+                                json.dump({
+                                    "track_name": track_name,
+                                    "analyzed_at": time.strftime('%Y-%m-%d %H:%M:%S'),
+                                    "lyrics": lyrics
+                                }, f, indent=2)
+                            print(f"💾 Cached lyrics locally: {track_name} ({len(lyrics)} words)")
+                        except Exception as e:
+                            print(f"⚠️ Failed to cache lyrics for {track_name}: {e}")
+        except Exception as e:
+            # Only log if not a timeout/connection error
+            if "timeout" not in str(e).lower() and "connection" not in str(e).lower():
+                print(f"⚠️ Lyrics poll error: {e}")
+        time.sleep(3.0)  # Poll every 3 seconds
+
 def _prepare_upload_file(wav_path: Path) -> Path:
     """
     Downsample + downmix large exports to keep uploads under Cloud Run limits.
@@ -504,6 +543,7 @@ if __name__ == "__main__":
     # Start periodic state pump fallback
     threading.Thread(target=state_pump, daemon=True).start()
     threading.Thread(target=upload_audio_worker, daemon=True).start()
+    threading.Thread(target=lyrics_cache_worker, daemon=True).start()
     
     # Kick an initial state to the cloud: request export if file is empty, otherwise force-send
     def _kick_initial_state():

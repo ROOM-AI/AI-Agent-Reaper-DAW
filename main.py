@@ -423,6 +423,25 @@ def _memory_save(session_id: str, data: Dict[str, Any]) -> bool:
     _MEMORY[session_id] = data or {}
     return True
 
+def _lyrics_sink(track_name: str, lyrics: List[Dict], session_id: str) -> bool:
+    """Store lyrics for bridge to fetch and cache locally"""
+    try:
+        if session_id not in PENDING_LYRICS:
+            PENDING_LYRICS[session_id] = []
+        
+        PENDING_LYRICS[session_id].append({
+            "track_name": track_name,
+            "lyrics": lyrics,
+            "stored_ts": time.time()
+        })
+        
+        print(f"📝 Queued {len(lyrics)} words for '{track_name}' → bridge will cache locally")
+        add_event("lyrics_queued_for_bridge", {"track_name": track_name, "word_count": len(lyrics)}, session_id=session_id)
+        return True
+    except Exception as e:
+        print(f"⚠️ Failed to queue lyrics: {e}")
+        return False
+
 # Inject hooks once on startup
 def _ensure_agent_loaded():
     global agent
@@ -439,6 +458,7 @@ def _ensure_agent_loaded():
                 feedback_provider=_feedback_provider,
                 memory_load=_memory_load,
                 memory_save=_memory_save,
+                lyrics_sink=_lyrics_sink,
             )
             agent = _agent
         except Exception as e:
@@ -489,6 +509,9 @@ def reaper_state(state: dict):
 # Store feedback (including MIDI notes) from Reaper
 REAPER_FEEDBACK = {}
 
+# Store pending lyrics for bridge to fetch and cache locally
+PENDING_LYRICS = {}  # session_id -> [{"track_name": ..., "lyrics": [...]}]
+
 @app.post("/api/reaper/feedback")
 def reaper_feedback(data: dict):
     """Reaper sends feedback (including MIDI notes) here"""
@@ -511,6 +534,41 @@ def reaper_feedback(data: dict):
     
     add_event("reaper_feedback", {"feedback": feedback[:500]}, session_id=session_id)
     return {"status": "received"}
+
+# -------------------- Lyrics caching for bridge --------------------
+@app.post("/api/lyrics/store")
+def lyrics_store(data: dict):
+    """Agent stores extracted lyrics here for bridge to fetch"""
+    session_id = data.get("session_id", "demo")
+    track_name = data.get("track_name", "")
+    lyrics = data.get("lyrics", [])
+    
+    if not track_name:
+        return {"status": "error", "message": "track_name required"}
+    
+    if session_id not in PENDING_LYRICS:
+        PENDING_LYRICS[session_id] = []
+    
+    # Add to pending queue
+    PENDING_LYRICS[session_id].append({
+        "track_name": track_name,
+        "lyrics": lyrics,
+        "stored_ts": time.time()
+    })
+    
+    print(f"📝 Stored {len(lyrics)} words for '{track_name}' (session {session_id})")
+    add_event("lyrics_stored", {"track_name": track_name, "word_count": len(lyrics)}, session_id=session_id)
+    return {"status": "stored", "track_name": track_name, "word_count": len(lyrics)}
+
+@app.get("/api/lyrics/pending")
+def lyrics_pending(session_id: str = "demo"):
+    """Bridge polls this to get lyrics to cache locally"""
+    pending = PENDING_LYRICS.get(session_id, [])
+    if pending:
+        # Return all pending and clear
+        PENDING_LYRICS[session_id] = []
+        return {"lyrics": pending}
+    return {"lyrics": []}
 
 @app.post("/api/upload/audio")
 async def upload_audio(session_id: str = "demo", track_idx: Optional[str] = None, file: UploadFile = File(...)):

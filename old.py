@@ -18,6 +18,7 @@ _CLOUD_COMMAND_SINK = None    # callable(commands: List[str] | str, session_id) 
 _CLOUD_FEEDBACK_PROVIDER = None  # callable(session_id) -> str
 _CLOUD_MEMORY_LOAD = None     # callable(session_id) -> dict
 _CLOUD_MEMORY_SAVE = None     # callable(session_id, data: dict) -> bool
+_CLOUD_LYRICS_SINK = None     # callable(track_name, lyrics, session_id) -> bool
 _CURRENT_SESSION_ID = "demo"
 
 def set_cloud_hooks(
@@ -26,15 +27,17 @@ def set_cloud_hooks(
     feedback_provider=None,
     memory_load=None,
     memory_save=None,
+    lyrics_sink=None,
 ):
     """Inject cloud I/O hooks so the agent can run in server context"""
     global _CLOUD_STATE_PROVIDER, _CLOUD_COMMAND_SINK, _CLOUD_FEEDBACK_PROVIDER
-    global _CLOUD_MEMORY_LOAD, _CLOUD_MEMORY_SAVE
+    global _CLOUD_MEMORY_LOAD, _CLOUD_MEMORY_SAVE, _CLOUD_LYRICS_SINK
     _CLOUD_STATE_PROVIDER = state_provider or _CLOUD_STATE_PROVIDER
     _CLOUD_COMMAND_SINK = command_sink or _CLOUD_COMMAND_SINK
     _CLOUD_FEEDBACK_PROVIDER = feedback_provider or _CLOUD_FEEDBACK_PROVIDER
     _CLOUD_MEMORY_LOAD = memory_load or _CLOUD_MEMORY_LOAD
     _CLOUD_MEMORY_SAVE = memory_save or _CLOUD_MEMORY_SAVE
+    _CLOUD_LYRICS_SINK = lyrics_sink or _CLOUD_LYRICS_SINK
 
 def set_current_session(session_id: str):
     """Set the active session id for cloud hook calls"""
@@ -1872,6 +1875,14 @@ def analyze_lyrics(track_idx, track_name, time_start=None, time_end=None):
         
         lyrics_cache[track_name] = lyrics_data
         print(f"💾 Cached lyrics for future use\n")
+        
+        # Send to cloud for bridge to cache locally
+        if _CLOUD_LYRICS_SINK:
+            try:
+                _CLOUD_LYRICS_SINK(track_name, lyrics_data, _CURRENT_SESSION_ID)
+                print(f"☁️ Sent lyrics to cloud for local caching")
+            except Exception as e:
+                print(f"⚠️ Failed to send lyrics to cloud: {e}")
         
         # Clean up temp folder and files
         try:
