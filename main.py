@@ -84,15 +84,32 @@ def api_chat(body: ChatIn):
     try:
         _ensure_agent_loaded()
         # Import prompt enhancer
-        from prompt_enhancer import enhance_prompt
+        from prompt_enhancer import enhance_prompt, generate_song_commands
         
         # Step 1: Enhance vague prompt to be specific/technical
         reaper_state = REAPER_STATE.get(body.session_id, {})
         state_str = json.dumps(reaper_state) if reaper_state else ""
         enhanced_prompt = enhance_prompt(body.text, state_str)
         
+        # Check if enhancer wants to analyze existing MIDI first
+        if enhanced_prompt == "ANALYZE_MIDI_FIRST":
+            print("🎼 Compose-around mode - need MIDI from client")
+            # For cloud: we need the client to send MIDI data
+            # Check if there's MIDI in the state
+            midi_notes = None
+            if reaper_state and isinstance(reaper_state, dict):
+                # Look for MIDI notes in state (client should include this)
+                midi_notes = reaper_state.get('midi_notes_track_0')
+            
+            if midi_notes:
+                enhanced_prompt = enhance_prompt(body.text, state_str, midi_notes=midi_notes)
+            else:
+                # Fall back to regular song generation
+                print("⚠️ No MIDI data in state, generating new song...")
+                enhanced_prompt = generate_song_commands(body.text)
+        
         print(f"📝 Original: {body.text}")
-        print(f"✨ Enhanced: {enhanced_prompt}")
+        print(f"✨ Enhanced: {enhanced_prompt[:500]}..." if len(enhanced_prompt) > 500 else f"✨ Enhanced: {enhanced_prompt}")
         
         # Step 2: Execute using REAL agent with cloud hooks
         agent._CURRENT_SESSION_ID = body.session_id
@@ -410,19 +427,25 @@ def _memory_save(session_id: str, data: Dict[str, Any]) -> bool:
 def _ensure_agent_loaded():
     global agent
     if agent is None:
-        import importlib.util
-        # Load legacy robust agent (old.py)
-        spec = importlib.util.spec_from_file_location("old", "old.py")
-        _agent = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(_agent)
-        _agent.set_cloud_hooks(
-            state_provider=_state_provider,
-            command_sink=_command_sink,
-            feedback_provider=_feedback_provider,
-            memory_load=_memory_load,
-            memory_save=_memory_save,
-        )
-        agent = _agent
+        try:
+            import importlib.util
+            # Load legacy robust agent (old.py)
+            spec = importlib.util.spec_from_file_location("old", "old.py")
+            _agent = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(_agent)
+            _agent.set_cloud_hooks(
+                state_provider=_state_provider,
+                command_sink=_command_sink,
+                feedback_provider=_feedback_provider,
+                memory_load=_memory_load,
+                memory_save=_memory_save,
+            )
+            agent = _agent
+        except Exception as e:
+            print(f"❌ Failed to load agent (old.py): {e}")
+            import traceback
+            traceback.print_exc()
+            raise  # Re-raise to see in logs, but at least we printed traceback
 
 @app.get("/api/reaper/poll")
 def reaper_poll(session_id: str = "default"):
@@ -461,6 +484,32 @@ def reaper_state(state: dict):
     state_copy["_server_received_ts"] = time.time()
     REAPER_STATE[session_id] = state_copy
     add_event("reaper_state_update", state, session_id=session_id)
+    return {"status": "received"}
+
+# Store feedback (including MIDI notes) from Reaper
+REAPER_FEEDBACK = {}
+
+@app.post("/api/reaper/feedback")
+def reaper_feedback(data: dict):
+    """Reaper sends feedback (including MIDI notes) here"""
+    session_id = data.get("session_id", "demo")
+    feedback = data.get("feedback", "")
+    REAPER_FEEDBACK[session_id] = {
+        "feedback": feedback,
+        "received_ts": time.time()
+    }
+    
+    # If feedback contains MIDI notes, also store them in state for easy access
+    if "MIDI_NOTES:" in feedback:
+        midi_line = [l for l in feedback.split('\n') if 'MIDI_NOTES:' in l]
+        if midi_line:
+            midi_notes = midi_line[-1].split("MIDI_NOTES:")[-1].strip()
+            if session_id not in REAPER_STATE:
+                REAPER_STATE[session_id] = {}
+            REAPER_STATE[session_id]['midi_notes_track_0'] = midi_notes
+            print(f"📝 Stored {len(midi_notes.split(';'))} MIDI notes for session {session_id}")
+    
+    add_event("reaper_feedback", {"feedback": feedback[:500]}, session_id=session_id)
     return {"status": "received"}
 
 @app.post("/api/upload/audio")

@@ -107,3 +107,36 @@
 1157|Options: Toggle snapping
 40145|Options: Toggle grid lines
 
+=== MIDI EDITOR ACTIONS (Use with MIDI_ACTION command) ===
+40001|MIDI Edit: Insert note at mouse cursor
+40051|MIDI Edit: Insert note at edit cursor
+1000|MIDI Edit: Insert note at edit cursor (no advance)
+40006|MIDI Edit: Select all events
+40214|MIDI Edit: Unselect all
+40042|MIDI Mode: Piano Roll
+40043|MIDI Mode: Named Notes (Drum Map)
+40056|MIDI Mode: Event List
+40954|MIDI Mode: Notation
+40438|MIDI Nav: Move cursor to start of loop
+40439|MIDI Nav: Move cursor to end of loop
+40880|MIDI Nav: Move cursor to start of time selection
+40881|MIDI Nav: Move cursor to end of time selection
+40047|MIDI Nav: Move edit cursor left by grid
+40048|MIDI Nav: Move edit cursor right by grid
+40683|MIDI Nav: Move edit cursor left one measure
+40682|MIDI Nav: Move edit cursor right one measure
+40187|MIDI Pitch: Increase pitch cursor one octave
+40188|MIDI Pitch: Decrease pitch cursor one octave
+40049|MIDI Pitch: Increase pitch cursor one semitone
+40050|MIDI Pitch: Decrease pitch cursor one semitone
+40907|MIDI Transform: Invert (reverse vertically) all note intervals
+40905|MIDI Transform: Invert (reverse vertically) all notes
+40908|MIDI Transform: Invert (reverse vertically) selected note intervals
+40906|MIDI Transform: Invert (reverse vertically) selected notes
+40912|MIDI Transform: Invert voicing downwards for each selected chord
+40910|MIDI Transform: Invert voicing downwards for selected notes
+40911|MIDI Transform: Invert voicing upwards for each selected chord
+40909|MIDI Transform: Invert voicing upwards for selected notes
+40456|MIDI Edit: Join notes
+40466|MIDI Edit: Quantize events to grid
+40754|MIDI Edit: Fit notes to time selection

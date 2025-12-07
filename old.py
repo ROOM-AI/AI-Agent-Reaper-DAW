@@ -1782,6 +1782,8 @@ def analyze_lyrics(track_idx, track_name, time_start=None, time_end=None):
             print(f"📦 Single chunk ({segment_duration:.1f}s) for transcription")
         
         lyrics_data = []
+        consecutive_silent = 0  # Track silent chunks to stop early
+        chunks_processed = 0
         
         for chunk_idx in range(num_chunks):
             start_sample = chunk_idx * chunk_samples
@@ -1790,6 +1792,23 @@ def analyze_lyrics(track_idx, track_name, time_start=None, time_end=None):
                 continue
 
             chunk_audio = segment[:, start_sample:end_sample] if len(segment.shape) > 1 else segment[start_sample:end_sample]
+            
+            # Check if chunk has actual audio (not silent)
+            if len(chunk_audio.shape) > 1:
+                chunk_mono = np.mean(chunk_audio, axis=0)
+            else:
+                chunk_mono = chunk_audio
+            rms = np.sqrt(np.mean(chunk_mono ** 2))
+            
+            if rms < 0.001:  # Essentially silent
+                consecutive_silent += 1
+                print(f"  Chunk {chunk_idx + 1}/{num_chunks}: SILENT (skipping)")
+                if consecutive_silent >= 2:
+                    print(f"  ⏹️ Stopping early: 2+ consecutive silent chunks")
+                    break
+                continue
+            
+            consecutive_silent = 0  # Reset counter on non-silent chunk
             
             chunk_offset_sec = start_sample / sr
             chunk_length_sec = (end_sample - start_sample) / sr
@@ -1801,7 +1820,7 @@ def analyze_lyrics(track_idx, track_name, time_start=None, time_end=None):
                 sf.write(str(chunk_file), chunk_audio.T, sr, subtype='PCM_16')
             else:
                 sf.write(str(chunk_file), chunk_audio, sr, subtype='PCM_16')
-            print(f"  Chunk {chunk_idx + 1}/{num_chunks}: {chunk_start_global:.1f}s - {chunk_end_global:.1f}s ({chunk_length_sec:.1f}s)")
+            print(f"  Chunk {chunk_idx + 1}/{num_chunks}: {chunk_start_global:.1f}s - {chunk_end_global:.1f}s ({chunk_length_sec:.1f}s) [RMS: {rms:.4f}]")
             
             try:
                 with open(chunk_file, 'rb') as audio_file:
@@ -1821,6 +1840,8 @@ def analyze_lyrics(track_idx, track_name, time_start=None, time_end=None):
                 except Exception:
                     pass
             
+            chunks_processed += 1
+            chunk_words = 0
             if hasattr(transcript, 'words') and transcript.words:
                 for word_obj in transcript.words:
                     lyrics_data.append({
@@ -1828,8 +1849,11 @@ def analyze_lyrics(track_idx, track_name, time_start=None, time_end=None):
                         "start": chunk_start_global + (word_obj.start or 0.0),
                         "end": chunk_start_global + (word_obj.end or 0.0)
                     })
+                    chunk_words += 1
+            
+            print(f"    → Found {chunk_words} words in this chunk")
         
-        print(f"✅ Processed {num_chunks} chunk(s), found {len(lyrics_data)} words total")
+        print(f"✅ Processed {chunks_processed} chunk(s), found {len(lyrics_data)} words total")
         
         # Display lyrics
         print(f"\n📝 Lyrics found ({len(lyrics_data)} words):")
@@ -4894,6 +4918,8 @@ When user requests effects like "underwater", "drake style", "lo-fi", "sidechain
 ╔═══════════════════════════════════════════════════════════════════════════════╗
 """
 
+    state_excerpt = build_state_excerpt(state, user_input)
+    
     system_prompt = f"""
 ╔═══════════════════════════════════════════════════════════════════════════════╗
 ║ 🚨 RULE #1 - READ THIS BEFORE ANYTHING ELSE 🚨                                 ║
@@ -4929,7 +4955,7 @@ You are an AI controlling Reaper DAW. THINK STEP-BY-STEP and pick EXACT matches.
 
 
 **CURRENT PROJECT STATE:**
-{state}
+{state_excerpt}
 {audio_analysis_section}
 
 **AVAILABLE ACTIONS (pre-filtered for you):**
@@ -6031,6 +6057,56 @@ CRITICAL: Return ONLY valid JSON."""
         print(f"⚠️ Translation failed, using original input: {e}")
         return user_input  # Fallback to original input
 
+def build_state_excerpt(state_text, user_input, max_chars=50000):
+    """Condense huge state dumps to only the most relevant context for planning."""
+    if not state_text:
+        return "⚠️ State unavailable."
+    
+    if len(state_text) <= max_chars:
+        return state_text
+    
+    excerpt_parts = []
+    
+    # Always include top-level project metadata (tempo, play state, etc.)
+    first_track_idx = state_text.lower().find("\n--- track")
+    if first_track_idx == -1:
+        first_track_idx = max_chars
+    header = state_text[:min(first_track_idx, 2000)].strip()
+    if header:
+        excerpt_parts.append(header)
+    
+    lower_state = state_text.lower()
+    
+    # Find ALL track sections
+    track_starts = []
+    idx = 0
+    while True:
+        found = lower_state.find("\n--- track ", idx)
+        if found == -1:
+            break
+        track_starts.append(found + 1)  # +1 to skip the newline
+        idx = found + 1
+    
+    # Include all tracks, trimmed to fit
+    if track_starts:
+        available = max_chars - len(header) - 200
+        per_track = max(2000, available // len(track_starts))
+        
+        for i, start in enumerate(track_starts):
+            end = track_starts[i + 1] if i + 1 < len(track_starts) else len(state_text)
+            section = state_text[start:end].strip()[:per_track]
+            if section:
+                excerpt_parts.append(section)
+    
+    excerpt = "\n\n".join(excerpt_parts)
+    
+    excerpt = excerpt[:max_chars]
+    trimmed = max(len(state_text) - len(excerpt), 0)
+    excerpt += f"\n\n... [trimmed {trimmed:,} additional characters of state] ..."
+    
+    print(f"🗂️ Condensed state from {len(state_text):,} to {len(excerpt):,} chars for planning.")
+    return excerpt
+
 def extract_relevant_state_sections(state, commands):
     """
     Extract only the relevant parts of state based on commands executed.
@@ -6367,6 +6443,59 @@ def execute_user_command(user_input):
     
     print(f"\n🎤 User: {user_input}")
     
+    # Check if input is already a list of commands (from song generation)
+    # If it has multiple lines starting with known command patterns, execute directly
+    lines = [l.strip() for l in user_input.split('\n') if l.strip()]
+    command_patterns = ['INSERT_INSTRUMENT', 'MIDI_INSERT_NOTE', 'MIDI_CREATE_ITEM', 'SET_TEMPO', 'INSERT_FX', 'SELECT_TRACK', 'USE_SAMPLE', 'INSERT_AUDIO', 'VOL_DIP', 'LOAD_SAMPLER']
+    is_command_list = len(lines) > 5 and sum(1 for l in lines if any(l.startswith(p) for p in command_patterns)) > len(lines) * 0.7
+    
+    if is_command_list:
+        print(f"🎵 Direct command execution mode - {len(lines)} commands detected")
+        
+        # Separate by command type for proper execution order
+        tempo_cmds = [l for l in lines if l.startswith('SET_TEMPO')]
+        instrument_cmds = [l for l in lines if l.startswith('INSERT_INSTRUMENT')]
+        midi_create_cmds = [l for l in lines if l.startswith('MIDI_CREATE_ITEM')]
+        midi_note_cmds = [l for l in lines if l.startswith('MIDI_INSERT_NOTE')]
+        other_cmds = [l for l in lines if not any(l.startswith(p) for p in ['SET_TEMPO', 'INSERT_INSTRUMENT', 'MIDI_INSERT_NOTE', 'MIDI_CREATE_ITEM'])]
+        
+        print(f"📊 Breakdown: {len(tempo_cmds)} tempo, {len(instrument_cmds)} instruments, {len(midi_create_cmds)} MIDI items, {len(midi_note_cmds)} MIDI notes, {len(other_cmds)} other")
+        
+        # Step 1: Set tempo first
+        if tempo_cmds:
+            print(f"🎵 Step 1: Setting tempo...")
+            send_reaper_commands(tempo_cmds)
+            time.sleep(0.5)
+        
+        # Step 2: Load instruments ONE AT A TIME (they need time to load)
+        if instrument_cmds:
+            print(f"🎹 Step 2: Loading {len(instrument_cmds)} instruments...")
+            for i, cmd in enumerate(instrument_cmds):
+                print(f"   Loading {i+1}/{len(instrument_cmds)}: {cmd}")
+                send_reaper_commands([cmd])
+                time.sleep(2.0)  # Give VST time to load
+        
+        # Step 3: Create MIDI items first (one continuous item per track)
+        if midi_create_cmds:
+            print(f"🎼 Step 3: Creating {len(midi_create_cmds)} MIDI items...")
+            send_reaper_commands(midi_create_cmds)
+            time.sleep(0.5)
+        
+        # Step 4: Send ALL MIDI notes at once (they go into the items created above)
+        if midi_note_cmds:
+            print(f"🎹 Step 4: Inserting {len(midi_note_cmds)} MIDI notes...")
+            send_reaper_commands(midi_note_cmds)
+            time.sleep(1.0)
+        
+        # Step 5: Any other commands
+        if other_cmds:
+            print(f"📦 Step 5: {len(other_cmds)} other commands...")
+            send_reaper_commands(other_cmds)
+        
+        print("\n✅ All commands sent!")
+        print("ℹ️ Check Reaper - instruments should be loaded and MIDI notes placed.")
+        return
+    
     # Check for reference matching requests
     user_lower = user_input.lower()
     if "sound like" in user_lower:
@@ -6543,7 +6672,7 @@ Recommendations: {', '.join(analysis.get('recommendations', [])) if analysis.get
     
     # Retry loop (up to 20 attempts for complex parameter tuning - blind parameter mapping needs iterations)
     # Limit retries (user prefers tighter cap). Overridable via env.
-    max_retries = int(os.getenv("AGENT_MAX_RETRIES", "8"))
+    max_retries = int(os.getenv("AGENT_MAX_RETRIES", "14"))
     retry_count = 0
     previous_issues = ""
     previous_feedback = ""
@@ -7341,8 +7470,40 @@ if __name__ == "__main__":
                 pass
             
             enhanced = enhance_prompt(vague_input, current_state)
+            
+            # Check if enhancer wants to analyze existing MIDI first
+            if enhanced == "ANALYZE_MIDI_FIRST":
+                print("🎼 Compose-around mode - reading your existing MIDI...")
+                
+                # Read MIDI from track 0 (default) - user can specify track later
+                send_reaper_commands(["MIDI_GET_NOTES 0"])
+                time.sleep(0.5)
+                
+                # Get the MIDI notes from feedback
+                midi_notes = None
+                try:
+                    with open(FEEDBACK_FILE, 'r') as f:
+                        feedback = f.read()
+                        if "MIDI_NOTES:" in feedback:
+                            # Extract notes: "MIDI_NOTES: 60,100,0.0,0.5;64,90,0.5,1.0;..."
+                            midi_line = [l for l in feedback.split('\n') if 'MIDI_NOTES:' in l]
+                            if midi_line:
+                                midi_notes = midi_line[-1].split("MIDI_NOTES:")[-1].strip()
+                except:
+                    pass
+                
+                if midi_notes and midi_notes != "":
+                    print(f"   Found {len(midi_notes.split(';'))} notes")
+                    # Call enhancer again with the MIDI data
+                    enhanced = enhance_prompt(vague_input, current_state, midi_notes=midi_notes)
+                else:
+                    print("⚠️ No MIDI found on track 0. Creating new song instead...")
+                    # Fall back to regular song generation
+                    from prompt_enhancer import generate_song_commands
+                    enhanced = generate_song_commands(vague_input)
+            
             print(f"\n📝 Your vague prompt: {vague_input}")
-            print(f"✨ Enhanced version: {enhanced}")
+            print(f"✨ Enhanced version: {enhanced[:500]}..." if len(enhanced) > 500 else f"✨ Enhanced version: {enhanced}")
             
             confirm = input("\n[Enter]=send  [e]=edit  [c]=cancel: ")
             if confirm.lower() == 'c':

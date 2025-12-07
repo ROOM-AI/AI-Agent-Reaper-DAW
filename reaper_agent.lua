@@ -31,6 +31,133 @@ function normalized_to_db(normalized, min_db, max_db)
     return min_db + (normalized * (max_db - min_db))
 end
 
+local function clamp(value, minValue, maxValue)
+    if value < minValue then return minValue end
+    if value > maxValue then return maxValue end
+    return value
+end
+
+-- Global function to ensure track exists (creates if needed)
+function ensure_track_exists(index)
+    local track = reaper.GetTrack(0, index)
+    if track then return track end
+    
+    -- Insert new tracks until requested index is available
+    while reaper.CountTracks(0) <= index do
+        reaper.InsertTrackAtIndex(reaper.CountTracks(0), true)
+    end
+    reaper.TrackList_AdjustWindows(false)
+    return reaper.GetTrack(0, index)
+end
+
+local note_base = {C=0, D=2, E=4, F=5, G=7, A=9, B=11}
+
+local function parse_midi_pitch(token)
+    if not token or token == "" then return nil end
+    local numeric = tonumber(token)
+    if numeric then
+        return clamp(math.floor(numeric + 0.5), 0, 127)
+    end
+
+    local upper = token:upper():gsub("%s+", "")
+    local note, accidental, octave = upper:match("^([A-G])([#B]?)(-?%d+)$")
+    if not note then return nil end
+
+    local semitone = note_base[note]
+    if accidental == "#" then
+        semitone = semitone + 1
+    elseif accidental == "B" then
+        semitone = semitone - 1
+    end
+
+    local oct = tonumber(octave) or 4
+    local midi = (oct + 1) * 12 + semitone
+    return clamp(midi, 0, 127)
+end
+
+local function ensure_midi_take(track, tStart, tEnd)
+    -- 1. If a MIDI editor is open, use that take (ensure we write to what the user sees)
+    local editor = reaper.MIDIEditor_GetActive()
+    if editor then
+        local take = reaper.MIDIEditor_GetTake(editor)
+        if take and reaper.TakeIsMIDI(take) then
+            -- Verify this take belongs to the requested track, OR just use it if track is generic
+            local item = reaper.GetMediaItemTake_Item(take)
+            local itemTrack = reaper.GetMediaItem_Track(item)
+            if itemTrack == track then
+                return take, item
+            end
+        end
+    end
+
+    -- 2. Otherwise find/create on the specific track
+    if not track then return nil end
+
+    local item = nil
+    local count = reaper.CountTrackMediaItems(track)
+    for i = 0, count - 1 do
+        local it = reaper.GetTrackMediaItem(track, i)
+        local pos = reaper.GetMediaItemInfo_Value(it, "D_POSITION")
+        local len = reaper.GetMediaItemInfo_Value(it, "D_LENGTH")
+        if tStart >= pos and tStart < (pos + len + 0.0001) then
+            local tk = reaper.GetActiveTake(it)
+            if tk and reaper.TakeIsMIDI(tk) then
+                item = it
+                break
+            end
+        end
+    end
+
+    local desiredEnd = math.max(tEnd or (tStart + 0.25), tStart + 0.25)
+    if not item then
+        item = reaper.CreateNewMIDIItemInProj(track, tStart, desiredEnd, false)
+    else
+        local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+        local len = reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+        local currentEnd = pos + len
+        if desiredEnd > currentEnd then
+            reaper.SetMediaItemLength(item, desiredEnd - pos, true)
+        end
+    end
+
+    if not item then return nil end
+    local take = reaper.GetActiveTake(item)
+    if take and reaper.TakeIsMIDI(take) then
+        return take, item
+    end
+    return nil
+end
+
+local chord_library = {}
+local function register_chord(intervals, ...)
+    for _, name in ipairs({...}) do
+        chord_library[name:lower()] = intervals
+    end
+end
+
+register_chord({0, 4, 7}, "maj", "major")
+register_chord({0, 3, 7}, "min", "minor", "m")
+register_chord({0, 3, 6}, "dim", "diminished")
+register_chord({0, 4, 8}, "aug", "augmented")
+register_chord({0, 2, 7}, "sus2")
+register_chord({0, 5, 7}, "sus4")
+register_chord({0, 4, 7, 10}, "7", "dom7", "dominant7")
+register_chord({0, 4, 7, 11}, "maj7", "major7")
+register_chord({0, 3, 7, 10}, "min7", "m7")
+register_chord({0, 3, 6, 9}, "dim7")
+register_chord({0, 3, 6, 10}, "m7b5", "halfdim", "half-dim")
+register_chord({0, 7}, "power", "5")
+register_chord({0, 4, 7, 14}, "add9")
+
+local function resolve_chord_intervals(name)
+    local key = (name or "maj"):lower():gsub("%s+", "")
+    local intervals = chord_library[key]
+    if intervals then
+        return intervals, key
+    end
+    return chord_library["maj"], "maj"
+end
+
 -- Feedback buffer to report back to Python
 local feedback_buffer = {}
 
@@ -512,9 +639,102 @@ function process_command(line)
             msg(successMsg)
             add_feedback(successMsg)
         else
-            local failMsg = string.format("❌ Could not find instrument matching '%s'", instName)
-            msg(failMsg)
-            add_feedback(failMsg)
+            -- Instrument not found - try fallback instruments based on type
+            msg(string.format("⚠️ '%s' not found, searching for similar instrument...", instName))
+            
+            -- Determine instrument type from name and pick fallbacks
+            local lowerName = string.lower(instName)
+            local fallbacks = {}
+            
+            if string.find(lowerName, "drum") or string.find(lowerName, "addictive") or string.find(lowerName, "battery") or string.find(lowerName, "kit") then
+                -- Drum fallbacks - ReaSynDr first since it's built into Reaper
+                fallbacks = {
+                    "VSTi: ReaSynDr (Cockos)",
+                    "VST3i: ReaSynDr (Cockos)",
+                    "ReaSynDr",
+                    "ReaSynDr (Cockos)",
+                    "VSTi: Addictive Drums 2 (XLN Audio)",
+                    "VST3i: Addictive Drums 2 (XLN Audio)",
+                    "VSTi: Battery 4 (Native Instruments)",
+                    "VST3i: Battery 4 (Native Instruments)"
+                }
+            elseif string.find(lowerName, "bass") then
+                -- Bass fallbacks
+                fallbacks = {
+                    "VSTi: Analog Lab V (Arturia)",
+                    "VST3i: Analog Lab V (Arturia)",
+                    "VSTi: Mini V3 (Arturia)",
+                    "VST3i: Mini V3 (Arturia)",
+                    "VSTi: Trilian (Spectrasonics)",
+                    "VSTi: Massive (Native Instruments)"
+                }
+            elseif string.find(lowerName, "piano") or string.find(lowerName, "keys") or string.find(lowerName, "rhodes") or string.find(lowerName, "wurli") then
+                -- Piano/Keys fallbacks
+                fallbacks = {
+                    "VSTi: Piano V3 (Arturia)",
+                    "VST3i: Piano V3 (Arturia)",
+                    "VSTi: Analog Lab V (Arturia)",
+                    "VST3i: Analog Lab V (Arturia)",
+                    "VSTi: Keyscape (Spectrasonics)",
+                    "VSTi: Kontakt (Native Instruments)"
+                }
+            elseif string.find(lowerName, "synth") or string.find(lowerName, "lead") or string.find(lowerName, "pad") then
+                -- Synth fallbacks
+                fallbacks = {
+                    "VSTi: Analog Lab V (Arturia)",
+                    "VST3i: Analog Lab V (Arturia)",
+                    "VSTi: Serum (Xfer Records)",
+                    "VSTi: Massive (Native Instruments)",
+                    "VSTi: Omnisphere (Spectrasonics)",
+                    "VSTi: Mini V3 (Arturia)"
+                }
+            else
+                -- Generic fallbacks - try common instruments
+                fallbacks = {
+                    "VSTi: Analog Lab V (Arturia)",
+                    "VST3i: Analog Lab V (Arturia)",
+                    "VSTi: Piano V3 (Arturia)",
+                    "VST3i: Piano V3 (Arturia)",
+                    "VSTi: Kontakt (Native Instruments)",
+                    "VSTi: Omnisphere (Spectrasonics)"
+                }
+            end
+            
+            -- Try each fallback
+            local fallbackIdx = -1
+            local fallbackName = nil
+            for _, fb in ipairs(fallbacks) do
+                fallbackIdx = reaper.TrackFX_AddByName(track, fb, false, -1)
+                if fallbackIdx >= 0 then
+                    fallbackName = fb
+                    break
+                end
+            end
+            
+            if fallbackIdx >= 0 then
+                -- Move to top slot
+                if fallbackIdx > 0 then
+                    reaper.TrackFX_CopyToTrack(track, fallbackIdx, track, 0, true)
+                    fallbackIdx = 0
+                end
+                
+                reaper.TrackFX_Show(track, fallbackIdx, 3)
+                reaper.SetMediaTrackInfo_Value(track, "I_RECARM", 1)
+                reaper.SetMediaTrackInfo_Value(track, "I_RECMON", 1)
+                local midiSet, midiSource = set_track_midi_input(track)
+                
+                local _, finalName = reaper.TrackFX_GetFXName(track, fallbackIdx, "")
+                local successMsg = string.format("🎹 Inserted FALLBACK '%s' on track %d (requested '%s' not found)", finalName ~= "" and finalName or fallbackName, trackIdx, instName)
+                if midiSet then
+                    successMsg = successMsg .. string.format(" | MIDI input: %s", midiSource or "All inputs")
+                end
+                msg(successMsg)
+                add_feedback(successMsg)
+            else
+                local failMsg = string.format("❌ Could not find instrument '%s' or any fallback", instName)
+                msg(failMsg)
+                add_feedback(failMsg)
+            end
         end
 
     elseif cmd == "ADD_FX" then
@@ -620,6 +840,89 @@ function process_command(line)
                 add_feedback(failMsg)
             end
         end
+        
+    elseif cmd == "EQ_NEUTRALIZE_BAND" then
+        -- EQ_NEUTRALIZE_BAND <trackIdx> <fxIdx> <bandNumber>
+        local trackIdx = tonumber(parts[2]) or 0
+        local fxIdx = tonumber(parts[3]) or 0
+        local bandNum = tonumber(parts[4]) or 1
+        
+        local track = reaper.GetTrack(0, trackIdx)
+        if not track then
+            msg(string.format("❌ Track %d not found", trackIdx))
+            add_feedback(string.format("❌ Track %d not found", trackIdx))
+            return
+        end
+        
+        local numFX = reaper.TrackFX_GetCount(track)
+        if fxIdx >= numFX then
+            msg(string.format("❌ Track %d only has %d FX (tried FX#%d)", trackIdx, numFX, fxIdx))
+            add_feedback(string.format("❌ Track %d only has %d FX (tried FX#%d)", trackIdx, numFX, fxIdx))
+            return
+        end
+        
+        local _, fxName = reaper.TrackFX_GetFXName(track, fxIdx, "")
+        local fxLower = (fxName or ""):lower()
+        if not fxLower:find("pro-q") then
+            msg(string.format("⚠️ EQ_NEUTRALIZE_BAND currently only supports Pro-Q (fx: %s)", fxName))
+            add_feedback(string.format("⚠️ Skipped neutralizing band on %s (unsupported EQ)", fxName))
+            return
+        end
+        
+        local numParams = reaper.TrackFX_GetNumParams(track, fxIdx)
+        local bandTag = string.format("band %d", bandNum)
+        local bandTagCompact = string.format("band%d", bandNum)
+        local usedIdx, gainIdx, shapeIdx, freqIdx, qIdx, slopeIdx = nil, nil, nil, nil, nil, nil
+        
+        for p = 0, numParams - 1 do
+            local _, pname = reaper.TrackFX_GetParamName(track, fxIdx, p, "")
+            local lname = (pname or ""):lower()
+            if lname:find(bandTag) or lname:find(bandTagCompact) then
+                if lname:find("used") or lname:find("enable") or lname:find("on/off") then
+                    usedIdx = usedIdx or p
+                elseif lname:find("gain") then
+                    gainIdx = gainIdx or p
+                elseif lname:find("shape") or lname:find("type") then
+                    shapeIdx = shapeIdx or p
+                elseif lname:find("freq") then
+                    freqIdx = freqIdx or p
+                elseif lname:find("slope") then
+                    slopeIdx = slopeIdx or p
+                elseif lname:find(" q") or lname:match("q$") or lname:find("resonance") then
+                    qIdx = qIdx or p
+                end
+            end
+        end
+        
+        local function set_param(idx, value)
+            if idx ~= nil then
+                reaper.TrackFX_SetParam(track, fxIdx, idx, value)
+            end
+        end
+        
+        -- Keep band enabled
+        if usedIdx ~= nil then
+            set_param(usedIdx, 1.0)
+        end
+        -- Neutral bell shape, 0dB gain
+        if shapeIdx ~= nil then
+            set_param(shapeIdx, 0.0)
+        end
+        if gainIdx ~= nil then
+            set_param(gainIdx, 0.5)
+        end
+        if qIdx ~= nil then
+            set_param(qIdx, 0.5)
+        end
+        if slopeIdx ~= nil then
+            set_param(slopeIdx, 0.0)
+        end
+        if freqIdx ~= nil then
+            set_param(freqIdx, 0.5)
+        end
+        
+        msg(string.format("🧼 Neutralized Pro-Q band %d on track %d FX#%d", bandNum, trackIdx, fxIdx))
+        add_feedback(string.format("✓ Neutralized Pro-Q band %d (track %d)", bandNum, trackIdx))
         
     elseif cmd == "REMOVE_FX" then
         -- REMOVE_FX <trackIdx> <fxIdx>
@@ -911,48 +1214,156 @@ function process_command(line)
             add_feedback("❌ Failed to create MIDI item")
         end
 
-    elseif cmd == "MIDI_INSERT_NOTE" then
-        -- MIDI_INSERT_NOTE <trackIdx> <pitch> <vel> <start> <end> <channel>
+    elseif cmd == "MIDI_ACTION" then
+        -- MIDI_ACTION <commandID>
+        -- Executes a command ID in the active MIDI Editor context
+        local actionID = tonumber(parts[2])
+        if not actionID then
+            msg("❌ MIDI_ACTION requires a numeric command ID")
+            return
+        end
+        
+        local editor = reaper.MIDIEditor_GetActive()
+        if editor then
+            reaper.MIDIEditor_OnCommand(editor, actionID)
+            local successMsg = string.format("🎹 Executed MIDI Editor Action %d", actionID)
+            msg(successMsg)
+            add_feedback("✓ " .. successMsg)
+        else
+            msg("❌ No active MIDI Editor found. Use MIDI_EDITOR_OPEN first.")
+            add_feedback("✗ No active MIDI Editor")
+        end
+
+    elseif cmd == "MIDI_EDITOR_OPEN" then
+        -- MIDI_EDITOR_OPEN <trackIdx> <time>
+        -- Opens the MIDI item at the specified time in the piano roll
         local trackIdx = tonumber(parts[2]) or 0
-        local pitch = tonumber(parts[3]) or 60
-        local vel = tonumber(parts[4]) or 100
-        local tStart = tonumber(parts[5]) or 0
-        local tEnd = tonumber(parts[6]) or (tStart + 0.25)
-        local chan = (tonumber(parts[7]) or 1) - 1
+        local time = tonumber(parts[3]) or 0
         
         local track = reaper.GetTrack(0, trackIdx)
-        if not track then return end
+        if not track then
+            msg(string.format("❌ Track %d not found", trackIdx))
+            return
+        end
         
-        -- Find item at start time
+        -- Find item at time
         local item = nil
         local count = reaper.CountTrackMediaItems(track)
         for i=0, count-1 do
             local it = reaper.GetTrackMediaItem(track, i)
             local pos = reaper.GetMediaItemInfo_Value(it, "D_POSITION")
             local len = reaper.GetMediaItemInfo_Value(it, "D_LENGTH")
-            if tStart >= pos and tStart < (pos + len) then
-                local tk = reaper.GetActiveTake(it)
-                if tk and reaper.TakeIsMIDI(tk) then
-                    item = it
-                    break
-                end
+            if time >= pos and time < (pos + len) then
+                item = it
+                break
             end
-        end
-        
-        -- Auto-create if missing
-        if not item then
-             item = reaper.CreateNewMIDIItemInProj(track, tStart, math.max(tEnd, tStart + 4.0), false)
         end
         
         if item then
-            local take = reaper.GetActiveTake(item)
-            if take and reaper.TakeIsMIDI(take) then
-                local startppq = reaper.MIDI_GetPPQPosFromProjTime(take, tStart)
-                local endppq = reaper.MIDI_GetPPQPosFromProjTime(take, tEnd)
-                reaper.MIDI_InsertNote(take, false, false, startppq, endppq, chan, pitch, vel, true)
-                add_feedback(string.format("✓ Inserted note pitch=%d on track %d", pitch, trackIdx))
-            end
+            reaper.Main_OnCommand(40153, 0) -- Main: Open selected item in MIDI editor (requires selection)
+            -- Better way: Select it, then open
+            reaper.SetMediaItemSelected(item, true)
+            reaper.Main_OnCommand(40153, 0) -- Item: Open in built-in MIDI editor
+            msg(string.format("🎹 Opened MIDI editor for item on track %d at %.1fs", trackIdx, time))
+            add_feedback(string.format("✓ Opened MIDI editor (track %d)", trackIdx))
+        else
+            msg(string.format("❌ No MIDI item found on track %d at %.1fs", trackIdx, time))
+            add_feedback("✗ No MIDI item found to open")
         end
+
+    elseif cmd == "MIDI_INSERT_NOTE" then
+        -- MIDI_INSERT_NOTE <trackIdx> <pitch> <vel> <start> <end> <channel>
+        local trackIdx = tonumber(parts[2]) or 0
+        local pitchToken = parts[3] or "60"
+        local vel = clamp(math.floor(tonumber(parts[4]) or 100), 1, 127)
+        local tStart = tonumber(parts[5]) or 0
+        local tEnd = tonumber(parts[6]) or (tStart + 0.25)
+        local chan = (tonumber(parts[7]) or 1) - 1
+
+        local track = reaper.GetTrack(0, trackIdx)
+        if not track then
+            msg(string.format("❌ Track %d not found", trackIdx))
+            add_feedback(string.format("✗ Track %d not found", trackIdx))
+            return
+        end
+
+        local pitch = parse_midi_pitch(pitchToken)
+        if not pitch then
+            msg(string.format("❌ Invalid MIDI note '%s'", tostring(pitchToken)))
+            add_feedback(string.format("✗ Invalid MIDI note '%s'", tostring(pitchToken)))
+            return
+        end
+
+        if not tEnd or tEnd <= tStart then
+            tEnd = tStart + 0.25
+        end
+        chan = clamp(math.floor(chan + 0.5), 0, 15)
+
+        local take = ensure_midi_take(track, tStart, tEnd)
+        if not take then
+            msg("❌ Could not access MIDI take")
+            add_feedback("❌ Could not access MIDI take")
+            return
+        end
+
+        local startppq = reaper.MIDI_GetPPQPosFromProjTime(take, tStart)
+        local endppq = reaper.MIDI_GetPPQPosFromProjTime(take, tEnd)
+        reaper.MIDI_InsertNote(take, false, false, startppq, endppq, chan, pitch, vel, true)
+        reaper.MIDI_Sort(take)
+        add_feedback(string.format("✓ Inserted note pitch=%d on track %d", pitch, trackIdx))
+
+    elseif cmd == "MIDI_INSERT_CHORD" then
+        -- MIDI_INSERT_CHORD <trackIdx> <root> <quality> <velocity> <start> <duration> [channel]
+        local trackIdx = tonumber(parts[2]) or 0
+        local rootToken = parts[3] or "C4"
+        local qualityRaw = parts[4] or "maj"
+        local vel = clamp(math.floor(tonumber(parts[5]) or 100), 1, 127)
+        local tStart = tonumber(parts[6]) or 0
+        local duration = tonumber(parts[7]) or 1.0
+        local chan = (tonumber(parts[8]) or 1) - 1
+
+        local track = reaper.GetTrack(0, trackIdx)
+        if not track then
+            msg(string.format("❌ Track %d not found", trackIdx))
+            add_feedback(string.format("✗ Track %d not found", trackIdx))
+            return
+        end
+
+        local rootPitch = parse_midi_pitch(rootToken)
+        if not rootPitch then
+            msg(string.format("❌ Invalid chord root '%s'", tostring(rootToken)))
+            add_feedback(string.format("✗ Invalid chord root '%s'", tostring(rootToken)))
+            return
+        end
+
+        local intervals, normalizedQuality = resolve_chord_intervals(qualityRaw)
+        if not duration or duration <= 0 then
+            duration = 1.0
+        end
+        local tEnd = tStart + duration
+        chan = clamp(math.floor(chan + 0.5), 0, 15)
+
+        local take = ensure_midi_take(track, tStart, tEnd)
+        if not take then
+            msg("❌ Could not access MIDI take for chord insertion")
+            add_feedback("❌ Could not access MIDI take for chord insertion")
+            return
+        end
+
+        local startppq = reaper.MIDI_GetPPQPosFromProjTime(take, tStart)
+        local endppq = reaper.MIDI_GetPPQPosFromProjTime(take, tEnd)
+        local inserted = {}
+        for _, interval in ipairs(intervals) do
+            local note = clamp(rootPitch + interval, 0, 127)
+            reaper.MIDI_InsertNote(take, false, false, startppq, endppq, chan, note, vel, true)
+            table.insert(inserted, note)
+        end
+        reaper.MIDI_Sort(take)
+
+        local detail = table.concat(inserted, ",")
+        local feedbackMsg = string.format("🎼 Inserted %s chord (%s) on track %d", normalizedQuality or qualityRaw, detail, trackIdx)
+        msg(feedbackMsg)
+        add_feedback(feedbackMsg)
 
     elseif cmd == "MIDI_GET_NOTES" then
         -- MIDI_GET_NOTES <trackIdx> [start] [end]
@@ -1167,11 +1578,25 @@ function process_command(line)
         local pos = tonumber(parts[2]) or 0
         reaper.SetEditCurPos(pos, true, true)
         execute_with_feedback("GOTO", true, string.format("Jump to %.1fs", pos))
+    
+    elseif cmd == "SET_TEMPO" then
+        -- SET_TEMPO <bpm>
+        local bpm = tonumber(parts[2]) or 120
+        if bpm < 20 then bpm = 20 end
+        if bpm > 300 then bpm = 300 end
+        reaper.SetCurrentBPM(0, bpm, false)
+        msg(string.format("🎵 Set tempo to %.0f BPM", bpm))
+        add_feedback(string.format("✓ Tempo set to %.0f BPM", bpm))
         
     elseif cmd == "EXPORT_AUDIO" then
         -- EXPORT_AUDIO <trackIdx> <outputPath>
         local trackIdx = tonumber(parts[2]) or 0
         local outputPath = table.concat(parts, " ", 3)
+        
+        -- Strip quotes if present (bridge sends quoted paths)
+        if outputPath:match('^"') then
+            outputPath = outputPath:match('^"(.-)"') or outputPath:gsub('"', '')
+        end
         
         local track = reaper.GetTrack(0, trackIdx)
         if track then
@@ -1206,6 +1631,194 @@ function process_command(line)
             msg(string.format("❌ Track %d not found", trackIdx))
             add_feedback(string.format("✗ Track %d not found", trackIdx))
         end
+    
+    elseif cmd == "INSERT_AUDIO" then
+        -- INSERT_AUDIO <trackIdx> <filePath> <startTime>
+        -- Places an audio sample file on a track at the specified time
+        local trackIdx = tonumber(parts[2]) or 0
+        
+        -- Reconstruct file path (may contain spaces, handle quoted paths)
+        local filePath = ""
+        local startTime = 0
+        
+        -- Find the quoted path or unquoted path
+        local fullLine = table.concat(parts, " ", 3)
+        if fullLine:match('^"') then
+            -- Quoted path: INSERT_AUDIO 2 "D:\Samples\kick.wav" 0.5
+            local pathEnd = fullLine:find('"', 2)
+            if pathEnd then
+                filePath = fullLine:sub(2, pathEnd - 1)
+                local remaining = fullLine:sub(pathEnd + 1):match("^%s*(.*)$") or ""
+                startTime = tonumber(remaining) or 0
+            end
+        else
+            -- Try to find last number as start time
+            local lastSpace = fullLine:match(".*()%s+[%d%.]+$")
+            if lastSpace then
+                filePath = fullLine:sub(1, lastSpace - 1)
+                startTime = tonumber(fullLine:sub(lastSpace + 1)) or 0
+            else
+                filePath = fullLine
+                startTime = 0
+            end
+        end
+        
+        -- Check if file exists
+        -- Use raw open to verify
+        local f = io.open(filePath, "rb")
+        if not f then
+            -- Try replacing backslashes with forward slashes just in case
+            local altPath = filePath:gsub("\\", "/")
+            f = io.open(altPath, "rb")
+            if f then
+                filePath = altPath
+            else
+                msg(string.format("❌ Audio file not found: %s", filePath))
+                add_feedback(string.format("✗ File not found: %s", filePath))
+                return
+            end
+        end
+        f:close()
+        
+        -- Get or create track
+        local track = reaper.GetTrack(0, trackIdx)
+        if not track then
+            -- Create tracks up to the needed number
+            local current_count = reaper.CountTracks(0)
+            for i = current_count, trackIdx do
+                reaper.InsertTrackAtIndex(i, true)
+            end
+            track = reaper.GetTrack(0, trackIdx)
+        end
+        
+        if track then
+            -- Select only this track
+            reaper.SetOnlyTrackSelected(track)
+            
+            -- Set cursor position
+            reaper.SetEditCurPos(startTime, false, false)
+            
+            -- Remember item count before insert
+            local itemCountBefore = reaper.CountMediaItems(0)
+            
+            -- Insert the audio file
+            reaper.InsertMedia(filePath, 0)  -- 0 = insert at edit cursor
+            
+            -- Check if item was added
+            local itemCountAfter = reaper.CountMediaItems(0)
+            if itemCountAfter > itemCountBefore then
+                -- Get the new item and make sure it's at correct position
+                local newItem = reaper.GetMediaItem(0, itemCountAfter - 1)
+                if newItem then
+                    reaper.SetMediaItemPosition(newItem, startTime, false)
+                    local itemLength = reaper.GetMediaItemInfo_Value(newItem, "D_LENGTH")
+                    
+                    -- Extract just filename for logging
+                    local filename = filePath:match("[^/\\]+$") or filePath
+                    msg(string.format("🥁 Inserted %s on track %d at %.2fs (%.2fs)", filename, trackIdx, startTime, itemLength))
+                    add_feedback(string.format("✓ Inserted audio: %s at %.2fs", filename, startTime))
+                end
+            else
+                msg(string.format("❌ Failed to insert audio: %s", filePath))
+                add_feedback(string.format("✗ Insert failed: %s", filePath))
+            end
+        else
+            msg(string.format("❌ Could not create track %d", trackIdx))
+            add_feedback(string.format("✗ Could not create track %d", trackIdx))
+        end
+        
+        reaper.UpdateArrange()
+    
+    elseif cmd == "LOAD_SAMPLER" then
+        -- LOAD_SAMPLER <trackIdx> <filePath> <baseNote> [noteRangeStart] [noteRangeEnd]
+        -- Loads a sample into ReaSamplOmatic5000 for MIDI triggering
+        -- baseNote: the MIDI note that plays sample at original pitch (e.g. 60 for C4)
+        -- noteRange: allows pitching (e.g. 36-84 for full range, or just 60-60 for single note)
+        
+        local trackIdx = tonumber(parts[2]) or 0
+        local baseNote = tonumber(parts[4]) or 60  -- Default C4
+        local noteStart = tonumber(parts[5]) or 24  -- Default C1
+        local noteEnd = tonumber(parts[6]) or 96    -- Default C7
+        
+        -- Parse file path (may be quoted)
+        local fullLine = table.concat(parts, " ", 3)
+        local filePath = ""
+        if fullLine:match('^"') then
+            local pathEnd = fullLine:find('"', 2)
+            if pathEnd then
+                filePath = fullLine:sub(2, pathEnd - 1)
+                -- Re-parse remaining args after path
+                local remaining = fullLine:sub(pathEnd + 2)
+                local rparts = {}
+                for p in remaining:gmatch("%S+") do table.insert(rparts, p) end
+                baseNote = tonumber(rparts[1]) or baseNote
+                noteStart = tonumber(rparts[2]) or noteStart
+                noteEnd = tonumber(rparts[3]) or noteEnd
+            end
+        else
+            filePath = parts[3] or ""
+        end
+        
+        -- Check file exists
+        local f = io.open(filePath, "rb")
+        if not f then
+            local altPath = filePath:gsub("\\", "/")
+            f = io.open(altPath, "rb")
+            if f then filePath = altPath end
+        end
+        if not f then
+            msg(string.format("❌ Sample file not found: %s", filePath))
+            add_feedback(string.format("✗ File not found: %s", filePath))
+        else
+            f:close()
+            
+            -- Get or create track
+            local track = ensure_track_exists(trackIdx)
+            if track then
+                reaper.SetOnlyTrackSelected(track)
+                
+                -- Insert ReaSamplOmatic5000
+                local fxIdx = reaper.TrackFX_AddByName(track, "ReaSamplOmatic5000", false, -1)
+                if fxIdx >= 0 then
+                    -- Set the sample file using named config parm
+                    reaper.TrackFX_SetNamedConfigParm(track, fxIdx, "FILE0", filePath)
+                    reaper.TrackFX_SetNamedConfigParm(track, fxIdx, "DONE", "")
+                    
+                    -- Set note range parameters (normalized 0-1 for 0-127)
+                    -- Param indices for RS5K: 3=Note range start, 4=Note range end, 5=Pitch for start note
+                    reaper.TrackFX_SetParam(track, fxIdx, 3, noteStart/127)  -- Note range start
+                    reaper.TrackFX_SetParam(track, fxIdx, 4, noteEnd/127)    -- Note range end  
+                    reaper.TrackFX_SetParam(track, fxIdx, 5, baseNote/127)   -- Pitch for start note
+                    
+                    -- Arm track for MIDI input
+                    reaper.SetMediaTrackInfo_Value(track, "I_RECARM", 1)
+                    reaper.SetMediaTrackInfo_Value(track, "I_RECMON", 1)
+                    reaper.SetMediaTrackInfo_Value(track, "I_RECINPUT", 4096+0) -- All MIDI
+                    
+                    local filename = filePath:match("[^/\\]+$") or filePath
+                    
+                    -- RENAME TRACK to match sample (like dragging it in!)
+                    reaper.GetSetMediaTrackInfo_String(track, "P_NAME", filename, true)
+                    
+                    msg(string.format("🎹 Loaded %s into sampler on track %d (notes %d-%d, base=%d)", 
+                        filename, trackIdx, noteStart, noteEnd, baseNote))
+                    add_feedback(string.format("✓ Sampler loaded: %s", filename))
+                else
+                    msg("❌ Failed to add ReaSamplOmatic5000")
+                    add_feedback("✗ Failed to add sampler")
+                end
+            end
+        end
+        
+        reaper.UpdateArrange()
+    
+    elseif cmd == "DRUM_SAMPLE" then
+        -- Legacy - bridge should convert to INSERT_AUDIO
+        local trackIdx = parts[2] or "?"
+        local category = parts[3] or "?"
+        local startTime = parts[4] or "?"
+        msg(string.format("⚠️ DRUM_SAMPLE not resolved: track %s, %s at %ss", trackIdx, category, startTime))
+        add_feedback(string.format("⚠️ DRUM_SAMPLE needs bridge: %s", category))
         
     else
         msg("❓ Unknown command: "..tostring(cmd))

@@ -32,6 +32,7 @@ if not BASE_DIR_STR:
 BASE_DIR = Path(BASE_DIR_STR)
 COMMAND_FILE = BASE_DIR / "reaper_commands.txt"
 STATE_FILE = BASE_DIR / "reaper_state.txt"
+FEEDBACK_FILE = BASE_DIR / "reaper_feedback.txt"
 TEMP_AUDIO_DIR = BASE_DIR / "temp_audio"
 
 print("=" * 50)
@@ -42,6 +43,7 @@ print(f"Session: {SESSION_ID}")
 print(f"Base directory: {BASE_DIR}")
 print(f"Command file: {COMMAND_FILE}")
 print(f"State file: {STATE_FILE}")
+print(f"Feedback file: {FEEDBACK_FILE}")
 print("=" * 50)
 print()
 print("NOTE: Only ONE user can use 'demo' session at a time.")
@@ -50,13 +52,60 @@ print()
 
 _last_state_sent = ""
 _last_send_ts = 0.0
+_last_feedback_sent = ""
+_last_feedback_ts = 0.0
 MIN_SEND_INTERVAL = 1.5  # seconds, to avoid spam on partial writes
 
 # Ensure directory and files exist
 BASE_DIR.mkdir(parents=True, exist_ok=True)
 COMMAND_FILE.touch(exist_ok=True)
 STATE_FILE.touch(exist_ok=True)
+FEEDBACK_FILE.touch(exist_ok=True)
 TEMP_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+
+def _trim_state(content: str, max_chars: int = 60000) -> str:
+    """Trim large state to prevent upload timeouts while keeping all tracks visible."""
+    if len(content) <= max_chars:
+        return content
+    
+    # Find all track sections
+    lines = content.split('\n')
+    header_lines = []
+    track_sections = []
+    current_track = []
+    in_tracks = False
+    
+    for line in lines:
+        if line.startswith('--- Track '):
+            if current_track:
+                track_sections.append('\n'.join(current_track))
+            current_track = [line]
+            in_tracks = True
+        elif in_tracks:
+            current_track.append(line)
+        else:
+            header_lines.append(line)
+    
+    if current_track:
+        track_sections.append('\n'.join(current_track))
+    
+    header = '\n'.join(header_lines)
+    
+    # Trim each track evenly to fit
+    if track_sections:
+        available = max_chars - len(header) - 200
+        per_track = max(1500, available // len(track_sections))
+        trimmed_tracks = [t[:per_track] for t in track_sections]
+        result = header + '\n' + '\n'.join(trimmed_tracks)
+    else:
+        result = content[:max_chars]
+    
+    if len(content) > len(result):
+        result += f"\n\n... [{len(content) - len(result):,} chars trimmed for upload] ..."
+    
+    print(f"📦 State trimmed: {len(content):,} → {len(result):,} chars")
+    return result
+
 
 def _send_state_if_changed(force: bool = False):
     global _last_state_sent
@@ -73,6 +122,10 @@ def _send_state_if_changed(force: bool = False):
             return
 
         content = STATE_FILE.read_text()
+        
+        # Trim large states to prevent upload timeouts
+        content = _trim_state(content)
+        
         if content and (force or content != _last_state_sent):
             # Prefer raw text as 'state_text' so server can display it
             try:
@@ -85,7 +138,7 @@ def _send_state_if_changed(force: bool = False):
             requests.post(
                 f"{CLOUD_URL}/api/reaper/state",
                 json=state_payload,
-                timeout=3,
+                timeout=5,  # Slightly longer timeout for trimmed state
             )
             _last_state_sent = content
             _last_send_ts = now_ts
@@ -93,22 +146,169 @@ def _send_state_if_changed(force: bool = False):
     except Exception as e:
         print(f"⚠️ State send error: {e}")
 
+
+def _send_feedback_if_changed(force: bool = False):
+    """Send feedback (including MIDI notes) to cloud"""
+    global _last_feedback_sent
+    global _last_feedback_ts
+    try:
+        if not FEEDBACK_FILE.exists():
+            return
+        time.sleep(0.05)
+
+        now_ts = time.time()
+        if not force and (now_ts - _last_feedback_ts) < MIN_SEND_INTERVAL:
+            return
+
+        content = FEEDBACK_FILE.read_text()
+        
+        if content and (force or content != _last_feedback_sent):
+            feedback_payload = {
+                "session_id": SESSION_ID,
+                "feedback": content
+            }
+            requests.post(
+                f"{CLOUD_URL}/api/reaper/feedback",
+                json=feedback_payload,
+                timeout=5,
+            )
+            _last_feedback_sent = content
+            _last_feedback_ts = now_ts
+            
+            # Check if it contains MIDI notes
+            if "MIDI_NOTES:" in content:
+                note_count = content.count(";") + 1 if "MIDI_NOTES:" in content else 0
+                print(f"→ Sent feedback with {note_count} MIDI notes to cloud")
+            else:
+                print(f"→ Sent feedback to cloud")
+    except Exception as e:
+        print(f"⚠️ Feedback send error: {e}")
+
+
 class StateFileHandler(FileSystemEventHandler):
-    """Watch for state file changes and send to cloud"""
+    """Watch for state and feedback file changes and send to cloud"""
     def on_modified(self, event):
-        # Only react to the state file, ignore other changes in BASE_DIR
         try:
-            if Path(event.src_path).resolve() == STATE_FILE.resolve():
+            path = Path(event.src_path).resolve()
+            if path == STATE_FILE.resolve():
                 _send_state_if_changed()
+            elif path == FEEDBACK_FILE.resolve():
+                _send_feedback_if_changed()
         except Exception:
-            _send_state_if_changed()
+            pass
 
     def on_created(self, event):
         try:
-            if Path(event.src_path).resolve() == STATE_FILE.resolve():
+            path = Path(event.src_path).resolve()
+            if path == STATE_FILE.resolve():
                 _send_state_if_changed()
+            elif path == FEEDBACK_FILE.resolve():
+                _send_feedback_if_changed()
         except Exception:
-            _send_state_if_changed()
+            pass
+
+# Try to load drum index for ID-based sample resolution
+try:
+    from drum_index import get_path_by_id, load_index, get_cloud_summary
+    _drum_index = load_index()
+    DRUMS_AVAILABLE = _drum_index is not None
+    if DRUMS_AVAILABLE:
+        total = len(_drum_index.get("samples", {}))
+        print(f"🥁 Drum index loaded: {total} samples")
+except ImportError:
+    DRUMS_AVAILABLE = False
+    print("⚠️ Drum index not available - run: python drum_index.py D:\\")
+
+def resolve_sample_id(sample_id):
+    """Get full file path by sample ID"""
+    if not DRUMS_AVAILABLE:
+        return None
+    
+    path = get_path_by_id(sample_id)
+    if path:
+        print(f"   🥁 Resolved ID {sample_id}: {os.path.basename(path)}")
+    return path
+
+def process_commands_locally(cmd_text):
+    """
+    Process commands before sending to Reaper.
+    Resolves sample IDs to actual local file paths.
+    """
+    lines = cmd_text.strip().split('\n')
+    processed = []
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        
+        if line.startswith('LOAD_SAMPLER'):
+            # LOAD_SAMPLER <track> <sample_id> <base_note> [note_start] [note_end]
+            # Convert to: LOAD_SAMPLER <track> "<full_path>" <base_note> [note_start] [note_end]
+            parts = line.split()
+            if len(parts) >= 4:
+                track = parts[1]
+                try:
+                    sample_id = int(parts[2])
+                    sample_path = resolve_sample_id(sample_id)
+                    if sample_path:
+                        # Rebuild command with full path
+                        rest = ' '.join(parts[3:])  # base_note and optional range
+                        processed.append(f'LOAD_SAMPLER {track} "{sample_path}" {rest}')
+                        print(f"   🎹 Sampler: ID {sample_id} -> {sample_path}")
+                    else:
+                        print(f"   ⚠️ Sample ID {sample_id} not found, skipping")
+                except ValueError:
+                    # Not a number, might already be a path - pass through
+                    processed.append(line)
+            else:
+                processed.append(line)
+        
+        elif line.startswith('USE_SAMPLE'):
+            # USE_SAMPLE <track> <sample_id> <start_time> -> INSERT_AUDIO
+            parts = line.split()
+            if len(parts) >= 4:
+                track = parts[1]
+                try:
+                    sample_id = int(parts[2])
+                    start_time = parts[3]
+                    sample_path = resolve_sample_id(sample_id)
+                    if sample_path:
+                        processed.append(f'INSERT_AUDIO {track} "{sample_path}" {start_time}')
+                    else:
+                        print(f"   ⚠️ Sample ID {sample_id} not found, skipping")
+                except ValueError:
+                    processed.append(line)
+            else:
+                processed.append(line)
+        
+        elif line.startswith('DRUM_SAMPLE'):
+            # Legacy - pass through
+            processed.append(line)
+        
+        elif line.startswith('EXPORT_AUDIO'):
+            # EXPORT_AUDIO <track> <cloud_path>
+            # Convert cloud Linux path to local Windows path
+            parts = line.split()
+            if len(parts) >= 3:
+                track = parts[1]
+                cloud_path = ' '.join(parts[2:])
+                # Extract just the folder name (e.g., "track_4_1765067377")
+                folder_name = cloud_path.split('/')[-1]
+                if not folder_name:
+                    folder_name = f"track_{track}_{int(time.time())}"
+                # Create local path
+                local_path = TEMP_AUDIO_DIR / folder_name
+                local_path.mkdir(parents=True, exist_ok=True)
+                processed.append(f'EXPORT_AUDIO {track} "{local_path}"')
+                print(f"   📤 Export: track {track} -> {local_path}")
+            else:
+                processed.append(line)
+        
+        else:
+            processed.append(line)
+    
+    return '\n'.join(processed)
 
 def poll_commands():
     """Poll cloud for commands and write to local file (with simple de-dupe)"""
@@ -140,6 +340,12 @@ def poll_commands():
                         # Strip surrounding quotes if present
                         if (raw.startswith('"') and raw.endswith('"')) or (raw.startswith("'") and raw.endswith("'")):
                             cmd_text = raw[1:-1]
+                    
+                    # Process commands locally (resolve sample IDs, convert cloud paths)
+                    if any(kw in cmd_text for kw in ['USE_SAMPLE', 'DRUM_SAMPLE', 'LOAD_SAMPLER', 'EXPORT_AUDIO']):
+                        print(f"[BRIDGE] Processing commands locally...")
+                        cmd_text = process_commands_locally(cmd_text)
+                    
                     # Ensure trailing newline so Lua processes a single line cleanly
                     if not cmd_text.endswith("\n"):
                         cmd_text = cmd_text + "\n"
@@ -215,15 +421,27 @@ def upload_audio_worker():
     """Watch local temp_audio exports and upload new WAV files to cloud"""
     print("✓ Audio upload thread running")
     seen_files = set()
-    session_dir = Path("/tmp/uploads") / SESSION_ID
+    # Use temp directory that works on both Windows and Linux
+    import tempfile
+    session_dir = Path(tempfile.gettempdir()) / "daw_uploads" / SESSION_ID
     session_dir.mkdir(parents=True, exist_ok=True)
+    scan_count = 0
     while True:
         try:
             if TEMP_AUDIO_DIR.exists():
+                # Periodic scan logging (every ~30 seconds)
+                scan_count += 1
+                if scan_count % 20 == 1:  # Log occasionally
+                    folders = list(TEMP_AUDIO_DIR.glob("track_*"))
+                    if folders:
+                        print(f"📂 Watching {len(folders)} export folder(s) in {TEMP_AUDIO_DIR}")
+                
                 for wav_path in TEMP_AUDIO_DIR.glob("track_*/*.wav"):
                     resolved = wav_path.resolve()
                     if str(resolved) in seen_files:
                         continue
+                    
+                    print(f"🔍 Found new audio: {wav_path}")
 
                     track_idx = None
                     parent = wav_path.parent.name

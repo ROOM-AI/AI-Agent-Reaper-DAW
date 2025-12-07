@@ -20,6 +20,8 @@ COPY old.py .
 COPY cloud_agent_wrapper.py .
 COPY prompt_enhancer.py .
 COPY local_bridge.pyw .
+COPY drum_index.py .
+COPY drum_index.json .
 
 COPY reaper_actions.txt .
 COPY reaper_plugins_list.txt .
