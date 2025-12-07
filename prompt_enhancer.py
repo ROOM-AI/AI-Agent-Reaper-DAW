@@ -507,6 +507,406 @@ def enhance_prompt(user_input, reaper_state="", midi_notes=None):
         return enhance_simple_prompt(user_input)
 
 
+# =============================================
+# VOCAL GENERATION PIPELINE
+# =============================================
+
+def analyze_beat_for_vocals(commands):
+    """
+    Analyze beat commands to extract musical info for vocal generation.
+    Returns: tempo, key (guessed from notes), mood, structure
+    """
+    from collections import Counter
+    
+    tempo = 120  # default
+    all_pitches = []
+    timing_info = []
+    
+    # Handle both string and list input
+    if isinstance(commands, str):
+        lines = commands.split('\n')
+    elif isinstance(commands, list):
+        lines = commands
+    else:
+        lines = []
+    
+    for cmd in lines:
+        if not cmd or not isinstance(cmd, str):
+            continue
+        try:
+            if cmd.startswith('SET_TEMPO'):
+                parts = cmd.split()
+                if len(parts) >= 2:
+                    tempo = int(float(parts[1]))  # handle "120.0" format too
+            elif cmd.startswith('MIDI_INSERT_NOTE'):
+                parts = cmd.split()
+                if len(parts) >= 6:
+                    pitch = int(float(parts[2]))
+                    start = float(parts[4])
+                    end = float(parts[5])
+                    all_pitches.append(pitch)
+                    timing_info.append((start, end))
+        except (ValueError, IndexError):
+            continue  # skip malformed lines
+    
+    # Guess key from pitches (most common pitch class)
+    key = 'C'
+    if all_pitches:
+        pitch_classes = [p % 12 for p in all_pitches]
+        most_common = Counter(pitch_classes).most_common(1)
+        if most_common:
+            key_names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+            key = key_names[most_common[0][0]]
+    
+    # Calculate song length
+    song_length = 60  # default
+    if timing_info:
+        song_length = max(t[1] for t in timing_info)
+    
+    return {
+        'tempo': tempo,
+        'key': key,
+        'song_length_seconds': song_length,
+        'beat_count': int(song_length * tempo / 60),
+        'note_count': len(all_pitches)
+    }
+
+
+def generate_lyrics(topic, mood, song_structure="verse-chorus-verse-chorus-bridge-chorus", tempo=120, key="C"):
+    """
+    Generate lyrics that fit the beat.
+    Returns structured lyrics with sections.
+    """
+    
+    prompt = f"""Write song lyrics for a {mood} song about "{topic}".
+
+MUSICAL CONTEXT:
+- Tempo: {tempo} BPM
+- Key: {key}
+- Structure: {song_structure}
+
+RULES:
+1. Keep syllable count consistent within sections
+2. Make choruses catchy and repeatable
+3. Verses tell the story, choruses are the hook
+4. Keep lines short enough to sing (4-8 syllables per line typically)
+5. Include natural pauses for breath
+
+OUTPUT FORMAT:
+[VERSE 1]
+Line 1
+Line 2
+...
+
+[CHORUS]
+Line 1
+Line 2
+...
+
+[VERSE 2]
+Line 1
+Line 2
+...
+
+[BRIDGE]
+Line 1
+...
+
+Write the complete lyrics now:"""
+
+    print(f"📝 Generating lyrics: {mood} song about '{topic}'")
+    
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-5-20250929",
+            max_tokens=2000,
+            temperature=0.9,
+            messages=[{"role": "user", "content": prompt}]
+        ).content[0].text.strip()
+    except Exception as e:
+        print(f"   ❌ Lyrics API error: {e}")
+        return f"[VERSE 1]\nCouldn't generate lyrics\nPlease try again\n\n[CHORUS]\nTry again\nTry again"
+    
+    # Count sections
+    sections = response.count('[')
+    lines = len([l for l in response.split('\n') if l.strip() and not l.startswith('[')])
+    print(f"   ✅ Generated {sections} sections, {lines} lines")
+    
+    return response
+
+
+def generate_vocal_melody(lyrics, tempo=120, key="C", chord_progression=None):
+    """
+    Generate MIDI notes for a vocal melody that fits the lyrics.
+    Returns list of (pitch, duration, lyric_syllable) tuples.
+    """
+    
+    # Key to starting pitch mapping
+    key_to_pitch = {
+        'C': 60, 'C#': 61, 'D': 62, 'D#': 63, 'E': 64, 'F': 65,
+        'F#': 66, 'G': 67, 'G#': 68, 'A': 69, 'A#': 70, 'B': 71
+    }
+    root = key_to_pitch.get(key, 60)
+    
+    prompt = f"""Create a vocal melody for these lyrics. Output note data for a SINGER to perform.
+
+LYRICS:
+{lyrics}
+
+MUSICAL CONTEXT:
+- Tempo: {tempo} BPM
+- Key: {key} (root pitch = MIDI {root})
+- Beat duration: {60/tempo:.3f} seconds
+
+RULES:
+1. Stay within singable range (MIDI 55-75, roughly G3 to D5)
+2. Mostly stepwise motion (move by 1-2 semitones between notes)
+3. Longer notes on emphasized syllables
+4. Match the natural rhythm of the words
+5. Choruses should have memorable, repeatable melodies
+6. Leave space for breaths between phrases
+
+OUTPUT FORMAT (one line per note):
+VOCAL_NOTE [pitch] [duration_beats] [syllable/word]
+
+Example:
+VOCAL_NOTE 60 1.0 I
+VOCAL_NOTE 62 0.5 can't
+VOCAL_NOTE 64 1.5 feel
+VOCAL_NOTE 62 1.0 my
+VOCAL_NOTE 60 2.0 face
+
+Generate the complete vocal melody:"""
+
+    print(f"🎤 Generating vocal melody in {key} at {tempo} BPM")
+    
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-5-20250929",
+            max_tokens=8000,
+            temperature=0.8,
+            messages=[{"role": "user", "content": prompt}]
+        ).content[0].text.strip()
+    except Exception as e:
+        print(f"   ❌ Melody API error: {e}")
+        # Return minimal fallback melody
+        return [{'pitch': 60, 'start': 0, 'end': 1, 'duration_beats': 1, 'syllable': 'la'}]
+
+    # Parse the response
+    melody_data = []
+    beat_duration = 60 / tempo
+    current_time = 0.0
+    parse_errors = 0
+    
+    for line in response.split('\n'):
+        line = line.strip()
+        if line.startswith('VOCAL_NOTE'):
+            parts = line.split()
+            if len(parts) >= 4:
+                try:
+                    pitch = int(float(parts[1]))
+                    duration_beats = float(parts[2])
+                    syllable = ' '.join(parts[3:])
+                    
+                    # Sanity checks
+                    if pitch < 30 or pitch > 90:  # outside singable range
+                        pitch = max(55, min(75, pitch))  # clamp to safe range
+                    if duration_beats <= 0 or duration_beats > 16:  # unreasonable duration
+                        duration_beats = 1.0
+                    
+                    duration_sec = duration_beats * beat_duration
+                    melody_data.append({
+                        'pitch': pitch,
+                        'start': current_time,
+                        'end': current_time + duration_sec,
+                        'duration_beats': duration_beats,
+                        'syllable': syllable
+                    })
+                    current_time += duration_sec
+                except (ValueError, IndexError):
+                    parse_errors += 1
+                    continue
+    
+    if parse_errors > 0:
+        print(f"   ⚠️ Skipped {parse_errors} malformed notes")
+    print(f"   ✅ Generated {len(melody_data)} notes, {current_time:.1f}s total")
+    
+    return melody_data
+
+
+def format_for_diffsinger(lyrics, melody_data, tempo):
+    """
+    Format lyrics and melody for DiffSinger API input.
+    Returns dict ready to send to RunPod.
+    """
+    
+    # Build note sequence string
+    pitch_names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+    
+    notes = []
+    durations = []
+    syllables = []
+    
+    for note in melody_data:
+        pitch = note['pitch']
+        octave = pitch // 12 - 1
+        note_name = pitch_names[pitch % 12]
+        notes.append(f"{note_name}{octave}")
+        durations.append(f"{note['duration_beats']:.2f}")
+        syllables.append(note['syllable'])
+    
+    return {
+        'lyrics': ' '.join(syllables),
+        'notes': ' '.join(notes),
+        'durations': ' '.join(durations),
+        'tempo': tempo,
+        'note_count': len(notes),
+        'total_duration': melody_data[-1]['end'] if melody_data else 0
+    }
+
+
+def call_diffsinger_api(diffsinger_input, runpod_endpoint=None, api_key=None):
+    """
+    Call DiffSinger on RunPod to synthesize vocals.
+    Returns audio URL or local path.
+    
+    TODO: Connect to actual RunPod endpoint once model training is complete.
+    """
+    
+    if not runpod_endpoint:
+        print("⚠️ DiffSinger endpoint not configured - returning placeholder")
+        lyrics_preview = diffsinger_input.get('lyrics', '')[:100]
+        notes_preview = diffsinger_input.get('notes', '')[:50]
+        return {
+            'status': 'pending',
+            'message': 'DiffSinger model training in progress',
+            'input_preview': {
+                'lyrics': lyrics_preview + ('...' if len(lyrics_preview) >= 100 else ''),
+                'notes': notes_preview + ('...' if len(notes_preview) >= 50 else ''),
+                'tempo': diffsinger_input.get('tempo', 120)
+            }
+        }
+    
+    # When RunPod is ready, this will be:
+    # import requests
+    # response = requests.post(
+    #     f"{runpod_endpoint}/synthesize",
+    #     json=diffsinger_input,
+    #     headers={"Authorization": f"Bearer {api_key}"}
+    # )
+    # return response.json()['audio_url']
+    
+    return {'status': 'not_implemented', 'endpoint': runpod_endpoint}
+
+
+def generate_vocals_for_beat(beat_commands, topic, mood, runpod_endpoint=None):
+    """
+    FULL VOCAL PIPELINE:
+    1. Analyze beat → extract tempo, key
+    2. Generate lyrics → Claude writes words
+    3. Generate melody → Claude creates MIDI for voice
+    4. Synthesize → DiffSinger on RunPod (when ready)
+    
+    Returns all components for debugging/review.
+    """
+    
+    print("=" * 50)
+    print("🎤 VOCAL GENERATION PIPELINE")
+    print("=" * 50)
+    
+    # Step 1: Analyze the beat
+    beat_info = analyze_beat_for_vocals(beat_commands)
+    print(f"📊 Beat: {beat_info['tempo']} BPM, Key: {beat_info['key']}, Length: {beat_info['song_length_seconds']:.1f}s")
+    
+    # Step 2: Generate lyrics
+    lyrics = generate_lyrics(
+        topic=topic,
+        mood=mood,
+        tempo=beat_info['tempo'],
+        key=beat_info['key']
+    )
+    
+    # Step 3: Generate vocal melody
+    melody = generate_vocal_melody(
+        lyrics=lyrics,
+        tempo=beat_info['tempo'],
+        key=beat_info['key']
+    )
+    
+    # Step 4: Format for DiffSinger
+    diffsinger_input = format_for_diffsinger(lyrics, melody, beat_info['tempo'])
+    
+    # Step 5: Call DiffSinger (or return pending status)
+    synth_result = call_diffsinger_api(diffsinger_input, runpod_endpoint)
+    
+    print("=" * 50)
+    print("✅ VOCAL PIPELINE COMPLETE")
+    print("=" * 50)
+    
+    return {
+        'beat_info': beat_info,
+        'lyrics': lyrics,
+        'melody': melody,
+        'diffsinger_input': diffsinger_input,
+        'synthesis_result': synth_result
+    }
+
+
+# =============================================
+# FULL SONG WITH VOCALS (One Command)
+# =============================================
+
+def generate_full_song(user_prompt, runpod_endpoint=None):
+    """
+    Generate a complete song with instrumental AND vocals.
+    
+    Usage: generate_full_song("dark R&B about heartbreak")
+    
+    Returns: {
+        'beat_commands': str (Reaper commands),
+        'vocals': dict (lyrics, melody, audio)
+    }
+    """
+    
+    # Parse mood/topic from prompt
+    prompt_lower = user_prompt.lower()
+    
+    # Detect mood
+    if any(w in prompt_lower for w in ['dark', 'sad', 'emotional', 'melancholy']):
+        mood = 'dark and emotional'
+    elif any(w in prompt_lower for w in ['happy', 'upbeat', 'fun', 'party']):
+        mood = 'upbeat and energetic'
+    elif any(w in prompt_lower for w in ['chill', 'lofi', 'relaxed', 'mellow']):
+        mood = 'chill and mellow'
+    else:
+        mood = 'soulful'
+    
+    # Extract topic (everything after "about" if present)
+    topic = "life and feelings"  # default
+    if 'about' in prompt_lower:
+        parts = user_prompt.lower().split('about', 1)
+        if len(parts) > 1 and parts[1].strip():
+            topic = parts[1].strip()
+    
+    print(f"🎵 FULL SONG: {mood} | Topic: {topic}")
+    
+    # Step 1: Generate beat
+    beat_commands = generate_song_commands(user_prompt)
+    
+    # Step 2: Generate vocals
+    vocals = generate_vocals_for_beat(
+        beat_commands=beat_commands,
+        topic=topic,
+        mood=mood,
+        runpod_endpoint=runpod_endpoint
+    )
+    
+    return {
+        'beat_commands': beat_commands,
+        'vocals': vocals
+    }
+
+
 if __name__ == "__main__":
     print("=" * 50)
     print("Testing Prompt Enhancer")
@@ -520,3 +920,7 @@ if __name__ == "__main__":
     print("\nFirst 30 lines:")
     for line in result.split('\n')[:30]:
         print(f"  {line}")
+    
+    print("\n--- Test Lyrics Generation ---")
+    lyrics = generate_lyrics("lost love", "dark and emotional", tempo=85, key="Am")
+    print(lyrics[:500] + "..." if len(lyrics) > 500 else lyrics)
