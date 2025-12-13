@@ -13,6 +13,8 @@ COMMAND_FILE = BASE_DIR / "reaper_commands.txt"
 STATE_FILE   = BASE_DIR / "reaper_state.txt"
 FEEDBACK_FILE= BASE_DIR / "reaper_feedback.txt"
 LOG_FILE     = BASE_DIR / "bridge.log"
+TEMP_AUDIO_DIR = BASE_DIR / "temp_audio"
+TEMP_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
 HEADERS = {"Authorization": f"Bearer {TOKEN}"} if TOKEN else {}
 
@@ -56,8 +58,54 @@ def sse_connect():
 def write_commands(cmds):
     if not isinstance(cmds, list):
         cmds = [cmds]
+
+    # Rewrite ELEVEN_VOCALS into INSERT_AUDIO by calling cloud bytes endpoint.
+    # This prevents Reaper Lua from ever seeing the unknown ELEVEN_VOCALS command.
+    processed = []
+    for c in cmds:
+        line = (c or "").strip()
+        if not line:
+            continue
+        if line.startswith("ELEVEN_VOCALS"):
+            # ELEVEN_VOCALS <trackIdx> <startTime> <json_payload>
+            parts = line.split(maxsplit=3)
+            if len(parts) >= 4:
+                track_idx = parts[1]
+                start_time = parts[2]
+                payload_raw = parts[3].strip()
+                try:
+                    payload = json.loads(payload_raw)
+                    if not isinstance(payload, dict):
+                        raise ValueError("payload must be JSON object")
+                    payload.setdefault("session_id", "demo")
+
+                    # Call the server that local_bridge.pyw is connected to
+                    url = f"{SERVER}/api/vocals/elevenlabs"
+                    log(f"[ELEVEN] requesting vocals bytes: {url}")
+                    r = requests.post(url, headers=HEADERS, json=payload, timeout=180)
+                    r.raise_for_status()
+                    audio_bytes = r.content
+                    if not audio_bytes or len(audio_bytes) < 1024:
+                        raise ValueError("empty audio bytes returned")
+
+                    fname = r.headers.get("X-Filename") or f"vocals_{int(time.time())}.mp3"
+                    safe_name = fname.replace("/", "_").replace("\\", "_")
+                    out_path = (TEMP_AUDIO_DIR / safe_name).resolve()
+                    out_path.write_bytes(audio_bytes)
+                    log(f"[ELEVEN] saved {out_path} ({len(audio_bytes)} bytes)")
+
+                    processed.append(f'INSERT_AUDIO {track_idx} "{out_path}" {start_time}')
+                except Exception as e:
+                    log(f"[ELEVEN] failed: {e}")
+                    # Keep original command for debugging
+                    processed.append(line)
+            else:
+                processed.append(line)
+        else:
+            processed.append(line)
+
     with open(COMMAND_FILE, "w", encoding="utf-8") as f:
-        for c in cmds:
+        for c in processed:
             f.write(c.strip() + "\n")
 
 def read_text(path: Path) -> str:

@@ -4,7 +4,7 @@ from typing import Optional, Dict, Any, List
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, Header, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, Response
 from pydantic import BaseModel
 from dotenv import load_dotenv
 import asyncio
@@ -49,6 +49,73 @@ class ReportIn(BaseModel):
 class AdminCmd(BaseModel):
     session_id: str
     command: Dict[str, Any]  # {"id":"s1","action":"ADD_FX", ...}
+
+
+# -------------------- ElevenLabs vocals-only --------------------
+class ElevenVoxRequest(BaseModel):
+    session_id: str = "demo"
+    lyrics: str
+    tempo: int = 120
+    key: str = "C"
+    mood: str = "soulful"
+    melody_midi: Optional[List[int]] = None
+    music_length_ms: Optional[int] = None
+
+
+@app.post("/api/vocals/elevenlabs")
+def elevenlabs_vocals_bytes(body: ElevenVoxRequest):
+    """
+    Generate VOCALS-ONLY (a cappella) via ElevenLabs Eleven Music and return MP3 bytes directly.
+
+    This is the Option-B transport you chose: cloud returns bytes; local bridge saves to a file
+    and then Reaper Lua imports it with INSERT_AUDIO.
+    """
+    try:
+        from elevenlabs_vocals import VocalBrief, build_vocals_prompt, compose_vocals_mp3
+
+        brief = VocalBrief(
+            lyrics=body.lyrics,
+            bpm=int(body.tempo) if body.tempo else None,
+            key=body.key,
+            style=body.mood,
+            melody_midi=body.melody_midi,
+            voice_tags=["lead vocal", "a cappella", "vocals only"],
+        )
+        prompt = build_vocals_prompt(brief)
+        length_ms = body.music_length_ms
+        if length_ms is None:
+            # Rough default: 30 seconds
+            length_ms = 30000
+
+        audio_bytes, filename, meta = compose_vocals_mp3(
+            prompt=prompt,
+            length_ms=int(length_ms),
+            retries=3,
+            retry_backoff_s=1.5,
+        )
+
+        add_event(
+            "elevenlabs_vocals_generated",
+            {
+                "filename": filename,
+                "bytes": len(audio_bytes),
+                "tempo": body.tempo,
+                "key": body.key,
+            },
+            session_id=body.session_id,
+        )
+
+        # Return raw MP3 bytes
+        return Response(
+            content=audio_bytes,
+            media_type="audio/mpeg",
+            headers={
+                "X-Filename": filename,
+                "X-Bytes": str(len(audio_bytes)),
+            },
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # -------------------- Health --------------------
 @app.get("/health")
@@ -569,6 +636,106 @@ def lyrics_pending(session_id: str = "demo"):
         PENDING_LYRICS[session_id] = []
         return {"lyrics": pending}
     return {"lyrics": []}
+
+# -------------------- Vocal Generation Pipeline --------------------
+class VocalsRequest(BaseModel):
+    session_id: str = "demo"
+    topic: str = "life and feelings"
+    mood: str = "emotional"
+    beat_commands: Optional[str] = None  # If provided, use these. Otherwise generate new beat.
+    beat_prompt: Optional[str] = None    # If no beat_commands, generate from this prompt
+    runpod_endpoint: Optional[str] = None  # DiffSinger RunPod URL (when ready)
+    experiment_name: Optional[str] = None  # Name of trained DiffSinger model (for local inference)
+    use_local: bool = True  # Try local inference if experiment_name provided
+
+@app.post("/api/vocals/generate")
+def generate_vocals_endpoint(body: VocalsRequest):
+    """
+    Generate vocals for a beat:
+    1. If beat_commands provided, use those
+    2. Otherwise generate beat from beat_prompt
+    3. Generate lyrics fitting the beat
+    4. Generate vocal melody
+    5. (When ready) Call DiffSinger on RunPod
+    
+    Returns all components for review/debugging.
+    """
+    try:
+        from prompt_enhancer import (
+            generate_song_commands,
+            generate_vocals_for_beat,
+            generate_lyrics,
+            generate_vocal_melody,
+            analyze_beat_for_vocals,
+            format_for_diffsinger
+        )
+        
+        # Step 1: Get or generate beat
+        if body.beat_commands:
+            beat_commands = body.beat_commands
+            print(f"🎵 Using provided beat commands ({len(beat_commands.split(chr(10)))} lines)")
+        elif body.beat_prompt:
+            print(f"🎵 Generating beat from: {body.beat_prompt}")
+            beat_commands = generate_song_commands(body.beat_prompt)
+        else:
+            # Generate a default beat
+            beat_commands = generate_song_commands(f"a {body.mood} instrumental track")
+        
+        # Step 2: Generate vocals
+        vocals = generate_vocals_for_beat(
+            beat_commands=beat_commands,
+            topic=body.topic,
+            mood=body.mood,
+            runpod_endpoint=body.runpod_endpoint,
+            experiment_name=body.experiment_name,
+            use_local=body.use_local
+        )
+        
+        add_event("vocals_generated", {
+            "topic": body.topic,
+            "mood": body.mood,
+            "note_count": len(vocals.get('melody', [])),
+            "lyrics_preview": vocals.get('lyrics', '')[:200]
+        }, session_id=body.session_id)
+        
+        return {
+            "status": "success",
+            "beat_commands": beat_commands,
+            "vocals": vocals
+        }
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {
+            "status": "error",
+            "error": str(e)
+        }
+
+@app.post("/api/vocals/lyrics_only")
+def generate_lyrics_only(topic: str, mood: str = "emotional", tempo: int = 120, key: str = "C"):
+    """Generate just lyrics (no beat or melody)"""
+    try:
+        from prompt_enhancer import generate_lyrics
+        lyrics = generate_lyrics(topic, mood, tempo=tempo, key=key)
+        return {"status": "success", "lyrics": lyrics}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+@app.post("/api/vocals/melody_only")  
+def generate_melody_only(lyrics: str, tempo: int = 120, key: str = "C"):
+    """Generate vocal melody for existing lyrics"""
+    try:
+        from prompt_enhancer import generate_vocal_melody, format_for_diffsinger
+        melody = generate_vocal_melody(lyrics, tempo=tempo, key=key)
+        diffsinger_input = format_for_diffsinger(lyrics, melody, tempo)
+        return {
+            "status": "success", 
+            "melody": melody,
+            "diffsinger_input": diffsinger_input
+        }
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
 
 @app.post("/api/upload/audio")
 async def upload_audio(session_id: str = "demo", track_idx: Optional[str] = None, file: UploadFile = File(...)):

@@ -306,6 +306,45 @@ def process_commands_locally(cmd_text):
                 print(f"   📤 Export: track {track} -> {local_path}")
             else:
                 processed.append(line)
+
+        elif line.startswith('ELEVEN_VOCALS'):
+            # ELEVEN_VOCALS <trackIdx> <startTime> <json_payload>
+            # Local bridge calls cloud /api/vocals/elevenlabs to fetch MP3 bytes,
+            # saves to temp_audio, then rewrites to INSERT_AUDIO for Lua.
+            #
+            # Example:
+            # ELEVEN_VOCALS 1 0.0 {"session_id":"demo","lyrics":"...","tempo":140,"key":"C","mood":"reflective"}
+            parts = line.split(maxsplit=3)
+            if len(parts) >= 4:
+                track_idx = parts[1]
+                start_time = parts[2]
+                payload_raw = parts[3].strip()
+                try:
+                    payload = json.loads(payload_raw)
+                    if not isinstance(payload, dict):
+                        raise ValueError("payload must be JSON object")
+                    payload.setdefault("session_id", SESSION_ID)
+
+                    url = f"{CLOUD_URL}/api/vocals/elevenlabs"
+                    print(f"🎤 [ELEVEN] Requesting vocals-only MP3 from cloud...")
+                    r = requests.post(url, json=payload, timeout=180)
+                    r.raise_for_status()
+                    audio_bytes = r.content
+                    if not audio_bytes or len(audio_bytes) < 1024:
+                        raise ValueError("Empty audio bytes returned")
+
+                    fname = r.headers.get("X-Filename") or f"vocals_{int(time.time())}.mp3"
+                    safe_name = fname.replace("/", "_").replace("\\", "_")
+                    out_path = (TEMP_AUDIO_DIR / safe_name).resolve()
+                    out_path.write_bytes(audio_bytes)
+                    print(f"✅ [ELEVEN] Saved: {out_path} ({len(audio_bytes)/1024:.1f} KB)")
+
+                    processed.append(f'INSERT_AUDIO {track_idx} "{out_path}" {start_time}')
+                except Exception as e:
+                    print(f"⚠️ [ELEVEN] Failed to generate/download vocals: {e}")
+                    processed.append(line)
+            else:
+                processed.append(line)
         
         else:
             processed.append(line)
@@ -344,7 +383,7 @@ def poll_commands():
                             cmd_text = raw[1:-1]
                     
                     # Process commands locally (resolve sample IDs, convert cloud paths)
-                    if any(kw in cmd_text for kw in ['USE_SAMPLE', 'DRUM_SAMPLE', 'LOAD_SAMPLER', 'EXPORT_AUDIO']):
+                    if any(kw in cmd_text for kw in ['USE_SAMPLE', 'DRUM_SAMPLE', 'LOAD_SAMPLER', 'EXPORT_AUDIO', 'ELEVEN_VOCALS']):
                         print(f"[BRIDGE] Processing commands locally...")
                         cmd_text = process_commands_locally(cmd_text)
                     
