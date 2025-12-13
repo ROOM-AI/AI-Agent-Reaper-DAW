@@ -497,7 +497,15 @@ def enhance_prompt(user_input, reaper_state="", midi_notes=None):
     mode = classify_request(user_input)
     
     if mode == "song_generation":
-        print(f"🎵 SONG MODE - Creating from scratch")
+        print(f"🎵 SONG MODE - Full song (instrumental + vocals trigger)")
+        # IMPORTANT: In song mode we want the prompt enhancer to do everything:
+        # - generate instrumental commands
+        # - generate lyrics + melody (for brief)
+        # - append ELEVEN_VOCALS so the local bridge triggers ElevenLabs and imports into Reaper
+        result = generate_full_song(user_input, use_local=False)
+        if isinstance(result, dict) and isinstance(result.get("beat_commands"), str):
+            return result["beat_commands"]
+        # Fallback: instrumental only
         return generate_song_commands(user_input)
     elif mode == "compose_around":
         print(f"🎼 COMPOSE AROUND MODE - Building on existing MIDI")
@@ -997,8 +1005,16 @@ Match the energy and vibe of the beat.
     # Step 5: Format (legacy DiffSinger input) - kept for debugging / compatibility
     diffsinger_input = format_for_diffsinger(lyrics, melody, beat_info['tempo'])
 
-    # Step 6: Synthesize vocals
-    if engine == "elevenlabs":
+    # Step 6: Synthesize vocals (optional)
+    # In the current cloud→local bridge architecture, we often only want a "vocal brief"
+    # here and let the local bridge trigger ElevenLabs via ELEVEN_VOCALS.
+    if engine == "brief":
+        synth_result = {
+            "status": "skipped",
+            "method": "brief_only",
+            "message": "Synthesis skipped (brief-only). Bridge will trigger ElevenLabs via ELEVEN_VOCALS.",
+        }
+    elif engine == "elevenlabs":
         try:
             # Try to infer length from melody timing
             length_ms = None
@@ -1095,19 +1111,61 @@ def generate_full_song(user_prompt, runpod_endpoint=None, experiment_name=None, 
     # Step 1: Generate beat
     beat_commands = generate_song_commands(user_prompt)
     
-    # Step 2: Generate vocals
+    # Step 2: Generate vocal brief (lyrics + melody + beat_info). Do NOT synthesize here.
+    # The bridge will synthesize via ELEVEN_VOCALS and import into Reaper.
     vocals = generate_vocals_for_beat(
         beat_commands=beat_commands,
         topic=topic,
         mood=mood,
         runpod_endpoint=runpod_endpoint,
         experiment_name=experiment_name,
-        use_local=use_local
+        use_local=use_local,
+        engine="brief",
+        original_prompt=user_prompt,
     )
-    
+
+    # Step 3: Append ELEVEN_VOCALS command so the local bridge can fetch bytes
+    # and rewrite into INSERT_AUDIO 1 "<local_mp3_path>" 0.0 before Lua sees it.
+    #
+    # This makes "prompt enhancer does everything" true: beat + vocals import trigger.
+    try:
+        beat_info = vocals.get("beat_info", {}) if isinstance(vocals, dict) else {}
+        tempo = int(beat_info.get("tempo") or 120)
+        key = str(beat_info.get("key") or "C")
+        lyrics_text = str((vocals.get("lyrics") or "") if isinstance(vocals, dict) else "")
+
+        # Prefer melody-derived duration, else default 30s
+        music_length_ms = 30000
+        melody = vocals.get("melody") if isinstance(vocals, dict) else None
+        if isinstance(melody, list) and melody:
+            try:
+                music_length_ms = int(max(0.0, melody[-1].get("end", 0.0)) * 1000)
+            except Exception:
+                music_length_ms = 30000
+
+        # Keep the payload minimal and safe for JSON-in-command-line
+        payload = {
+            "session_id": "demo",
+            "lyrics": lyrics_text,
+            "tempo": tempo,
+            "key": key,
+            "mood": mood,
+            "music_length_ms": music_length_ms,
+        }
+        import json as _json
+        eleven_cmd = f"ELEVEN_VOCALS 1 0.0 {_json.dumps(payload, ensure_ascii=False)}"
+
+        # Append to the command script
+        beat_commands_with_vocals = beat_commands.rstrip() + "\n\n" + eleven_cmd + "\n"
+    except Exception:
+        beat_commands_with_vocals = beat_commands
+
     return {
-        'beat_commands': beat_commands,
-        'vocals': vocals
+        # Backward compatible fields
+        'beat_commands': beat_commands_with_vocals,
+        'vocals': vocals,
+        # Extra debug
+        'beat_commands_instrumental_only': beat_commands,
     }
 
 
