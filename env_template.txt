@@ -9,6 +9,9 @@ OPENAI_API_KEY=sk-proj-YOUR-KEY-HERE
 # Optional: For cloud deployment
 # CLOUD_URL=https://your-deployed-service.run.app
 
+# Required for ElevenLabs Eleven Music (vocals generation)
+ELEVENLABS_API_KEY=sk_...YOUR-KEY-HERE
+
 
 
 

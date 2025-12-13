@@ -82,7 +82,11 @@ def write_commands(cmds):
                     # Call the server that local_bridge.pyw is connected to
                     url = f"{SERVER}/api/vocals/elevenlabs"
                     log(f"[ELEVEN] requesting vocals bytes: {url}")
-                    r = requests.post(url, headers=HEADERS, json=payload, timeout=180)
+                    headers = dict(HEADERS)
+                    agent_key = os.getenv("AGENT_API_KEY", "")
+                    if agent_key:
+                        headers["X-API-KEY"] = agent_key
+                    r = requests.post(url, headers=headers, json=payload, timeout=180)
                     r.raise_for_status()
                     audio_bytes = r.content
                     if not audio_bytes or len(audio_bytes) < 1024:

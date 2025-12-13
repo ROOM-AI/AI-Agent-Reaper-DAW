@@ -2,7 +2,7 @@ import os, time, json
 from collections import defaultdict, deque
 from typing import Optional, Dict, Any, List
 from pathlib import Path
-from fastapi import FastAPI, HTTPException, Header, UploadFile, File
+from fastapi import FastAPI, HTTPException, Header, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse, Response
 from pydantic import BaseModel
@@ -63,13 +63,19 @@ class ElevenVoxRequest(BaseModel):
 
 
 @app.post("/api/vocals/elevenlabs")
-def elevenlabs_vocals_bytes(body: ElevenVoxRequest):
+def elevenlabs_vocals_bytes(body: ElevenVoxRequest, request: Request):
     """
     Generate VOCALS-ONLY (a cappella) via ElevenLabs Eleven Music and return MP3 bytes directly.
 
     This is the Option-B transport you chose: cloud returns bytes; local bridge saves to a file
     and then Reaper Lua imports it with INSERT_AUDIO.
     """
+    # Optional auth: if AGENT_API_KEY is set, require header X-API-KEY
+    if API_KEY:
+        x_api_key = request.headers.get("X-API-KEY", "")
+        if x_api_key != API_KEY:
+            raise HTTPException(status_code=401, detail="bad api key")
+
     try:
         from elevenlabs_vocals import VocalBrief, build_vocals_prompt, compose_vocals_mp3
 

@@ -327,7 +327,12 @@ def process_commands_locally(cmd_text):
 
                     url = f"{CLOUD_URL}/api/vocals/elevenlabs"
                     print(f"🎤 [ELEVEN] Requesting vocals-only MP3 from cloud...")
-                    r = requests.post(url, json=payload, timeout=180)
+                    headers = {}
+                    # Optional: if you protect cloud with AGENT_API_KEY, set AGENT_API_KEY locally too.
+                    agent_key = os.getenv("AGENT_API_KEY", "")
+                    if agent_key:
+                        headers["X-API-KEY"] = agent_key
+                    r = requests.post(url, json=payload, timeout=180, headers=headers)
                     r.raise_for_status()
                     audio_bytes = r.content
                     if not audio_bytes or len(audio_bytes) < 1024:
