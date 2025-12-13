@@ -219,7 +219,7 @@ try:
         print(f"🥁 Drum index loaded: {total} samples")
 except ImportError:
     DRUMS_AVAILABLE = False
-    print("⚠️ Drum index not available - run: python drum_index.py D:\\")
+    print("⚠️ Drum index not available - run: python drum_index.py F:\\")
 
 def resolve_sample_id(sample_id):
     """Get full file path by sample ID"""
@@ -227,6 +227,15 @@ def resolve_sample_id(sample_id):
         return None
     
     path = get_path_by_id(sample_id)
+    # If index was built on D:\ but samples are now on F:\, try drive-swap fallback.
+    try:
+        if path and isinstance(path, str) and len(path) >= 3 and path[1:3] == ":\\":
+            if path[0].upper() == "D" and not Path(path).exists():
+                alt = "F" + path[1:]
+                if Path(alt).exists():
+                    path = alt
+    except Exception:
+        pass
     if path:
         print(f"   🥁 Resolved ID {sample_id}: {os.path.basename(path)}")
     return path

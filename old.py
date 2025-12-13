@@ -3,11 +3,13 @@ import time
 import os
 import re
 import shutil
+import requests
 import numpy as np
 import heapq
 import math
 from pathlib import Path
 from contextlib import contextmanager
+from typing import Optional
 from anthropic import Anthropic
 from openai import OpenAI
 from scipy.spatial.distance import cosine, euclidean
@@ -64,6 +66,73 @@ BASE_DIR.mkdir(parents=True, exist_ok=True)
 
 # Announce chosen IO directory once (helps align with bridge)
 print(f"📁 Using IO directory: {BASE_DIR}")
+
+# Optional: if running locally (no cloud sink), we can still trigger ElevenLabs by calling the cloud
+# bytes endpoint, then saving MP3 locally and rewriting ELEVEN_VOCALS -> INSERT_AUDIO for Lua.
+CLOUD_URL = os.getenv("CLOUD_URL", "").strip().rstrip("/")
+AGENT_API_KEY = os.getenv("AGENT_API_KEY", "").strip()
+
+
+def _maybe_swap_drive(path_str: str) -> str:
+    """If a Windows path points to D:\\ but file is missing, try the same path on F:\\""" 
+    try:
+        if not path_str:
+            return path_str
+        p = str(path_str)
+        # Only handle absolute Windows drive paths
+        if len(p) >= 3 and p[1:3] == ":\\":
+            if p[0].upper() == "D" and not Path(p).exists():
+                alt = "F" + p[1:]
+                if Path(alt).exists():
+                    return alt
+        return path_str
+    except Exception:
+        return path_str
+
+
+def _rewrite_eleven_vocals_to_insert_audio(line: str) -> Optional[str]:
+    """
+    ELEVEN_VOCALS <trackIdx> <startTime> <json_payload>
+    -> INSERT_AUDIO <trackIdx> "<local_mp3_path>" <startTime>
+    Returns None if not an ELEVEN_VOCALS line.
+    Raises on malformed payload / network failures.
+    """
+    line = (line or "").strip()
+    if not line.startswith("ELEVEN_VOCALS"):
+        return None
+    parts = line.split(maxsplit=3)
+    if len(parts) < 4:
+        raise ValueError("Bad ELEVEN_VOCALS format (expected: ELEVEN_VOCALS <trackIdx> <startTime> <json_payload>)")
+    track_idx = parts[1]
+    start_time = parts[2]
+    payload_raw = parts[3].strip()
+    payload = json.loads(payload_raw)
+    if not isinstance(payload, dict):
+        raise ValueError("ELEVEN_VOCALS payload must be a JSON object")
+
+    # Prefer calling cloud endpoint (so ELEVENLABS_API_KEY can stay in Cloud Run)
+    if not CLOUD_URL:
+        raise RuntimeError("CLOUD_URL is not set; cannot fetch ElevenLabs bytes from cloud.")
+
+    headers = {}
+    if AGENT_API_KEY:
+        headers["X-API-KEY"] = AGENT_API_KEY
+
+    url = f"{CLOUD_URL}/api/vocals/elevenlabs"
+    print(f"🎤 [ELEVEN] Fetching vocals bytes from cloud: {url}")
+    r = requests.post(url, json=payload, headers=headers, timeout=180)
+    r.raise_for_status()
+    audio_bytes = r.content
+    if not audio_bytes or len(audio_bytes) < 1024:
+        raise RuntimeError("Cloud returned empty/invalid audio bytes for vocals.")
+
+    fname = r.headers.get("X-Filename") or f"vocals_{int(time.time())}.mp3"
+    safe_name = fname.replace("/", "_").replace("\\", "_")
+    out_path = (Path(TEMP_AUDIO_DIR) / safe_name).resolve()
+    out_path.write_bytes(audio_bytes)
+    print(f"✅ [ELEVEN] Saved: {out_path} ({len(audio_bytes)/1024:.1f} KB)")
+
+    return f'INSERT_AUDIO {track_idx} "{out_path}" {start_time}'
 
 # File locations
 COMMAND_FILE = str(BASE_DIR / "reaper_commands.txt")
@@ -1382,11 +1451,44 @@ def send_reaper_commands(commands):
             return bool(ok)
 
         # Fallback to local file write (bridge/Lua)
+        rewritten: list[str] = []
+        for cmd in commands:
+            if cmd is None:
+                continue
+            cmd_str = str(cmd).strip()
+            if not cmd_str:
+                continue
+
+            # Rewrite ELEVEN_VOCALS -> INSERT_AUDIO by fetching bytes + saving locally.
+            if cmd_str.startswith("ELEVEN_VOCALS"):
+                try:
+                    new_cmd = _rewrite_eleven_vocals_to_insert_audio(cmd_str)
+                    if new_cmd:
+                        rewritten.append(new_cmd)
+                except Exception as e:
+                    # IMPORTANT: never pass ELEVEN_VOCALS through to Lua.
+                    print(f"⚠️ [ELEVEN] Failed to fetch vocals; dropping command. Error: {e}")
+                continue
+
+            # Opportunistic D:\ -> F:\ fallback for any quoted audio paths (INSERT_AUDIO / LOAD_SAMPLER)
+            try:
+                # Replace only inside the first quoted string, if present
+                m = re.search(r"\"([A-Za-z]:\\\\[^\"]+)\"", cmd_str)
+                if m:
+                    orig_path = m.group(1)
+                    fixed_path = _maybe_swap_drive(orig_path)
+                    if fixed_path != orig_path:
+                        cmd_str = cmd_str.replace(f"\"{orig_path}\"", f"\"{fixed_path}\"", 1)
+            except Exception:
+                pass
+
+            rewritten.append(cmd_str)
+
         with open(COMMAND_FILE, 'w') as f:
-            for cmd in commands:
+            for cmd in rewritten:
                 f.write(cmd + '\n')
         time.sleep(0.3)
-        log_debug(f"Sent: {commands}")
+        log_debug(f"Sent: {rewritten}")
         return True
     except Exception as e:
         log_debug(f"Send error: {e}")

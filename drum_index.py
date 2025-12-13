@@ -19,7 +19,7 @@ CATEGORIES = {
 }
 
 
-def build_index(root_path="D:\\", max_per_category=30):
+def build_index(root_path="F:\\", max_per_category=30):
     """Build ID-based index. Limited samples per category to keep cloud prompt small."""
     print(f"[SCAN] Building drum index from {root_path}...")
     
@@ -90,7 +90,7 @@ def get_cloud_summary():
     """
     index = load_index()
     if not index:
-        return "No drum index. Run: python drum_index.py D:\\"
+        return "No drum index. Run: python drum_index.py F:\\"
     
     lines = []
     for cat, ids in index["by_category"].items():
@@ -113,7 +113,7 @@ def get_cloud_summary():
 
 if __name__ == "__main__":
     import sys
-    path = sys.argv[1] if len(sys.argv) > 1 else "D:\\"
+    path = sys.argv[1] if len(sys.argv) > 1 else "F:\\"
     build_index(path)
     
     print("\n" + "="*50)
