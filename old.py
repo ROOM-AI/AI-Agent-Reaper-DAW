@@ -121,7 +121,16 @@ def _rewrite_eleven_vocals_to_insert_audio(line: str) -> Optional[str]:
     url = f"{CLOUD_URL}/api/vocals/elevenlabs"
     print(f"🎤 [ELEVEN] Fetching vocals bytes from cloud: {url}")
     r = requests.post(url, json=payload, headers=headers, timeout=180)
-    r.raise_for_status()
+    try:
+        r.raise_for_status()
+    except requests.HTTPError as he:
+        body_preview = ""
+        try:
+            body_preview = (r.text or "")[:1200]
+        except Exception:
+            body_preview = ""
+        print(f"⚠️ [ELEVEN] Cloud returned HTTP {r.status_code}. Body: {body_preview}")
+        raise he
     audio_bytes = r.content
     if not audio_bytes or len(audio_bytes) < 1024:
         raise RuntimeError("Cloud returned empty/invalid audio bytes for vocals.")
@@ -6556,11 +6565,24 @@ def execute_user_command(user_input):
     
     print(f"\n🎤 User: {user_input}")
     
-    # Check if input is already a list of commands (from song generation)
-    # If it has multiple lines starting with known command patterns, execute directly
+    # Check if input is already a list of commands (from song generation) OR a single raw command.
+    # If it has lines starting with known command patterns, execute directly.
     lines = [l.strip() for l in user_input.split('\n') if l.strip()]
-    command_patterns = ['INSERT_INSTRUMENT', 'MIDI_INSERT_NOTE', 'MIDI_CREATE_ITEM', 'SET_TEMPO', 'INSERT_FX', 'SELECT_TRACK', 'USE_SAMPLE', 'INSERT_AUDIO', 'VOL_DIP', 'LOAD_SAMPLER']
-    is_command_list = len(lines) > 5 and sum(1 for l in lines if any(l.startswith(p) for p in command_patterns)) > len(lines) * 0.7
+    command_patterns = [
+        'INSERT_INSTRUMENT',
+        'MIDI_INSERT_NOTE',
+        'MIDI_CREATE_ITEM',
+        'SET_TEMPO',
+        'INSERT_FX',
+        'SELECT_TRACK',
+        'USE_SAMPLE',
+        'INSERT_AUDIO',
+        'VOL_DIP',
+        'LOAD_SAMPLER',
+        'ELEVEN_VOCALS',
+    ]
+    cmd_lines = sum(1 for l in lines if any(l.startswith(p) for p in command_patterns))
+    is_command_list = (len(lines) >= 1) and (cmd_lines >= max(1, int(len(lines) * 0.7)))
     
     if is_command_list:
         print(f"🎵 Direct command execution mode - {len(lines)} commands detected")
