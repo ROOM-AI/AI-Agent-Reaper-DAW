@@ -11,6 +11,7 @@ Local bridge should only ever download / save the returned bytes.
 from __future__ import annotations
 
 import os
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple, List
@@ -30,6 +31,43 @@ class VocalBrief:
     voice_tags: Optional[List[str]] = None  # e.g. ["male vocals", "dark r&b"]
 
 
+# Claude can see artist-name vibes, but ElevenLabs should not receive artist names.
+# Keep this list short and add more only if you see bad_prompt failures.
+_BANNED_NAME_PATTERNS = [
+    r"\bthe\s+weeknd\b",
+    r"\bweeknd\b",
+]
+
+_LIKE_PATTERNS = [
+    r"\b(sounds?\s+like|in\s+the\s+style\s+of|like)\s+([A-Z][\w'’\-]+(?:\s+[A-Z][\w'’\-]+){0,5})",
+]
+
+
+def sanitize_for_elevenlabs(text: str) -> str:
+    """
+    Remove/neutralize artist-name references before sending prompts to ElevenLabs.
+    Conservative: strip names, keep descriptive adjectives.
+    """
+    if not text:
+        return ""
+    out = str(text)
+
+    # Remove quoted references: "The Weeknd", 'Taylor Swift', etc.
+    out = re.sub(r"['\"]{1}[^'\"]{1,80}['\"]{1}", "", out)
+
+    # Remove "like X" / "style of X" patterns
+    for pat in _LIKE_PATTERNS:
+        out = re.sub(pat, "", out, flags=re.IGNORECASE)
+
+    # Remove explicit banned tokens
+    for pat in _BANNED_NAME_PATTERNS:
+        out = re.sub(pat, "", out, flags=re.IGNORECASE)
+
+    # Collapse whitespace
+    out = re.sub(r"\s{2,}", " ", out).strip(" ,.-;\n\t")
+    return out.strip()
+
+
 def build_vocals_prompt(brief: VocalBrief) -> str:
     """
     Build a short, strict prompt for vocals-only generation.
@@ -38,9 +76,9 @@ def build_vocals_prompt(brief: VocalBrief) -> str:
     """
     style_bits: List[str] = []
     if brief.style:
-        style_bits.append(brief.style.strip())
+        style_bits.append(sanitize_for_elevenlabs(brief.style.strip()))
     if brief.voice_tags:
-        style_bits.extend([t.strip() for t in brief.voice_tags if t and t.strip()])
+        style_bits.extend([sanitize_for_elevenlabs(t.strip()) for t in brief.voice_tags if t and t.strip()])
 
     meta_bits: List[str] = []
     if brief.bpm:
@@ -77,7 +115,7 @@ def build_vocals_prompt(brief: VocalBrief) -> str:
         meta_line,
         style_line,
         "Sing these lyrics exactly (do not add new lines unless needed for phrasing):",
-        brief.lyrics.strip(),
+        sanitize_for_elevenlabs(brief.lyrics.strip()),
     ]
     prompt = "\n".join([p for p in prompt_parts if p])
     if melody_hint:
