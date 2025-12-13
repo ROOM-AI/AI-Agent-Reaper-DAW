@@ -101,10 +101,12 @@ def write_commands(cmds):
                     processed.append(f'INSERT_AUDIO {track_idx} "{out_path}" {start_time}')
                 except Exception as e:
                     log(f"[ELEVEN] failed: {e}")
-                    # Keep original command for debugging
-                    processed.append(line)
+                    # IMPORTANT: never pass ELEVEN_VOCALS through to Lua, or Reaper will log "Unknown command".
+                    # Drop the command on failure; user can retry once fixed.
+                    continue
             else:
-                processed.append(line)
+                log("[ELEVEN] bad ELEVEN_VOCALS format; dropping")
+                continue
         else:
             processed.append(line)
 

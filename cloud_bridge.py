@@ -347,9 +347,13 @@ def process_commands_locally(cmd_text):
                     processed.append(f'INSERT_AUDIO {track_idx} "{out_path}" {start_time}')
                 except Exception as e:
                     print(f"⚠️ [ELEVEN] Failed to generate/download vocals: {e}")
-                    processed.append(line)
+                    # IMPORTANT: never pass ELEVEN_VOCALS through to Lua, or Reaper will log "Unknown command".
+                    # Drop the command on failure; the user can re-run once the issue is fixed.
+                    continue
             else:
-                processed.append(line)
+                # Bad format; drop it so Lua never sees it
+                print("⚠️ [ELEVEN] Bad ELEVEN_VOCALS format; dropping command.")
+                continue
         
         else:
             processed.append(line)
