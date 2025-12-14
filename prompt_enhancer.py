@@ -1337,53 +1337,41 @@ def generate_el1_fullsong(song_description: str) -> str:
     """
     EL1 Mode: Generate full song with ElevenLabs + split into stems.
     
-    Flow:
-    1. Claude generates lyrics based on description
-    2. Returns EL1_SONG command which the bridge will:
-       - Send to ElevenLabs for full song generation
-       - Separate into stems
-       - Import all stems to Reaper tracks
+    Claude ONLY writes lyrics. ElevenLabs decides everything else (key, tempo, genre, style).
+    This is the "auto" mode - minimal control, maximum creative freedom for ElevenLabs.
     
     Args:
         song_description: What the song should be about (already stripped of "EL1" prefix)
     
     Returns:
-        Commands including EL1_SONG with full payload
+        Commands including EL1_SONG with lyrics payload
     """
     import json
     
-    print(f"🎵 [EL1] Generating full song for: {song_description[:100]}...")
+    print(f"🎵 [EL1] Generating lyrics for: {song_description[:100]}...")
     
-    # Step 1: Have Claude generate lyrics and suggest musical style
+    # Claude ONLY writes lyrics - ElevenLabs handles everything else
     lyrics_prompt = f"""You are a professional songwriter. Write lyrics for a song with this theme:
 
 "{song_description}"
 
-Also suggest the best musical style for these lyrics.
-
 Respond in this EXACT JSON format:
 {{
     "lyrics": "verse 1 lyrics here\\n\\nchorus lyrics here\\n\\nverse 2 lyrics here\\n\\nchorus lyrics here",
-    "genre": "pop rock",
-    "mood": "uplifting, energetic",
-    "tempo": 120,
-    "key": "G major",
-    "vocal_style": "male",
     "title": "Song Title Here"
 }}
 
 Guidelines:
-- Lyrics should be 2-3 minutes when sung (2 verses, chorus, maybe bridge)
-- Genre should match the vibe of the description
-- Tempo 80-160 BPM depending on energy
-- vocal_style: "male", "female", or "mixed"
-- Make the lyrics emotional, authentic, and memorable"""
+- Write 2-3 minutes of lyrics (2 verses, chorus, maybe bridge)
+- Make the lyrics emotional, authentic, and memorable
+- Match the vibe and feeling of what the user asked for
+- ONLY provide lyrics and title - nothing else"""
 
     try:
         response = client.messages.create(
             model="claude-opus-4-20250514",
             max_tokens=2000,
-            temperature=0.8,
+            temperature=0.9,
             messages=[{"role": "user", "content": lyrics_prompt}]
         )
         response_text = response.content[0].text.strip()
@@ -1398,50 +1386,29 @@ Guidelines:
             
     except Exception as e:
         print(f"⚠️ [EL1] Failed to generate lyrics: {e}")
-        # Fallback with defaults
+        # Fallback
         song_data = {
             "lyrics": f"Verse about {song_description}\n\nChorus about {song_description}",
-            "genre": "pop",
-            "mood": "emotional",
-            "tempo": 120,
-            "key": "C major",
-            "vocal_style": "mixed",
             "title": "Untitled"
         }
     
     print(f"✅ [EL1] Generated lyrics for '{song_data.get('title', 'Untitled')}'")
-    print(f"   Genre: {song_data.get('genre')}, Tempo: {song_data.get('tempo')} BPM")
     
-    # Step 2: Build EL1_SONG command payload
-    # This will be processed by the local bridge
+    # EL1 payload: ONLY lyrics + description
+    # ElevenLabs will decide key, tempo, genre, style automatically
     payload = {
         "lyrics": song_data.get("lyrics", ""),
-        "genre": song_data.get("genre", "pop"),
-        "mood": song_data.get("mood", "emotional"),
-        "tempo": song_data.get("tempo", 120),
-        "key": song_data.get("key", "C major"),
-        "vocal_style": song_data.get("vocal_style", "mixed"),
         "title": song_data.get("title", "Untitled"),
-        "song_length_seconds": 120,  # 2 minutes
-        "description": song_description
+        "description": song_description,  # Pass original description for context
+        "song_length_seconds": 120
     }
     
-    # Build commands:
-    # 1. SET_TEMPO for Reaper project
-    # 2. EL1_SONG command which the bridge will expand into multiple INSERT_AUDIO commands
-    commands = []
-    commands.append(f"SET_TEMPO {payload['tempo']}")
-    
     # EL1_SONG format: EL1_SONG <start_time> <json_payload>
-    # The bridge will:
-    # - Generate full song via ElevenLabs
-    # - Separate into stems
-    # - Convert to INSERT_AUDIO commands for tracks 0-3
     payload_json = json.dumps(payload)
-    commands.append(f'EL1_SONG 0.0 {payload_json}')
+    commands = [f'EL1_SONG 0.0 {payload_json}']
     
     result = "\n".join(commands)
-    print(f"✅ [EL1] Commands ready:\n{result[:500]}...")
+    print(f"✅ [EL1] Commands ready (lyrics only, ElevenLabs handles the rest)")
     
     return result
 

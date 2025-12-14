@@ -12,19 +12,6 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Tuple
 from pathlib import Path
 
-# ---------------------------------------------------------------------------
-# ElevenLabs SDK
-# ---------------------------------------------------------------------------
-try:
-    from elevenlabs.client import ElevenLabs
-    from elevenlabs import ElevenLabsError
-    ELEVENLABS_AVAILABLE = True
-except ImportError:
-    ELEVENLABS_AVAILABLE = False
-    ElevenLabs = None
-    ElevenLabsError = Exception
-
-
 @dataclass
 class FullSongBrief:
     """All info needed to generate a full song with ElevenLabs."""
@@ -50,10 +37,12 @@ class StemResult:
     filenames: Dict[str, str] = field(default_factory=dict)
 
 
-def _get_client() -> "ElevenLabs":
-    """Get ElevenLabs client with API key from environment."""
-    if not ELEVENLABS_AVAILABLE:
-        raise ImportError("elevenlabs package not installed. Run: pip install elevenlabs")
+def _get_client():
+    """Get ElevenLabs client with API key from environment. Lazy import."""
+    try:
+        from elevenlabs.client import ElevenLabs
+    except ImportError as e:
+        raise ImportError(f"elevenlabs package not installed or import failed: {e}. Run: pip install elevenlabs")
     
     api_key = os.getenv("ELEVENLABS_API_KEY")
     if not api_key:
@@ -80,36 +69,27 @@ def _format_exception(e: Exception) -> str:
 def build_fullsong_prompt(brief: FullSongBrief) -> str:
     """
     Build prompt for ElevenLabs full song generation.
-    Unlike vocals-only, this generates complete song with instruments.
+    Keep it simple - just lyrics + description. Let ElevenLabs decide the rest.
     """
     parts = []
     
-    # Genre and mood
-    parts.append(f"Genre: {brief.genre}")
-    parts.append(f"Mood: {brief.mood}")
-    
-    # Musical specs
-    parts.append(f"Tempo: {brief.tempo} BPM")
-    parts.append(f"Key: {brief.key}")
-    
-    # Vocal style
-    if brief.vocal_style:
-        parts.append(f"Vocals: {brief.vocal_style} voice")
-    
-    # Language
-    if brief.language and brief.language.lower() != "english":
-        parts.append(f"Language: {brief.language}")
-    
-    # Additional instructions
+    # If there's a description/context, include it first
     if brief.additional_instructions:
         parts.append(brief.additional_instructions)
+        parts.append("")
     
-    # Lyrics
+    # Only include genre/mood/tempo if explicitly set (non-default)
+    if brief.genre and brief.genre != "pop":
+        parts.append(f"Genre: {brief.genre}")
+    if brief.mood and brief.mood != "uplifting":
+        parts.append(f"Mood: {brief.mood}")
+    
+    # Lyrics are the main content
     parts.append("")
     parts.append("LYRICS:")
     parts.append(brief.lyrics.strip())
     
-    return "\n".join(parts)
+    return "\n".join([p for p in parts if p or p == ""])
 
 
 def generate_full_song(
@@ -137,30 +117,41 @@ def generate_full_song(
     last_error = None
     for attempt in range(retries):
         try:
-            # Use music.generate for full song
-            result = client.music.generate(
+            # Use music.compose_detailed for full song (same API as vocals)
+            # Returns object with .audio (bytes), .filename, .json (metadata)
+            track_details = client.music.compose_detailed(
                 prompt=prompt,
-                duration_seconds=int(length_ms / 1000)
+                music_length_ms=length_ms
             )
             
-            # Result should be audio bytes or a generator
-            if hasattr(result, 'read'):
-                audio_bytes = result.read()
-            elif isinstance(result, bytes):
-                audio_bytes = result
-            else:
-                # It might be a generator, collect all chunks
-                audio_bytes = b''.join(result)
+            # Extract audio bytes from response
+            audio_bytes = getattr(track_details, "audio", None)
+            if audio_bytes is None:
+                # Try alternative attribute names
+                audio_bytes = getattr(track_details, "content", None)
+            if audio_bytes is None and hasattr(track_details, 'read'):
+                audio_bytes = track_details.read()
+            if audio_bytes is None and isinstance(track_details, bytes):
+                audio_bytes = track_details
             
             if not audio_bytes or len(audio_bytes) < 1024:
                 raise ValueError("Empty or too small audio returned")
             
-            filename = f"fullsong_{int(time.time())}.mp3"
+            filename = getattr(track_details, "filename", None) or f"fullsong_{int(time.time())}.mp3"
+            meta_json = getattr(track_details, "json", {})
+            if isinstance(meta_json, str):
+                import json as json_module
+                try:
+                    meta_json = json_module.loads(meta_json)
+                except:
+                    meta_json = {}
+            
             metadata = {
                 "prompt": prompt[:500],
                 "length_ms": length_ms,
                 "genre": brief.genre,
-                "mood": brief.mood
+                "mood": brief.mood,
+                "elevenlabs_meta": meta_json
             }
             
             print(f"✅ [EL1] Full song generated: {len(audio_bytes)/1024:.1f} KB")
@@ -184,6 +175,7 @@ def separate_stems(
     
     Returns:
         StemResult with vocals, drums, bass, other as bytes
+        If stem separation fails, returns full song as 'other' stem.
     """
     client = _get_client()
     
@@ -198,12 +190,22 @@ def separate_stems(
                 tmp_path = tmp.name
             
             try:
-                # Call stem separation API
-                # The API expects a file path or file-like object
+                # Try different possible method names for stem separation
+                result = None
                 with open(tmp_path, 'rb') as audio_file:
-                    result = client.music.separate_stems(
-                        audio=audio_file
-                    )
+                    # Try music.separate_stems first
+                    if hasattr(client, 'music') and hasattr(client.music, 'separate_stems'):
+                        result = client.music.separate_stems(audio=audio_file)
+                    # Try audio_isolation if available
+                    elif hasattr(client, 'audio_isolation'):
+                        audio_file.seek(0)
+                        result = client.audio_isolation.isolate(audio=audio_file)
+                    # Try stem_separation if available
+                    elif hasattr(client, 'stem_separation'):
+                        audio_file.seek(0)
+                        result = client.stem_separation.separate(audio=audio_file)
+                    else:
+                        raise AttributeError("No stem separation method found on ElevenLabs client")
                 
                 # Result should contain the separated stems
                 # Structure may vary - adapt based on actual API response
@@ -290,12 +292,28 @@ def generate_and_stem(
     
     Returns:
         (full_song_bytes, stems, metadata)
+        
+    If stem separation fails, returns full song as 'other' stem so at least 
+    something gets imported to Reaper.
     """
     # Step 1: Generate full song
     full_song_bytes, filename, metadata = generate_full_song(brief)
     
-    # Step 2: Separate into stems
-    stems = separate_stems(full_song_bytes)
+    # Step 2: Try to separate into stems
+    try:
+        stems = separate_stems(full_song_bytes)
+        print(f"✅ [EL1] Stem separation successful")
+    except Exception as e:
+        print(f"⚠️ [EL1] Stem separation failed: {e}")
+        print(f"   Returning full song as 'other' stem instead")
+        # Fallback: return full song as the 'other' stem
+        stems = StemResult(
+            vocals=b'',
+            drums=b'',
+            bass=b'',
+            other=full_song_bytes,  # Full song goes here
+            filenames={'other': filename}
+        )
     
     return full_song_bytes, stems, metadata
 

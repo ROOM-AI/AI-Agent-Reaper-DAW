@@ -154,14 +154,15 @@ def health():
 class EL1SongRequest(BaseModel):
     session_id: str = "demo"
     lyrics: str
-    genre: str = "pop"
-    mood: str = "uplifting"
-    tempo: int = 120
-    key: str = "C"
-    vocal_style: str = "male"
     title: str = "Untitled"
     song_length_seconds: float = 120.0
-    description: str = ""
+    description: str = ""  # Original user request for context
+    # Optional overrides (ElevenLabs decides if not provided)
+    genre: Optional[str] = None
+    mood: Optional[str] = None
+    tempo: Optional[int] = None
+    key: Optional[str] = None
+    vocal_style: Optional[str] = None
 
 
 @app.post("/api/el1/generate")
@@ -185,16 +186,18 @@ def el1_generate_fullsong(body: EL1SongRequest, request: Request):
     try:
         from elevenlabs_fullsong import FullSongBrief, generate_and_stem
         
+        # Build brief with only what's provided (let ElevenLabs decide the rest)
         brief = FullSongBrief(
             lyrics=body.lyrics,
-            genre=body.genre,
-            mood=body.mood,
-            tempo=body.tempo,
-            key=body.key,
-            vocal_style=body.vocal_style,
             title=body.title,
             song_length_seconds=body.song_length_seconds,
-            additional_instructions=body.description
+            additional_instructions=body.description,
+            # Only set these if explicitly provided
+            genre=body.genre or "pop",
+            mood=body.mood or "uplifting",
+            tempo=body.tempo or 120,
+            key=body.key or "C",
+            vocal_style=body.vocal_style or "mixed"
         )
         
         full_song_bytes, stems, metadata = generate_and_stem(brief)
