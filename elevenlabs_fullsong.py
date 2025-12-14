@@ -171,96 +171,91 @@ def separate_stems(
     retries: int = 3
 ) -> StemResult:
     """
-    Separate audio into stems using ElevenLabs Stem Separation API.
+    Separate audio into stems using ElevenLabs Stem Separation REST API.
+    
+    Endpoint: POST /v1/music/stem-separation
     
     Returns:
         StemResult with vocals, drums, bass, other as bytes
         If stem separation fails, returns full song as 'other' stem.
     """
-    client = _get_client()
+    import requests
+    
+    api_key = os.getenv("ELEVENLABS_API_KEY")
+    if not api_key:
+        raise ValueError("ELEVENLABS_API_KEY environment variable not set")
     
     print(f"🔀 [EL1] Separating stems ({len(audio_bytes)/1024:.1f} KB audio)...")
     
     last_error = None
     for attempt in range(retries):
         try:
-            # Create temp file for the audio
-            with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tmp:
-                tmp.write(audio_bytes)
-                tmp_path = tmp.name
+            # Call ElevenLabs stem separation REST API directly
+            url = "https://api.elevenlabs.io/v1/music/stem-separation"
+            headers = {
+                "xi-api-key": api_key
+            }
+            files = {
+                "audio": ("song.mp3", audio_bytes, "audio/mpeg")
+            }
             
-            try:
-                # Try different possible method names for stem separation
-                result = None
-                with open(tmp_path, 'rb') as audio_file:
-                    # Try music.separate_stems first
-                    if hasattr(client, 'music') and hasattr(client.music, 'separate_stems'):
-                        result = client.music.separate_stems(audio=audio_file)
-                    # Try audio_isolation if available
-                    elif hasattr(client, 'audio_isolation'):
-                        audio_file.seek(0)
-                        result = client.audio_isolation.isolate(audio=audio_file)
-                    # Try stem_separation if available
-                    elif hasattr(client, 'stem_separation'):
-                        audio_file.seek(0)
-                        result = client.stem_separation.separate(audio=audio_file)
+            print(f"   Calling ElevenLabs stem separation API...")
+            response = requests.post(url, headers=headers, files=files, timeout=300)
+            
+            if response.status_code != 200:
+                error_text = response.text[:500] if response.text else "No error details"
+                raise RuntimeError(f"Stem separation failed: HTTP {response.status_code} - {error_text}")
+            
+            result = response.json()
+            
+            # Parse the response - ElevenLabs returns URLs or base64 for each stem
+            stems = StemResult(
+                vocals=b'',
+                drums=b'',
+                bass=b'',
+                other=b'',
+                filenames={}
+            )
+            
+            # The API might return stem URLs or base64 data
+            # Handle both cases
+            stem_keys = ['vocals', 'drums', 'bass', 'other', 'instrumental']
+            
+            for key in stem_keys:
+                stem_data = result.get(key) or result.get(f'{key}_url')
+                if not stem_data:
+                    continue
+                    
+                # Map 'instrumental' to 'other'
+                target_key = 'other' if key == 'instrumental' else key
+                
+                if isinstance(stem_data, str):
+                    if stem_data.startswith('http'):
+                        # It's a URL - download it
+                        print(f"   Downloading {key} stem...")
+                        stem_response = requests.get(stem_data, timeout=120)
+                        if stem_response.status_code == 200:
+                            setattr(stems, target_key, stem_response.content)
+                            stems.filenames[target_key] = f'{target_key}.mp3'
                     else:
-                        raise AttributeError("No stem separation method found on ElevenLabs client")
-                
-                # Result should contain the separated stems
-                # Structure may vary - adapt based on actual API response
-                stems = StemResult(
-                    vocals=b'',
-                    drums=b'',
-                    bass=b'',
-                    other=b'',
-                    filenames={}
-                )
-                
-                # Handle different possible response structures
-                if hasattr(result, 'vocals'):
-                    stems.vocals = _extract_bytes(result.vocals)
-                    stems.filenames['vocals'] = 'vocals.mp3'
-                if hasattr(result, 'drums'):
-                    stems.drums = _extract_bytes(result.drums)
-                    stems.filenames['drums'] = 'drums.mp3'
-                if hasattr(result, 'bass'):
-                    stems.bass = _extract_bytes(result.bass)
-                    stems.filenames['bass'] = 'bass.mp3'
-                if hasattr(result, 'other'):
-                    stems.other = _extract_bytes(result.other)
-                    stems.filenames['other'] = 'other.mp3'
-                
-                # If result is a dict
-                if isinstance(result, dict):
-                    for key in ['vocals', 'drums', 'bass', 'other']:
-                        if key in result:
-                            setattr(stems, key, _extract_bytes(result[key]))
-                            stems.filenames[key] = f'{key}.mp3'
-                
-                # If result is iterable of stems
-                if hasattr(result, '__iter__') and not isinstance(result, (bytes, dict)):
-                    stem_list = list(result)
-                    stem_names = ['vocals', 'drums', 'bass', 'other']
-                    for i, stem_data in enumerate(stem_list[:4]):
-                        name = stem_names[i] if i < len(stem_names) else f'stem_{i}'
-                        setattr(stems, name if name in stem_names else 'other', _extract_bytes(stem_data))
-                        stems.filenames[name] = f'{name}.mp3'
-                
-                print(f"✅ [EL1] Stems separated:")
-                for name, data in [('vocals', stems.vocals), ('drums', stems.drums), 
-                                   ('bass', stems.bass), ('other', stems.other)]:
-                    if data:
-                        print(f"   - {name}: {len(data)/1024:.1f} KB")
-                
-                return stems
-                
-            finally:
-                # Clean up temp file
-                try:
-                    os.unlink(tmp_path)
-                except:
-                    pass
+                        # It might be base64
+                        import base64
+                        try:
+                            setattr(stems, target_key, base64.b64decode(stem_data))
+                            stems.filenames[target_key] = f'{target_key}.mp3'
+                        except:
+                            pass
+                elif isinstance(stem_data, bytes):
+                    setattr(stems, target_key, stem_data)
+                    stems.filenames[target_key] = f'{target_key}.mp3'
+            
+            print(f"✅ [EL1] Stems separated:")
+            for name, data in [('vocals', stems.vocals), ('drums', stems.drums), 
+                               ('bass', stems.bass), ('other', stems.other)]:
+                if data:
+                    print(f"   - {name}: {len(data)/1024:.1f} KB")
+            
+            return stems
                     
         except Exception as e:
             last_error = e
