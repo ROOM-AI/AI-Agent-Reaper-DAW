@@ -210,6 +210,8 @@ def el1_generate_fullsong(body: EL1SongRequest, request: Request):
                 "vocals": base64.b64encode(stems.vocals).decode('utf-8') if stems.vocals else "",
                 "drums": base64.b64encode(stems.drums).decode('utf-8') if stems.drums else "",
                 "bass": base64.b64encode(stems.bass).decode('utf-8') if stems.bass else "",
+                "guitar": base64.b64encode(stems.guitar).decode('utf-8') if stems.guitar else "",
+                "piano": base64.b64encode(stems.piano).decode('utf-8') if stems.piano else "",
                 "other": base64.b64encode(stems.other).decode('utf-8') if stems.other else "",
             },
             "filenames": stems.filenames,
@@ -223,7 +225,7 @@ def el1_generate_fullsong(body: EL1SongRequest, request: Request):
                 "genre": body.genre,
                 "tempo": body.tempo,
                 "full_song_size": len(full_song_bytes),
-                "stems_count": sum(1 for s in [stems.vocals, stems.drums, stems.bass, stems.other] if s)
+                "stems_count": sum(1 for s in [stems.vocals, stems.drums, stems.bass, stems.guitar, stems.piano, stems.other] if s)
             },
             session_id=body.session_id,
         )

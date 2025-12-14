@@ -152,8 +152,8 @@ def write_commands(cmds):
                     
                     result = r.json()
                     
-                    # Track mapping for stems
-                    stem_tracks = {"vocals": 0, "drums": 1, "bass": 2, "other": 3}
+                    # Track mapping for 6 stems
+                    stem_tracks = {"vocals": 0, "drums": 1, "bass": 2, "guitar": 3, "piano": 4, "other": 5}
                     stems_data = result.get("stems", {})
                     timestamp = int(time.time())
                     
@@ -179,11 +179,11 @@ def write_commands(cmds):
                             full_path = (TEMP_AUDIO_DIR / f"fullsong_{timestamp}.mp3").resolve()
                             full_path.write_bytes(full_bytes)
                             log(f"[EL1] saved full song: {full_path}")
-                            processed.append(f'INSERT_AUDIO 4 "{full_path}" {start_time}')
+                            processed.append(f'INSERT_AUDIO 6 "{full_path}" {start_time}')
                         except Exception as full_err:
                             log(f"[EL1] failed to save full song: {full_err}")
                     
-                    log("[EL1] Complete! Stems imported to tracks 0-4")
+                    log("[EL1] Complete! 6 stems → tracks 0-5, full song → track 6")
                     
                 except Exception as e:
                     log(f"[EL1] failed: {e}")

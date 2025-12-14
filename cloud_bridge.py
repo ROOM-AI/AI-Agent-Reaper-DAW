@@ -419,12 +419,14 @@ def process_commands_locally(cmd_text):
                     
                     result = r.json()
                     
-                    # Track mapping for stems
+                    # Track mapping for 6 stems
                     stem_tracks = {
                         "vocals": 0,
                         "drums": 1,
                         "bass": 2,
-                        "other": 3
+                        "guitar": 3,
+                        "piano": 4,
+                        "other": 5
                     }
                     
                     # Save and import each stem
@@ -453,11 +455,11 @@ def process_commands_locally(cmd_text):
                             full_path = (TEMP_AUDIO_DIR / f"fullsong_{timestamp}.mp3").resolve()
                             full_path.write_bytes(full_bytes)
                             print(f"✅ [EL1] Saved full song: {full_path} ({len(full_bytes)/1024:.1f} KB)")
-                            processed.append(f'INSERT_AUDIO 4 "{full_path}" {start_time}')
+                            processed.append(f'INSERT_AUDIO 6 "{full_path}" {start_time}')
                         except Exception as full_err:
                             print(f"⚠️ [EL1] Failed to save full song: {full_err}")
                     
-                    print(f"✅ [EL1] Complete! Stems imported to tracks 0-4")
+                    print(f"✅ [EL1] Complete! 6 stems → tracks 0-5, full song → track 6")
                     
                 except Exception as e:
                     print(f"⚠️ [EL1] Failed to generate/download full song: {e}")

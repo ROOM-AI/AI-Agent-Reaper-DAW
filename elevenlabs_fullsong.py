@@ -2,7 +2,7 @@
 ElevenLabs Full Song Generation + Stem Separation
 
 EL1 Mode: Generate a complete song with ElevenLabs, then separate into stems.
-Returns 4 stems: vocals, drums, bass, other
+Returns 6 stems: vocals, drums, bass, guitar, piano, other
 """
 
 import os
@@ -29,11 +29,13 @@ class FullSongBrief:
 
 @dataclass 
 class StemResult:
-    """Result of stem separation - contains all stem audio bytes."""
-    vocals: bytes
-    drums: bytes
-    bass: bytes
-    other: bytes
+    """Result of stem separation - contains all 6 stem audio bytes."""
+    vocals: bytes = b''
+    drums: bytes = b''
+    bass: bytes = b''
+    guitar: bytes = b''
+    piano: bytes = b''
+    other: bytes = b''
     filenames: Dict[str, str] = field(default_factory=dict)
 
 
@@ -171,15 +173,21 @@ def separate_stems(
     retries: int = 3
 ) -> StemResult:
     """
-    Separate audio into stems using ElevenLabs Stem Separation REST API.
+    Separate audio into stems using ElevenLabs Stem Separation API.
     
     Endpoint: POST /v1/music/stem-separation
+    Response: ZIP archive containing separated audio stems as MP3 files.
+    
+    Stem variations:
+    - two_stems_v1: vocals + instrumental
+    - six_stems_v1: vocals, drums, bass, guitar, piano, other
     
     Returns:
         StemResult with vocals, drums, bass, other as bytes
-        If stem separation fails, returns full song as 'other' stem.
     """
     import requests
+    import zipfile
+    import io
     
     api_key = os.getenv("ELEVENLABS_API_KEY")
     if not api_key:
@@ -190,68 +198,78 @@ def separate_stems(
     last_error = None
     for attempt in range(retries):
         try:
-            # Call ElevenLabs stem separation REST API directly
+            # Call ElevenLabs stem separation API
+            # Uses six_stems_v1 for full separation (vocals, drums, bass, guitar, piano, other)
             url = "https://api.elevenlabs.io/v1/music/stem-separation"
+            params = {
+                "output_format": "mp3_44100_128",  # MP3 at 44.1kHz, 128kbps
+            }
             headers = {
                 "xi-api-key": api_key
             }
             files = {
-                "audio": ("song.mp3", audio_bytes, "audio/mpeg")
+                "file": ("song.mp3", audio_bytes, "audio/mpeg"),
+            }
+            data = {
+                "stem_variation_id": "six_stems_v1"  # Get all 6 stems
             }
             
-            print(f"   Calling ElevenLabs stem separation API...")
-            response = requests.post(url, headers=headers, files=files, timeout=300)
+            print(f"   Calling ElevenLabs stem separation API (6 stems)...")
+            response = requests.post(
+                url, 
+                params=params,
+                headers=headers, 
+                files=files, 
+                data=data,
+                timeout=600  # Can take a while for long songs
+            )
             
             if response.status_code != 200:
                 error_text = response.text[:500] if response.text else "No error details"
                 raise RuntimeError(f"Stem separation failed: HTTP {response.status_code} - {error_text}")
             
-            result = response.json()
+            # Response is a ZIP file containing the stems
+            zip_bytes = response.content
+            print(f"   Received ZIP archive: {len(zip_bytes)/1024:.1f} KB")
             
-            # Parse the response - ElevenLabs returns URLs or base64 for each stem
-            stems = StemResult(
-                vocals=b'',
-                drums=b'',
-                bass=b'',
-                other=b'',
-                filenames={}
-            )
+            # Extract stems from ZIP
+            stems = StemResult(filenames={})
             
-            # The API might return stem URLs or base64 data
-            # Handle both cases
-            stem_keys = ['vocals', 'drums', 'bass', 'other', 'instrumental']
-            
-            for key in stem_keys:
-                stem_data = result.get(key) or result.get(f'{key}_url')
-                if not stem_data:
-                    continue
-                    
-                # Map 'instrumental' to 'other'
-                target_key = 'other' if key == 'instrumental' else key
+            with zipfile.ZipFile(io.BytesIO(zip_bytes), 'r') as zf:
+                print(f"   ZIP contents: {zf.namelist()}")
                 
-                if isinstance(stem_data, str):
-                    if stem_data.startswith('http'):
-                        # It's a URL - download it
-                        print(f"   Downloading {key} stem...")
-                        stem_response = requests.get(stem_data, timeout=120)
-                        if stem_response.status_code == 200:
-                            setattr(stems, target_key, stem_response.content)
-                            stems.filenames[target_key] = f'{target_key}.mp3'
+                for filename in zf.namelist():
+                    file_lower = filename.lower()
+                    stem_bytes = zf.read(filename)
+                    
+                    # Map filenames to our 6 stem categories
+                    if 'vocal' in file_lower:
+                        stems.vocals = stem_bytes
+                        stems.filenames['vocals'] = 'vocals.mp3'
+                    elif 'drum' in file_lower:
+                        stems.drums = stem_bytes
+                        stems.filenames['drums'] = 'drums.mp3'
+                    elif 'bass' in file_lower:
+                        stems.bass = stem_bytes
+                        stems.filenames['bass'] = 'bass.mp3'
+                    elif 'guitar' in file_lower:
+                        stems.guitar = stem_bytes
+                        stems.filenames['guitar'] = 'guitar.mp3'
+                    elif 'piano' in file_lower or 'keys' in file_lower:
+                        stems.piano = stem_bytes
+                        stems.filenames['piano'] = 'piano.mp3'
+                    elif 'other' in file_lower or 'instrumental' in file_lower:
+                        stems.other = stem_bytes
+                        stems.filenames['other'] = 'other.mp3'
                     else:
-                        # It might be base64
-                        import base64
-                        try:
-                            setattr(stems, target_key, base64.b64decode(stem_data))
-                            stems.filenames[target_key] = f'{target_key}.mp3'
-                        except:
-                            pass
-                elif isinstance(stem_data, bytes):
-                    setattr(stems, target_key, stem_data)
-                    stems.filenames[target_key] = f'{target_key}.mp3'
+                        # Unknown stem - put in other if empty
+                        if not stems.other:
+                            stems.other = stem_bytes
+                            stems.filenames['other'] = 'other.mp3'
             
-            print(f"✅ [EL1] Stems separated:")
-            for name, data in [('vocals', stems.vocals), ('drums', stems.drums), 
-                               ('bass', stems.bass), ('other', stems.other)]:
+            print(f"✅ [EL1] Stems extracted:")
+            for name in ['vocals', 'drums', 'bass', 'guitar', 'piano', 'other']:
+                data = getattr(stems, name, b'')
                 if data:
                     print(f"   - {name}: {len(data)/1024:.1f} KB")
             
@@ -303,9 +321,6 @@ def generate_and_stem(
         print(f"   Returning full song as 'other' stem instead")
         # Fallback: return full song as the 'other' stem
         stems = StemResult(
-            vocals=b'',
-            drums=b'',
-            bass=b'',
             other=full_song_bytes,  # Full song goes here
             filenames={'other': filename}
         )

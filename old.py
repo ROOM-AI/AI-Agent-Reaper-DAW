@@ -188,8 +188,8 @@ def _try_rewrite_el1_song(line: str) -> list:
     result = r.json()
     commands = []
     
-    # Track mapping for stems
-    stem_tracks = {"vocals": 0, "drums": 1, "bass": 2, "other": 3}
+    # Track mapping for 6 stems
+    stem_tracks = {"vocals": 0, "drums": 1, "bass": 2, "guitar": 3, "piano": 4, "other": 5}
     stems_data = result.get("stems", {})
     timestamp = int(time.time())
     
@@ -215,7 +215,7 @@ def _try_rewrite_el1_song(line: str) -> list:
             full_path = (Path(TEMP_AUDIO_DIR) / f"fullsong_{timestamp}.mp3").resolve()
             full_path.write_bytes(full_bytes)
             print(f"✅ [EL1] Saved full song: {full_path} ({len(full_bytes)/1024:.1f} KB)")
-            commands.append(f'INSERT_AUDIO 4 "{full_path}" {start_time}')
+            commands.append(f'INSERT_AUDIO 6 "{full_path}" {start_time}')
         except Exception as full_err:
             print(f"⚠️ [EL1] Failed to save full song: {full_err}")
     
