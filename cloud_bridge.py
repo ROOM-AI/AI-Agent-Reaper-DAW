@@ -342,7 +342,17 @@ def process_commands_locally(cmd_text):
                     if agent_key:
                         headers["X-API-KEY"] = agent_key
                     r = requests.post(url, json=payload, timeout=180, headers=headers)
-                    r.raise_for_status()
+                    try:
+                        r.raise_for_status()
+                    except requests.HTTPError as he:
+                        # Print response body for debugging (Cloud Run often returns {"detail": "..."}).
+                        body_preview = ""
+                        try:
+                            body_preview = (r.text or "")[:1200]
+                        except Exception:
+                            body_preview = ""
+                        print(f"⚠️ [ELEVEN] Cloud returned HTTP {r.status_code}. Body: {body_preview}")
+                        raise he
                     audio_bytes = r.content
                     if not audio_bytes or len(audio_bytes) < 1024:
                         raise ValueError("Empty audio bytes returned")
@@ -362,6 +372,99 @@ def process_commands_locally(cmd_text):
             else:
                 # Bad format; drop it so Lua never sees it
                 print("⚠️ [ELEVEN] Bad ELEVEN_VOCALS format; dropping command.")
+                continue
+        
+        elif line.startswith('EL1_SONG'):
+            # EL1_SONG <startTime> <json_payload>
+            # Full song generation via ElevenLabs + stem separation.
+            # Cloud returns: full_song + 4 stems (vocals, drums, bass, other)
+            # We save each stem and create INSERT_AUDIO commands for tracks 0-3.
+            #
+            # Example:
+            # EL1_SONG 0.0 {"lyrics":"...","genre":"pop","mood":"uplifting","tempo":120}
+            import base64
+            
+            parts = line.split(maxsplit=2)
+            if len(parts) >= 3:
+                start_time = parts[1]
+                payload_raw = parts[2].strip()
+                try:
+                    payload = json.loads(payload_raw)
+                    if not isinstance(payload, dict):
+                        raise ValueError("payload must be JSON object")
+                    payload.setdefault("session_id", SESSION_ID)
+
+                    url = f"{CLOUD_URL}/api/el1/generate"
+                    print(f"🎵 [EL1] Requesting full song + stems from cloud...")
+                    print(f"   Title: {payload.get('title', 'Untitled')}")
+                    print(f"   Genre: {payload.get('genre')}, Tempo: {payload.get('tempo')} BPM")
+                    
+                    headers = {}
+                    agent_key = os.getenv("AGENT_API_KEY", "")
+                    if agent_key:
+                        headers["X-API-KEY"] = agent_key
+                    
+                    # This request takes longer (song gen + stem separation)
+                    r = requests.post(url, json=payload, timeout=600, headers=headers)
+                    try:
+                        r.raise_for_status()
+                    except requests.HTTPError as he:
+                        body_preview = ""
+                        try:
+                            body_preview = (r.text or "")[:1200]
+                        except Exception:
+                            body_preview = ""
+                        print(f"⚠️ [EL1] Cloud returned HTTP {r.status_code}. Body: {body_preview}")
+                        raise he
+                    
+                    result = r.json()
+                    
+                    # Track mapping for stems
+                    stem_tracks = {
+                        "vocals": 0,
+                        "drums": 1,
+                        "bass": 2,
+                        "other": 3
+                    }
+                    
+                    # Save and import each stem
+                    stems_data = result.get("stems", {})
+                    timestamp = int(time.time())
+                    
+                    for stem_name, track_idx in stem_tracks.items():
+                        stem_b64 = stems_data.get(stem_name, "")
+                        if stem_b64:
+                            try:
+                                stem_bytes = base64.b64decode(stem_b64)
+                                if len(stem_bytes) > 1024:  # Only save if non-empty
+                                    filename = f"{stem_name}_{timestamp}.mp3"
+                                    out_path = (TEMP_AUDIO_DIR / filename).resolve()
+                                    out_path.write_bytes(stem_bytes)
+                                    print(f"✅ [EL1] Saved {stem_name}: {out_path} ({len(stem_bytes)/1024:.1f} KB)")
+                                    processed.append(f'INSERT_AUDIO {track_idx} "{out_path}" {start_time}')
+                            except Exception as stem_err:
+                                print(f"⚠️ [EL1] Failed to save {stem_name}: {stem_err}")
+                    
+                    # Also save full song to track 4 for reference
+                    full_song_b64 = result.get("full_song", "")
+                    if full_song_b64:
+                        try:
+                            full_bytes = base64.b64decode(full_song_b64)
+                            full_path = (TEMP_AUDIO_DIR / f"fullsong_{timestamp}.mp3").resolve()
+                            full_path.write_bytes(full_bytes)
+                            print(f"✅ [EL1] Saved full song: {full_path} ({len(full_bytes)/1024:.1f} KB)")
+                            processed.append(f'INSERT_AUDIO 4 "{full_path}" {start_time}')
+                        except Exception as full_err:
+                            print(f"⚠️ [EL1] Failed to save full song: {full_err}")
+                    
+                    print(f"✅ [EL1] Complete! Stems imported to tracks 0-4")
+                    
+                except Exception as e:
+                    print(f"⚠️ [EL1] Failed to generate/download full song: {e}")
+                    # Drop the command on failure
+                    continue
+            else:
+                print("⚠️ [EL1] Bad EL1_SONG format; dropping command.")
                 continue
         
         else:
@@ -401,7 +504,7 @@ def poll_commands():
                             cmd_text = raw[1:-1]
                     
                     # Process commands locally (resolve sample IDs, convert cloud paths)
-                    if any(kw in cmd_text for kw in ['USE_SAMPLE', 'DRUM_SAMPLE', 'LOAD_SAMPLER', 'EXPORT_AUDIO', 'ELEVEN_VOCALS']):
+                    if any(kw in cmd_text for kw in ['USE_SAMPLE', 'DRUM_SAMPLE', 'LOAD_SAMPLER', 'EXPORT_AUDIO', 'ELEVEN_VOCALS', 'EL1_SONG']):
                         print(f"[BRIDGE] Processing commands locally...")
                         cmd_text = process_commands_locally(cmd_text)
                     

@@ -143,6 +143,85 @@ def _rewrite_eleven_vocals_to_insert_audio(line: str) -> Optional[str]:
 
     return f'INSERT_AUDIO {track_idx} "{out_path}" {start_time}'
 
+
+def _try_rewrite_el1_song(line: str) -> list:
+    """
+    EL1_SONG <startTime> <json_payload>
+    -> Multiple INSERT_AUDIO commands for stems (tracks 0-4)
+    Returns empty list if not an EL1_SONG line.
+    Raises on malformed payload / network failures.
+    """
+    import base64
+    line = (line or "").strip()
+    if not line.startswith("EL1_SONG"):
+        return []
+    parts = line.split(maxsplit=2)
+    if len(parts) < 3:
+        raise ValueError("Bad EL1_SONG format (expected: EL1_SONG <startTime> <json_payload>)")
+    start_time = parts[1]
+    payload_raw = parts[2].strip()
+    payload = json.loads(payload_raw)
+    if not isinstance(payload, dict):
+        raise ValueError("EL1_SONG payload must be a JSON object")
+
+    if not CLOUD_URL:
+        raise RuntimeError("CLOUD_URL is not set; cannot fetch EL1 full song from cloud.")
+
+    headers = {}
+    if AGENT_API_KEY:
+        headers["X-API-KEY"] = AGENT_API_KEY
+
+    url = f"{CLOUD_URL}/api/el1/generate"
+    print(f"🎵 [EL1] Fetching full song + stems from cloud: {url}")
+    r = requests.post(url, json=payload, headers=headers, timeout=600)
+    try:
+        r.raise_for_status()
+    except requests.HTTPError as he:
+        body_preview = ""
+        try:
+            body_preview = (r.text or "")[:1200]
+        except Exception:
+            body_preview = ""
+        print(f"⚠️ [EL1] Cloud returned HTTP {r.status_code}. Body: {body_preview}")
+        raise he
+    
+    result = r.json()
+    commands = []
+    
+    # Track mapping for stems
+    stem_tracks = {"vocals": 0, "drums": 1, "bass": 2, "other": 3}
+    stems_data = result.get("stems", {})
+    timestamp = int(time.time())
+    
+    for stem_name, track_idx in stem_tracks.items():
+        stem_b64 = stems_data.get(stem_name, "")
+        if stem_b64:
+            try:
+                stem_bytes = base64.b64decode(stem_b64)
+                if len(stem_bytes) > 1024:
+                    filename = f"{stem_name}_{timestamp}.mp3"
+                    out_path = (Path(TEMP_AUDIO_DIR) / filename).resolve()
+                    out_path.write_bytes(stem_bytes)
+                    print(f"✅ [EL1] Saved {stem_name}: {out_path} ({len(stem_bytes)/1024:.1f} KB)")
+                    commands.append(f'INSERT_AUDIO {track_idx} "{out_path}" {start_time}')
+            except Exception as stem_err:
+                print(f"⚠️ [EL1] Failed to save {stem_name}: {stem_err}")
+    
+    # Full song to track 4
+    full_b64 = result.get("full_song", "")
+    if full_b64:
+        try:
+            full_bytes = base64.b64decode(full_b64)
+            full_path = (Path(TEMP_AUDIO_DIR) / f"fullsong_{timestamp}.mp3").resolve()
+            full_path.write_bytes(full_bytes)
+            print(f"✅ [EL1] Saved full song: {full_path} ({len(full_bytes)/1024:.1f} KB)")
+            commands.append(f'INSERT_AUDIO 4 "{full_path}" {start_time}')
+        except Exception as full_err:
+            print(f"⚠️ [EL1] Failed to save full song: {full_err}")
+    
+    return commands
+
+
 # File locations
 COMMAND_FILE = str(BASE_DIR / "reaper_commands.txt")
 STATE_FILE = str(BASE_DIR / "reaper_state.txt")
@@ -1477,6 +1556,16 @@ def send_reaper_commands(commands):
                 except Exception as e:
                     # IMPORTANT: never pass ELEVEN_VOCALS through to Lua.
                     print(f"⚠️ [ELEVEN] Failed to fetch vocals; dropping command. Error: {e}")
+                continue
+
+            # Rewrite EL1_SONG -> multiple INSERT_AUDIO commands for stems
+            if cmd_str.startswith("EL1_SONG"):
+                try:
+                    new_cmds = _try_rewrite_el1_song(cmd_str)
+                    if new_cmds:
+                        rewritten.extend(new_cmds)
+                except Exception as e:
+                    print(f"⚠️ [EL1] Failed to fetch full song; dropping command. Error: {e}")
                 continue
 
             # Opportunistic D:\ -> F:\ fallback for any quoted audio paths (INSERT_AUDIO / LOAD_SAMPLER)
@@ -6580,6 +6669,7 @@ def execute_user_command(user_input):
         'VOL_DIP',
         'LOAD_SAMPLER',
         'ELEVEN_VOCALS',
+        'EL1_SONG',
     ]
     cmd_lines = sum(1 for l in lines if any(l.startswith(p) for p in command_patterns))
     is_command_list = (len(lines) >= 1) and (cmd_lines >= max(1, int(len(lines) * 0.7)))

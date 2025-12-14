@@ -29,6 +29,12 @@ class VocalBrief:
     style: Optional[str] = None
     melody_midi: Optional[List[int]] = None
     voice_tags: Optional[List[str]] = None  # e.g. ["male vocals", "dark r&b"]
+    # NEW: Full chord progression and song structure for better sync
+    chord_progression: Optional[List[Dict[str, Any]]] = None  # [{"bar": 1, "beat": 1, "chord": "Am"}, ...]
+    song_structure: Optional[List[Dict[str, Any]]] = None  # [{"section": "Verse", "start_bar": 1, "end_bar": 16, "chords": "Am-G-F-E"}, ...]
+    song_length_seconds: Optional[float] = None
+    # NEW: Instruments playing in the track (helps match vocal vibe)
+    instruments: Optional[List[str]] = None  # e.g. ["Piano", "808 Bass", "Hi-hats", "Synth Pad"]
 
 
 # Claude can see artist-name vibes, but ElevenLabs should not receive artist names.
@@ -70,9 +76,8 @@ def sanitize_for_elevenlabs(text: str) -> str:
 
 def build_vocals_prompt(brief: VocalBrief) -> str:
     """
-    Build a short, strict prompt for vocals-only generation.
-    We enforce vocals-only via prompt constraints because the public quickstart
-    does not show a dedicated API flag for that UI mode.
+    Build a detailed prompt for vocals-only generation with full musical context.
+    Includes chord progression and song structure so vocals match the instrumental.
     """
     style_bits: List[str] = []
     if brief.style:
@@ -80,41 +85,119 @@ def build_vocals_prompt(brief: VocalBrief) -> str:
     if brief.voice_tags:
         style_bits.extend([sanitize_for_elevenlabs(t.strip()) for t in brief.voice_tags if t and t.strip()])
 
+    # Build comprehensive musical context
     meta_bits: List[str] = []
     if brief.bpm:
         meta_bits.append(f"Tempo: {brief.bpm} BPM")
     if brief.key:
         meta_bits.append(f"Key: {brief.key}")
+    if brief.song_length_seconds:
+        meta_bits.append(f"Duration: {brief.song_length_seconds:.1f} seconds")
 
+    # Build instruments section
+    instruments_section = ""
+    if brief.instruments:
+        instruments_section = "\nINSTRUMENTS IN THE TRACK:\n- " + "\n- ".join(brief.instruments)
+        instruments_section += "\n(Match your vocal energy and tone to these instruments)"
+
+    # Build song structure section
+    structure_section = ""
+    if brief.song_structure:
+        structure_lines = ["", "SONG STRUCTURE (sing in sync with these sections):"]
+        for section in brief.song_structure:
+            section_name = section.get("section", "Section")
+            start_bar = section.get("start_bar", "?")
+            end_bar = section.get("end_bar", "?")
+            chords = section.get("chords", "")
+            timing = section.get("timing", "")
+            line = f"- {section_name}: bars {start_bar}-{end_bar}"
+            if chords:
+                line += f" ({chords})"
+            if timing:
+                line += f" [{timing}]"
+            structure_lines.append(line)
+        structure_section = "\n".join(structure_lines)
+
+    # Build chord progression section
+    chord_section = ""
+    if brief.chord_progression:
+        chord_lines = ["", "CHORD PROGRESSION (sing notes that fit these chords):"]
+        # Group chords by bar for cleaner output
+        bar_chords: Dict[int, List[str]] = {}
+        for chord_info in brief.chord_progression:
+            bar = chord_info.get("bar", 0)
+            chord = chord_info.get("chord", "")
+            if chord:
+                if bar not in bar_chords:
+                    bar_chords[bar] = []
+                bar_chords[bar].append(chord)
+        
+        # Format as readable progression
+        if bar_chords:
+            sorted_bars = sorted(bar_chords.keys())
+            progression_str = ""
+            for bar in sorted_bars:
+                chords = bar_chords[bar]
+                progression_str += f"Bar {bar}: {', '.join(chords)} | "
+            chord_lines.append(progression_str.rstrip(" | "))
+        chord_section = "\n".join(chord_lines)
+
+    # Melody MIDI hint (keep it concise)
     melody_hint = ""
     if brief.melody_midi:
-        # Keep it short; this is a hint, not a full spec.
-        midi_str = ", ".join(str(int(x)) for x in brief.melody_midi[:256])
+        midi_str = ", ".join(str(int(x)) for x in brief.melody_midi[:128])
         melody_hint = (
-            "\nMelody hint (MIDI note numbers, optional): "
+            "\n\nMelody contour hint (MIDI pitches): "
             f"{midi_str}"
-            + (" ..." if len(brief.melody_midi) > 256 else "")
+            + (" ..." if len(brief.melody_midi) > 128 else "")
         )
 
     style_line = ""
     if style_bits:
-        style_line = "Style tags: " + "; ".join(style_bits)
+        style_line = "Style: " + "; ".join(style_bits)
 
     meta_line = ""
     if meta_bits:
         meta_line = " | ".join(meta_bits)
 
-    # The critical constraints that mimic your UI “Custom vocals only”
+    # The critical constraints that mimic your UI "Custom vocals only"
     constraints = (
         "Vocals-only a cappella. No instruments. No beat. No pads. No bass. "
         "Dry lead vocal (minimal reverb). No backing vocals unless requested."
     )
+    
+    # Build key guidance using ACTUAL chord data from the beat
+    key_guidance = ""
+    if brief.key:
+        key_guidance = f"\nKEY: {brief.key} - sing in this key!"
+    
+    # If we have actual chord progression, list the SPECIFIC chords to sing over
+    if brief.chord_progression and len(brief.chord_progression) > 0:
+        # Extract unique chords in order
+        seen_chords = []
+        for c in brief.chord_progression:
+            chord = c.get("chord", "")
+            if chord and chord not in seen_chords:
+                seen_chords.append(chord)
+        if seen_chords:
+            key_guidance += f"\nCHORDS IN THIS SONG: {' - '.join(seen_chords)}"
+            key_guidance += "\nSing notes that FIT these specific chords. Land on chord tones!"
 
+    # Build the full prompt with all context
     prompt_parts = [
         constraints,
         meta_line,
         style_line,
-        "Sing these lyrics exactly (do not add new lines unless needed for phrasing):",
+        key_guidance,
+        instruments_section,
+        structure_section,
+        chord_section,
+        "",
+        "CRITICAL: Your vocal melody MUST be in the same key as the instrumental.",
+        "Land on chord tones (root, 3rd, 5th) on strong beats (1 and 3).",
+        "Use passing tones only on weak beats. Match the energy and vibe of the instruments.",
+        "",
+        "LYRICS TO SING:",
         sanitize_for_elevenlabs(brief.lyrics.strip()),
     ]
     prompt = "\n".join([p for p in prompt_parts if p])
@@ -142,6 +225,34 @@ def _parse_bad_prompt_suggestion(err: Exception) -> Optional[str]:
     return None
 
 
+def _format_elevenlabs_exception(err: Exception) -> str:
+    """
+    ElevenLabs SDK exceptions often include structured fields (status_code, body, headers).
+    Stringifying the exception sometimes only shows headers, so we surface the useful parts.
+    """
+    parts: List[str] = []
+    status_code = getattr(err, "status_code", None)
+    if status_code is not None:
+        parts.append(f"status_code={status_code}")
+    body = getattr(err, "body", None)
+    if body is not None:
+        try:
+            parts.append(f"body={body}")
+        except Exception:
+            pass
+    headers = getattr(err, "headers", None)
+    if headers is not None:
+        try:
+            # keep short
+            parts.append(f"headers={dict(headers)}")
+        except Exception:
+            parts.append(f"headers={headers}")
+    message = str(err) or repr(err)
+    if parts:
+        return message + " | " + " | ".join(parts)
+    return message
+
+
 def compose_vocals_mp3(
     prompt: str,
     length_ms: int,
@@ -164,7 +275,8 @@ def compose_vocals_mp3(
             "Missing ElevenLabs SDK. Add `elevenlabs` to requirements and install it."
         ) from e
 
-    key = api_key or os.getenv("ELEVENLABS_API_KEY")
+    # Never hardcode keys. Read from env var ELEVENLABS_API_KEY (Cloud Run).
+    key = (api_key or os.getenv("ELEVENLABS_API_KEY") or "").strip()
     if not key:
         raise ElevenLabsVocalError("ELEVENLABS_API_KEY is not set in environment.")
 
@@ -213,6 +325,6 @@ def compose_vocals_mp3(
                 break
             time.sleep(retry_backoff_s * attempt)
 
-    raise ElevenLabsVocalError(f"ElevenLabs vocals generation failed: {last_err}") from last_err
+    raise ElevenLabsVocalError(f"ElevenLabs vocals generation failed: {_format_elevenlabs_exception(last_err)}") from last_err
 
 

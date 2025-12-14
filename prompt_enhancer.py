@@ -12,6 +12,28 @@ from dotenv import load_dotenv
 load_dotenv()
 client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY_ENHANCER") or os.getenv("ANTHROPIC_API_KEY"))
 
+
+def extract_bpm_from_text(text: str) -> int | None:
+    """Best-effort BPM extraction from user prompt (e.g. '160 bpm', 'bpm 140', 'tempo=128')."""
+    if not text:
+        return None
+    t = str(text).lower()
+    m = re.search(r"\b(\d{2,3})\s*bpm\b", t)
+    if not m:
+        m = re.search(r"\bbpm\s*(\d{2,3})\b", t)
+    if not m:
+        m = re.search(r"\btempo\s*[:=]?\s*(\d{2,3})\b", t)
+    if not m:
+        return None
+    try:
+        bpm = int(m.group(1))
+        if 40 <= bpm <= 220:
+            return bpm
+    except Exception:
+        return None
+    return None
+
+
 # Default VSTs for each track type (non-drum tracks only)
 DEFAULT_VSTS = {
     0: 'VSTi: Piano V3 (Arturia)',      # Track 0 = Piano/Keys
@@ -61,7 +83,13 @@ AVAILABLE_INSTRUMENTS = get_available_instruments()
 INSTRUMENT_LIST_STR = "\n".join([f"- {inst}" for inst in AVAILABLE_INSTRUMENTS])
 
 def classify_request(user_input):
-    """Classify: new song, compose around existing MIDI, or mixing/effects?"""
+    """Classify: EL1 full song, new song, compose around existing MIDI, or mixing/effects?"""
+    
+    # Check for EL1 prefix first (case insensitive)
+    user_lower = user_input.strip().lower()
+    if user_lower.startswith("el1 ") or user_lower.startswith("el1:"):
+        return "el1_fullsong"
+    
     prompt = f""""{user_input}"
 
 Classify this DAW request:
@@ -73,7 +101,7 @@ Answer with ONE word: SONG, COMPOSE_AROUND, or AGENTIC"""
 
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-5-20250929",
+            model="claude-opus-4-20250514",
             max_tokens=15,
             temperature=0,
             messages=[{"role": "user", "content": prompt}]
@@ -246,91 +274,84 @@ def ensure_instruments_and_items(commands):
 
 
 def generate_song_commands(user_input):
-    """Claude reads the request and generates the entire song."""
+    """Claude reads the request and generates the entire song with CREATIVE FREEDOM."""
+
+    requested_bpm = extract_bpm_from_text(user_input)
     
-    # Build drum sample info if available
+    # Detect if user explicitly wants drums/beats vs. no drums
+    user_lower = user_input.lower()
+    wants_drums = any(w in user_lower for w in ['beat', 'drum', 'trap', 'hip hop', 'hiphop', 'edm', 'house', 'techno', '808', 'kick', 'snare', 'percussion', 'bounce'])
+    wants_no_drums = any(w in user_lower for w in ['piano', 'acoustic', 'classical', 'ambient', 'ballad', 'strings', 'orchestral', 'no drums', 'no beat', 'solo', 'gentle', 'soft'])
+    
+    # Build drum sample info ONLY if user wants drums and doesn't want no-drums
     drum_info = ""
-    if DRUM_SAMPLES_AVAILABLE and DRUM_SUMMARY:
-        drum_info = f"""
-FOR DRUMS (tracks 2+) - Load sample into sampler, then trigger with MIDI:
-
-STEP 1: Load samples (pick ANY available tracks):
+    if wants_drums and not wants_no_drums:
+        if DRUM_SAMPLES_AVAILABLE and DRUM_SUMMARY:
+            drum_info = f"""
+DRUM SAMPLES (use ONLY if drums fit the music):
 LOAD_SAMPLER [track] [sample_id] 60 60 60
-- You can use multiple tracks for different drum sounds (kick, snare, hats, percs)
-- For 808s/Bass samples: use LOAD_SAMPLER [track] [id] 36 24 96 (for pitching)
-
-STEP 2: Create MIDI items for those tracks:
 MIDI_CREATE_ITEM [track] [start] [end]
-
-STEP 3: Insert MIDI notes to trigger samples:
 MIDI_INSERT_NOTE [track] 60 [velocity] [start] [end]
-- For drums: always use pitch 60
-- For 808: use different pitches for bass melody
 
-SAMPLE IDS:
-{DRUM_SUMMARY}
-
+SAMPLES: {DRUM_SUMMARY}
 """
-    else:
-        drum_info = """
-FOR DRUMS & 808 - Use MIDI instruments:
-
-TRACK 2 - DRUMS:
-- INSERT_INSTRUMENT 2 VSTi: ReaSynDr (Cockos)
-- kick=36, snare=38, hihat=42
-
-TRACK 3 - 808 BASS:
-- INSERT_INSTRUMENT 3 VSTi: Analog Lab V (Arturia)
-- Use bass notes (C2=36, D2=38, etc.) MATCHING YOUR KEY!
-
+        else:
+            drum_info = """
+DRUMS (use ONLY if drums fit the music):
+INSERT_INSTRUMENT [track] VSTi: ReaSynDr (Cockos)
+kick=36, snare=38, hihat=42
 """
 
-    prompt = f"""You are composing music in a DAW. Read what the user wants and create it.
+    prompt = f"""You are a CREATIVE MUSICIAN composing original music. NO TEMPLATES. NO FORMULAS.
 
-USER REQUEST: "{user_input}"
+USER WANTS: "{user_input}"
 
-=== TRACK LAYOUT ===
-- Tracks 0-1: Melody/Chords (recommended)
-- Tracks 2+: Drums/Bass/Percussion (flexible - use as many as needed)
+THINK LIKE A REAL MUSICIAN:
+1. What FEELING does this request evoke?
+2. What instruments ACTUALLY fit? (A piano ballad doesn't need kicks/hi-hats!)
+3. What key and chord progression creates the right mood?
+4. What tempo feels natural for this style?
+5. Should it be sparse and emotional, or dense and energetic?
 
-=== COMMANDS ===
+COMMIT TO A KEY AND STAY IN IT:
+- Major keys: C (C-E-G), G (G-B-D), D (D-F#-A), A (A-C#-E), F (F-A-C)
+- Minor keys: Am (A-C-E), Em (E-G-B), Dm (D-F-A), Bm (B-D-F#)
+- USE CHORD TONES on strong beats (beats 1 and 3)
+- USE PASSING TONES on weak beats
 
-SET_TEMPO [bpm] - Set project tempo
+{f'REQUESTED TEMPO: {requested_bpm} BPM - respect this!' if requested_bpm else 'PICK A TEMPO that fits the mood.'}
 
-FOR MELODY/CHORDS - Use INSERT_INSTRUMENT (VSTi ONLY):
-- INSERT_INSTRUMENT [track] [Instrument Name]
-  * MUST be an INSTRUMENT plugin (VSTi/VST3i), NOT an effect!
-  
-AVAILABLE INSTRUMENTS (Top selection):
+COMMANDS:
+SET_TEMPO [bpm]
+INSERT_INSTRUMENT [track] [instrument name]
+MIDI_CREATE_ITEM [track] [start_seconds] [end_seconds]
+MIDI_INSERT_NOTE [track] [pitch] [velocity] [start_seconds] [end_seconds]
+VOL_DIP [track] [start] [end] [volume_0_to_1]
+
+INSTRUMENTS (pick what FITS, not everything):
 {INSTRUMENT_LIST_STR}
-(And others installed on the system)
-
-- MIDI_CREATE_ITEM [track] [start] [end]
-- MIDI_INSERT_NOTE [track] [pitch] [velocity] [start] [end]
-
 {drum_info}
-AUTOMATION:
-- VOL_DIP [track] [start] [end] [volume_0_to_1]
+MIDI PITCH: C3=48, C4=60, C5=72 (chromatic: +2=D, +4=E, +5=F, +7=G, +9=A, +11=B)
+TIMING: In 4/4 at 120 BPM, each beat = 0.5 seconds. Adjust for your tempo.
 
-MIDI PITCH: C3=48, C4=60, C5=72 (add 2=D, 4=E, 5=F, 7=G, 9=A, 11=B)
-TIMING: beat = 60/BPM seconds
+COMPOSE FREELY:
+- DON'T add drums/hi-hats unless the style actually needs them
+- DON'T follow a rigid verse/chorus template unless it fits
+- DO focus on melody and harmony first
+- DO create musical phrases that breathe and flow
+- DO use dynamics (velocity changes, volume automation)
+- DO make it sound like REAL MUSIC, not a robotic loop
 
-STRUCTURE (follow this EXACT order):
-1. SET_TEMPO [bpm]
-2. INSERT_INSTRUMENT / LOAD_SAMPLER for all tracks
-3. MIDI_CREATE_ITEM for ALL tracks
-4. MIDI_INSERT_NOTE for ALL tracks
-5. VOL_DIP automation (optional)
-
-Generate 1+ minute of music. Output ONLY commands, one per line.
-ALL tracks need MIDI items and notes - samplers are triggered by MIDI!"""
+Output ONLY commands, one per line. 
+Start with SET_TEMPO, then instruments, then MIDI items/notes.
+Generate at least 1 minute of MUSICAL, EMOTIONAL, CREATIVE composition."""
 
     print(f"🎵 Claude composing: \"{user_input}\"")
     if DRUM_SAMPLES_AVAILABLE:
         print(f"   🥁 Real drum samples enabled!")
     
     response = client.messages.create(
-        model="claude-sonnet-4-5-20250929",
+        model="claude-opus-4-20250514",
         max_tokens=16000,
         temperature=0.95,
         messages=[{"role": "user", "content": prompt}]
@@ -455,7 +476,7 @@ Output ONLY commands, one per line."""
         print(f"   🥁 Real drum samples enabled!")
 
     response = client.messages.create(
-        model="claude-sonnet-4-5-20250929",
+        model="claude-opus-4-20250514",
         max_tokens=16000,
         temperature=0.9,
         messages=[{"role": "user", "content": prompt}]
@@ -484,7 +505,7 @@ Output ONLY commands, one per line."""
 def enhance_simple_prompt(user_input):
     """Fix typos for mixing requests."""
     response = client.messages.create(
-        model="claude-sonnet-4-5-20250929",
+        model="claude-opus-4-20250514",
         max_tokens=200,
         temperature=0,
         messages=[{"role": "user", "content": f"Fix typos: \"{user_input}\"\nOutput only the fixed text:"}]
@@ -493,10 +514,19 @@ def enhance_simple_prompt(user_input):
 
 
 def enhance_prompt(user_input, reaper_state="", midi_notes=None):
-    """Route to song generation, compose-around, or agentic mode."""
+    """Route to EL1 full song, song generation, compose-around, or agentic mode."""
     mode = classify_request(user_input)
     
-    if mode == "song_generation":
+    if mode == "el1_fullsong":
+        print(f"🎵 EL1 MODE - Full song via ElevenLabs + stems")
+        # Strip the "EL1" prefix to get the actual song description
+        description = user_input.strip()
+        if description.lower().startswith("el1 "):
+            description = description[4:].strip()
+        elif description.lower().startswith("el1:"):
+            description = description[4:].strip()
+        return generate_el1_fullsong(description)
+    elif mode == "song_generation":
         print(f"🎵 SONG MODE - Full song (instrumental + vocals trigger)")
         # IMPORTANT: In song mode we want the prompt enhancer to do everything:
         # - generate instrumental commands
@@ -522,13 +552,17 @@ def enhance_prompt(user_input, reaper_state="", midi_notes=None):
 def analyze_beat_for_vocals(commands):
     """
     Analyze beat commands to extract musical info for vocal generation.
-    Returns: tempo, key (guessed from notes), mood, structure
+    Returns: tempo, key, chord progression, song structure, instruments, etc.
     """
-    from collections import Counter
+    from collections import Counter, defaultdict
     
     tempo = 120  # default
     all_pitches = []
     timing_info = []
+    instruments = []  # Track instruments used
+    
+    # Track notes by track and time for chord detection
+    notes_by_track = defaultdict(list)  # track -> [(pitch, start, end), ...]
     
     # Handle both string and list input
     if isinstance(commands, str):
@@ -546,38 +580,254 @@ def analyze_beat_for_vocals(commands):
                 parts = cmd.split()
                 if len(parts) >= 2:
                     tempo = int(float(parts[1]))  # handle "120.0" format too
+            elif cmd.startswith('INSERT_INSTRUMENT'):
+                # Extract instrument name (everything after track number)
+                parts = cmd.split(maxsplit=2)
+                if len(parts) >= 3:
+                    inst_name = parts[2]
+                    # Clean up the name for readability
+                    inst_name = inst_name.replace("VSTi: ", "").replace("VST3i: ", "")
+                    inst_name = inst_name.replace(" (Arturia)", "").replace(" (Cockos)", "")
+                    if inst_name and inst_name not in instruments:
+                        instruments.append(inst_name)
+            elif cmd.startswith('LOAD_SAMPLER'):
+                # Track that we have drum samples
+                parts = cmd.split()
+                if len(parts) >= 3:
+                    sample_id = parts[2]
+                    # Map common sample types
+                    track = int(parts[1])
+                    if track == 2:
+                        if "Kick" not in instruments:
+                            instruments.append("Kick Drum")
+                    elif track == 3:
+                        if "Snare" not in instruments:
+                            instruments.append("Snare")
+                    elif track == 4:
+                        if "Hi-hat" not in instruments:
+                            instruments.append("Hi-hats")
+                    elif track == 5:
+                        if "808" not in instruments:
+                            instruments.append("808 Bass")
             elif cmd.startswith('MIDI_INSERT_NOTE'):
                 parts = cmd.split()
                 if len(parts) >= 6:
+                    track = int(parts[1])
                     pitch = int(float(parts[2]))
                     start = float(parts[4])
                     end = float(parts[5])
                     all_pitches.append(pitch)
                     timing_info.append((start, end))
+                    notes_by_track[track].append((pitch, start, end))
         except (ValueError, IndexError):
             continue  # skip malformed lines
     
-    # Guess key from pitches (most common pitch class)
-    key = 'C'
+    # Better key detection using scale profile matching
+    key = 'C major'
+    key_names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+    
+    # Scale templates (intervals from root)
+    MAJOR_SCALE = {0, 2, 4, 5, 7, 9, 11}  # W W H W W W H
+    MINOR_SCALE = {0, 2, 3, 5, 7, 8, 10}  # W H W W H W W
+    
     if all_pitches:
         pitch_classes = [p % 12 for p in all_pitches]
-        most_common = Counter(pitch_classes).most_common(1)
-        if most_common:
-            key_names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
-            key = key_names[most_common[0][0]]
+        pitch_set = set(pitch_classes)
+        pitch_counts = Counter(pitch_classes)
+        
+        best_score = -1
+        best_key = 'C major'
+        
+        # Try each possible root for both major and minor
+        for root in range(12):
+            # Major scale fit
+            major_notes = {(root + interval) % 12 for interval in MAJOR_SCALE}
+            major_match = len(pitch_set & major_notes)
+            # Weight by frequency of notes in the scale
+            major_score = sum(pitch_counts.get(n, 0) for n in major_notes)
+            
+            # Minor scale fit
+            minor_notes = {(root + interval) % 12 for interval in MINOR_SCALE}
+            minor_match = len(pitch_set & minor_notes)
+            minor_score = sum(pitch_counts.get(n, 0) for n in minor_notes)
+            
+            # Pick the best match
+            if major_score > best_score:
+                best_score = major_score
+                best_key = f"{key_names[root]} major"
+            if minor_score > best_score:
+                best_score = minor_score
+                best_key = f"{key_names[root]} minor"
+        
+        key = best_key
     
     # Calculate song length
     song_length = 60  # default
     if timing_info:
         song_length = max(t[1] for t in timing_info)
     
+    # Calculate beat duration in seconds
+    beat_duration = 60.0 / tempo
+    total_bars = int(song_length / (beat_duration * 4)) + 1  # Assuming 4/4 time
+    
+    # Extract chord progression from track 0 (usually chords/piano)
+    # Group simultaneous notes into chords
+    chord_progression = []
+    if 0 in notes_by_track:
+        chord_notes = notes_by_track[0]
+        # Group notes by start time (within small tolerance)
+        time_groups = defaultdict(list)
+        for pitch, start, end in chord_notes:
+            # Round to nearest 0.1 second for grouping
+            time_key = round(start * 10) / 10
+            time_groups[time_key].append(pitch)
+        
+        for start_time in sorted(time_groups.keys()):
+            pitches = sorted(time_groups[start_time])
+            chord_name = _pitches_to_chord_name(pitches, key)
+            bar = int(start_time / (beat_duration * 4)) + 1
+            beat = int((start_time % (beat_duration * 4)) / beat_duration) + 1
+            chord_progression.append({
+                "bar": bar,
+                "beat": beat,
+                "chord": chord_name,
+                "time": start_time
+            })
+    
+    # Build song structure (estimate sections based on energy/density changes)
+    song_structure = _estimate_song_structure(notes_by_track, tempo, song_length)
+    
     return {
         'tempo': tempo,
         'key': key,
         'song_length_seconds': song_length,
         'beat_count': int(song_length * tempo / 60),
-        'note_count': len(all_pitches)
+        'note_count': len(all_pitches),
+        'total_bars': total_bars,
+        'chord_progression': chord_progression,
+        'song_structure': song_structure,
+        'instruments': instruments,
     }
+
+
+def _pitches_to_chord_name(pitches: list, key: str = "C") -> str:
+    """Convert a list of MIDI pitches to a chord name."""
+    if not pitches:
+        return "N/C"
+    
+    key_names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+    
+    # Get pitch classes (0-11)
+    pitch_classes = sorted(set(p % 12 for p in pitches))
+    
+    if len(pitch_classes) < 2:
+        # Single note - just return the note name
+        return key_names[pitch_classes[0]]
+    
+    # Find root (lowest pitch class)
+    root = pitch_classes[0]
+    root_name = key_names[root]
+    
+    # Calculate intervals from root
+    intervals = [(p - root) % 12 for p in pitch_classes]
+    
+    # Detect chord quality based on intervals
+    has_minor_3rd = 3 in intervals
+    has_major_3rd = 4 in intervals
+    has_perfect_5th = 7 in intervals
+    has_dim_5th = 6 in intervals
+    has_minor_7th = 10 in intervals
+    has_major_7th = 11 in intervals
+    has_9th = 2 in intervals or 14 in intervals
+    
+    # Build chord suffix
+    suffix = ""
+    if has_minor_3rd:
+        suffix = "m"
+        if has_dim_5th:
+            suffix = "dim"
+    elif has_major_3rd:
+        suffix = ""  # major
+        if has_dim_5th:
+            suffix = "(b5)"
+    
+    if has_minor_7th:
+        suffix += "7"
+    elif has_major_7th:
+        suffix += "maj7"
+    
+    if has_9th and len(pitch_classes) >= 4:
+        suffix += "9" if "7" not in suffix else ""
+    
+    return root_name + suffix
+
+
+def _estimate_song_structure(notes_by_track: dict, tempo: int, song_length: float) -> list:
+    """Estimate song structure based on note density and patterns."""
+    beat_duration = 60.0 / tempo
+    bar_duration = beat_duration * 4  # 4/4 time
+    total_bars = int(song_length / bar_duration) + 1
+    
+    # Calculate note density per 8-bar section
+    sections = []
+    section_size = 8  # bars
+    
+    for section_start_bar in range(1, total_bars + 1, section_size):
+        section_end_bar = min(section_start_bar + section_size - 1, total_bars)
+        section_start_time = (section_start_bar - 1) * bar_duration
+        section_end_time = section_end_bar * bar_duration
+        
+        # Count notes in this section
+        note_count = 0
+        section_pitches = []
+        for track, notes in notes_by_track.items():
+            for pitch, start, end in notes:
+                if section_start_time <= start < section_end_time:
+                    note_count += 1
+                    section_pitches.append(pitch)
+        
+        # Estimate section type based on position and density
+        position_ratio = section_start_bar / max(1, total_bars)
+        
+        if section_start_bar <= 4:
+            section_name = "Intro"
+        elif position_ratio < 0.25:
+            section_name = "Verse 1"
+        elif position_ratio < 0.4:
+            section_name = "Pre-Chorus" if note_count > 20 else "Verse 1"
+        elif position_ratio < 0.55:
+            section_name = "Chorus"
+        elif position_ratio < 0.7:
+            section_name = "Verse 2"
+        elif position_ratio < 0.85:
+            section_name = "Chorus"
+        else:
+            section_name = "Outro" if note_count < 15 else "Chorus"
+        
+        # Get chords for this section from track 0
+        section_chords = []
+        if 0 in notes_by_track:
+            from collections import defaultdict
+            time_groups = defaultdict(list)
+            for pitch, start, end in notes_by_track[0]:
+                if section_start_time <= start < section_end_time:
+                    time_key = round(start * 10) / 10
+                    time_groups[time_key].append(pitch)
+            
+            for start_time in sorted(time_groups.keys())[:4]:  # First 4 chords
+                chord_name = _pitches_to_chord_name(time_groups[start_time])
+                if chord_name not in section_chords:
+                    section_chords.append(chord_name)
+        
+        sections.append({
+            "section": section_name,
+            "start_bar": section_start_bar,
+            "end_bar": section_end_bar,
+            "chords": " - ".join(section_chords) if section_chords else "",
+            "timing": f"{section_start_time:.1f}s - {section_end_time:.1f}s"
+        })
+    
+    return sections
 
 
 def generate_lyrics(topic, mood, song_structure="verse-chorus-verse-chorus-bridge-chorus", tempo=120, key="C"):
@@ -626,7 +876,7 @@ Write the complete lyrics now:"""
     
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-5-20250929",
+            model="claude-opus-4-20250514",
             max_tokens=2000,
             temperature=0.9,
             messages=[{"role": "user", "content": prompt}]
@@ -714,7 +964,7 @@ Generate the complete vocal melody:"""
     
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-5-20250929",
+            model="claude-opus-4-20250514",
             max_tokens=8000,
             temperature=0.8,
             messages=[{"role": "user", "content": prompt}]
@@ -904,6 +1154,9 @@ def call_elevenlabs_music_api(
     mood: str,
     melody_data=None,
     music_length_ms: int | None = None,
+    chord_progression=None,  # Actual chords from the beat
+    song_structure=None,     # Sections (verse, chorus, etc.)
+    instruments=None,        # Instruments in the track
 ):
     """
     Generate VOCALS-ONLY (a cappella) via ElevenLabs Eleven Music (official SDK).
@@ -928,6 +1181,9 @@ def call_elevenlabs_music_api(
         style=str(mood) if mood else None,
         melody_midi=midi_hint,
         voice_tags=["lead vocal", "a cappella", "vocals only"],
+        chord_progression=chord_progression,
+        song_structure=song_structure,
+        instruments=instruments,
     )
     prompt = build_vocals_prompt(brief)
 
@@ -1031,6 +1287,9 @@ Match the energy and vibe of the beat.
                 mood=str(mood),
                 melody_data=melody,
                 music_length_ms=length_ms,
+                chord_progression=beat_info.get('chord_progression'),
+                song_structure=beat_info.get('song_structure'),
+                instruments=beat_info.get('instruments'),
             )
             synth_result = {
                 "status": "success",
@@ -1068,6 +1327,123 @@ Match the energy and vibe of the beat.
         'diffsinger_input': diffsinger_input,
         'synthesis_result': synth_result
     }
+
+
+# =============================================
+# EL1 MODE - Full ElevenLabs Song + Stems
+# =============================================
+
+def generate_el1_fullsong(song_description: str) -> str:
+    """
+    EL1 Mode: Generate full song with ElevenLabs + split into stems.
+    
+    Flow:
+    1. Claude generates lyrics based on description
+    2. Returns EL1_SONG command which the bridge will:
+       - Send to ElevenLabs for full song generation
+       - Separate into stems
+       - Import all stems to Reaper tracks
+    
+    Args:
+        song_description: What the song should be about (already stripped of "EL1" prefix)
+    
+    Returns:
+        Commands including EL1_SONG with full payload
+    """
+    import json
+    
+    print(f"🎵 [EL1] Generating full song for: {song_description[:100]}...")
+    
+    # Step 1: Have Claude generate lyrics and suggest musical style
+    lyrics_prompt = f"""You are a professional songwriter. Write lyrics for a song with this theme:
+
+"{song_description}"
+
+Also suggest the best musical style for these lyrics.
+
+Respond in this EXACT JSON format:
+{{
+    "lyrics": "verse 1 lyrics here\\n\\nchorus lyrics here\\n\\nverse 2 lyrics here\\n\\nchorus lyrics here",
+    "genre": "pop rock",
+    "mood": "uplifting, energetic",
+    "tempo": 120,
+    "key": "G major",
+    "vocal_style": "male",
+    "title": "Song Title Here"
+}}
+
+Guidelines:
+- Lyrics should be 2-3 minutes when sung (2 verses, chorus, maybe bridge)
+- Genre should match the vibe of the description
+- Tempo 80-160 BPM depending on energy
+- vocal_style: "male", "female", or "mixed"
+- Make the lyrics emotional, authentic, and memorable"""
+
+    try:
+        response = client.messages.create(
+            model="claude-opus-4-20250514",
+            max_tokens=2000,
+            temperature=0.8,
+            messages=[{"role": "user", "content": lyrics_prompt}]
+        )
+        response_text = response.content[0].text.strip()
+        
+        # Extract JSON from response
+        json_start = response_text.find('{')
+        json_end = response_text.rfind('}') + 1
+        if json_start >= 0 and json_end > json_start:
+            song_data = json.loads(response_text[json_start:json_end])
+        else:
+            raise ValueError("No JSON found in response")
+            
+    except Exception as e:
+        print(f"⚠️ [EL1] Failed to generate lyrics: {e}")
+        # Fallback with defaults
+        song_data = {
+            "lyrics": f"Verse about {song_description}\n\nChorus about {song_description}",
+            "genre": "pop",
+            "mood": "emotional",
+            "tempo": 120,
+            "key": "C major",
+            "vocal_style": "mixed",
+            "title": "Untitled"
+        }
+    
+    print(f"✅ [EL1] Generated lyrics for '{song_data.get('title', 'Untitled')}'")
+    print(f"   Genre: {song_data.get('genre')}, Tempo: {song_data.get('tempo')} BPM")
+    
+    # Step 2: Build EL1_SONG command payload
+    # This will be processed by the local bridge
+    payload = {
+        "lyrics": song_data.get("lyrics", ""),
+        "genre": song_data.get("genre", "pop"),
+        "mood": song_data.get("mood", "emotional"),
+        "tempo": song_data.get("tempo", 120),
+        "key": song_data.get("key", "C major"),
+        "vocal_style": song_data.get("vocal_style", "mixed"),
+        "title": song_data.get("title", "Untitled"),
+        "song_length_seconds": 120,  # 2 minutes
+        "description": song_description
+    }
+    
+    # Build commands:
+    # 1. SET_TEMPO for Reaper project
+    # 2. EL1_SONG command which the bridge will expand into multiple INSERT_AUDIO commands
+    commands = []
+    commands.append(f"SET_TEMPO {payload['tempo']}")
+    
+    # EL1_SONG format: EL1_SONG <start_time> <json_payload>
+    # The bridge will:
+    # - Generate full song via ElevenLabs
+    # - Separate into stems
+    # - Convert to INSERT_AUDIO commands for tracks 0-3
+    payload_json = json.dumps(payload)
+    commands.append(f'EL1_SONG 0.0 {payload_json}')
+    
+    result = "\n".join(commands)
+    print(f"✅ [EL1] Commands ready:\n{result[:500]}...")
+    
+    return result
 
 
 # =============================================
@@ -1143,7 +1519,13 @@ def generate_full_song(user_prompt, runpod_endpoint=None, experiment_name=None, 
             except Exception:
                 music_length_ms = 30000
 
-        # Keep the payload minimal and safe for JSON-in-command-line
+        # Extract chord progression, song structure, and instruments for better vocal sync
+        chord_progression = beat_info.get("chord_progression", [])
+        song_structure = beat_info.get("song_structure", [])
+        song_length_seconds = beat_info.get("song_length_seconds", 60)
+        instruments = beat_info.get("instruments", [])
+
+        # Build comprehensive payload with full musical context
         payload = {
             "session_id": "demo",
             "lyrics": lyrics_text,
@@ -1151,6 +1533,11 @@ def generate_full_song(user_prompt, runpod_endpoint=None, experiment_name=None, 
             "key": key,
             "mood": mood,
             "music_length_ms": music_length_ms,
+            # NEW: Full musical context for better vocal sync
+            "chord_progression": chord_progression,
+            "song_structure": song_structure,
+            "song_length_seconds": song_length_seconds,
+            "instruments": instruments,
         }
         import json as _json
         eleven_cmd = f"ELEVEN_VOCALS 1 0.0 {_json.dumps(payload, ensure_ascii=False)}"

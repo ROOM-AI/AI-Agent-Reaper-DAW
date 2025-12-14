@@ -18,6 +18,23 @@ local state_export_counter = 0
 
 function msg(s) reaper.ShowConsoleMsg(tostring(s).."\n") end
 
+-- If a sample library moved drives (common D:\ -> F:\), try a simple drive-letter fallback.
+local function try_drive_fallback(path)
+  if not path or path == "" then return path end
+  if #path >= 3 and path:sub(2,3) == ":\\" then
+    local drive = path:sub(1,1)
+    if drive:upper() == "D" then
+      local alt = "F" .. path:sub(2)
+      local f = io.open(alt, "rb")
+      if f then
+        f:close()
+        return alt
+      end
+    end
+  end
+  return path
+end
+
 -- Parameter conversion helpers
 function db_to_normalized(target_db, min_db, max_db)
     min_db = min_db or -30
@@ -1198,12 +1215,8 @@ function process_command(line)
         local tStart = tonumber(parts[3]) or 0
         local tEnd = tonumber(parts[4]) or (tStart + 4.0)
         
-        local track = reaper.GetTrack(0, trackIdx)
-        if not track then
-            msg(string.format("❌ Track %d not found", trackIdx))
-            add_feedback(string.format("✗ Track %d not found", trackIdx))
-            return
-        end
+        -- Auto-create tracks if needed
+        local track = ensure_track_exists(trackIdx)
         
         local item = reaper.CreateNewMIDIItemInProj(track, tStart, tEnd, false)
         if item then
@@ -1280,12 +1293,8 @@ function process_command(line)
         local tEnd = tonumber(parts[6]) or (tStart + 0.25)
         local chan = (tonumber(parts[7]) or 1) - 1
 
-        local track = reaper.GetTrack(0, trackIdx)
-        if not track then
-            msg(string.format("❌ Track %d not found", trackIdx))
-            add_feedback(string.format("✗ Track %d not found", trackIdx))
-            return
-        end
+        -- Auto-create tracks if needed
+        local track = ensure_track_exists(trackIdx)
 
         local pitch = parse_midi_pitch(pitchToken)
         if not pitch then
@@ -1663,8 +1672,8 @@ function process_command(line)
             end
         end
         
-        -- Check if file exists
-        -- Use raw open to verify
+        -- Check if file exists (with D:\ -> F:\ fallback)
+        filePath = try_drive_fallback(filePath)
         local f = io.open(filePath, "rb")
         if not f then
             -- Try replacing backslashes with forward slashes just in case
@@ -1759,7 +1768,8 @@ function process_command(line)
             filePath = parts[3] or ""
         end
         
-        -- Check file exists
+        -- Check file exists (with D:\ -> F:\ fallback)
+        filePath = try_drive_fallback(filePath)
         local f = io.open(filePath, "rb")
         if not f then
             local altPath = filePath:gsub("\\", "/")
@@ -1819,6 +1829,16 @@ function process_command(line)
         local startTime = parts[4] or "?"
         msg(string.format("⚠️ DRUM_SAMPLE not resolved: track %s, %s at %ss", trackIdx, category, startTime))
         add_feedback(string.format("⚠️ DRUM_SAMPLE needs bridge: %s", category))
+
+    elseif cmd == "ELEVEN_VOCALS" then
+        -- Bridge-only command (Python must fetch MP3 + rewrite to INSERT_AUDIO).
+        msg("⚠️ ELEVEN_VOCALS reached Lua. Start/restart your Python bridge so it rewrites ELEVEN_VOCALS -> INSERT_AUDIO.")
+        add_feedback("⚠️ ELEVEN_VOCALS needs bridge rewrite (cloud_bridge.py/local_bridge.pyw).")
+
+    elseif cmd == "EL1_SONG" then
+        -- Bridge-only command (Python must fetch full song + stems + rewrite to INSERT_AUDIO commands).
+        msg("⚠️ EL1_SONG reached Lua. Start/restart your Python bridge so it rewrites EL1_SONG -> INSERT_AUDIO commands.")
+        add_feedback("⚠️ EL1_SONG needs bridge rewrite (cloud_bridge.py/local_bridge.pyw).")
         
     else
         msg("❓ Unknown command: "..tostring(cmd))

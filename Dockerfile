@@ -19,6 +19,8 @@ COPY main.py .
 COPY old.py .
 COPY cloud_agent_wrapper.py .
 COPY prompt_enhancer.py .
+COPY elevenlabs_vocals.py .
+COPY elevenlabs_fullsong.py .
 COPY local_bridge.pyw .
 COPY drum_index.py .
 COPY drum_index.json .

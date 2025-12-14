@@ -87,7 +87,16 @@ def write_commands(cmds):
                     if agent_key:
                         headers["X-API-KEY"] = agent_key
                     r = requests.post(url, headers=headers, json=payload, timeout=180)
-                    r.raise_for_status()
+                    try:
+                        r.raise_for_status()
+                    except requests.HTTPError as he:
+                        body_preview = ""
+                        try:
+                            body_preview = (r.text or "")[:1200]
+                        except Exception:
+                            body_preview = ""
+                        log(f"[ELEVEN] HTTP {r.status_code} body: {body_preview}")
+                        raise he
                     audio_bytes = r.content
                     if not audio_bytes or len(audio_bytes) < 1024:
                         raise ValueError("empty audio bytes returned")
@@ -106,6 +115,81 @@ def write_commands(cmds):
                     continue
             else:
                 log("[ELEVEN] bad ELEVEN_VOCALS format; dropping")
+                continue
+        elif line.startswith("EL1_SONG"):
+            # EL1_SONG <startTime> <json_payload>
+            # Full song via ElevenLabs + stem separation
+            import base64
+            
+            parts = line.split(maxsplit=2)
+            if len(parts) >= 3:
+                start_time = parts[1]
+                payload_raw = parts[2].strip()
+                try:
+                    payload = json.loads(payload_raw)
+                    if not isinstance(payload, dict):
+                        raise ValueError("payload must be JSON object")
+                    payload.setdefault("session_id", "demo")
+
+                    url = f"{SERVER}/api/el1/generate"
+                    log(f"[EL1] requesting full song + stems: {url}")
+                    headers = dict(HEADERS)
+                    agent_key = os.getenv("AGENT_API_KEY", "")
+                    if agent_key:
+                        headers["X-API-KEY"] = agent_key
+                    
+                    r = requests.post(url, headers=headers, json=payload, timeout=600)
+                    try:
+                        r.raise_for_status()
+                    except requests.HTTPError as he:
+                        body_preview = ""
+                        try:
+                            body_preview = (r.text or "")[:1200]
+                        except Exception:
+                            body_preview = ""
+                        log(f"[EL1] HTTP {r.status_code} body: {body_preview}")
+                        raise he
+                    
+                    result = r.json()
+                    
+                    # Track mapping for stems
+                    stem_tracks = {"vocals": 0, "drums": 1, "bass": 2, "other": 3}
+                    stems_data = result.get("stems", {})
+                    timestamp = int(time.time())
+                    
+                    for stem_name, track_idx in stem_tracks.items():
+                        stem_b64 = stems_data.get(stem_name, "")
+                        if stem_b64:
+                            try:
+                                stem_bytes = base64.b64decode(stem_b64)
+                                if len(stem_bytes) > 1024:
+                                    filename = f"{stem_name}_{timestamp}.mp3"
+                                    out_path = (TEMP_AUDIO_DIR / filename).resolve()
+                                    out_path.write_bytes(stem_bytes)
+                                    log(f"[EL1] saved {stem_name}: {out_path}")
+                                    processed.append(f'INSERT_AUDIO {track_idx} "{out_path}" {start_time}')
+                            except Exception as stem_err:
+                                log(f"[EL1] failed to save {stem_name}: {stem_err}")
+                    
+                    # Full song to track 4
+                    full_b64 = result.get("full_song", "")
+                    if full_b64:
+                        try:
+                            full_bytes = base64.b64decode(full_b64)
+                            full_path = (TEMP_AUDIO_DIR / f"fullsong_{timestamp}.mp3").resolve()
+                            full_path.write_bytes(full_bytes)
+                            log(f"[EL1] saved full song: {full_path}")
+                            processed.append(f'INSERT_AUDIO 4 "{full_path}" {start_time}')
+                        except Exception as full_err:
+                            log(f"[EL1] failed to save full song: {full_err}")
+                    
+                    log("[EL1] Complete! Stems imported to tracks 0-4")
+                    
+                except Exception as e:
+                    log(f"[EL1] failed: {e}")
+                    continue
+            else:
+                log("[EL1] bad EL1_SONG format; dropping")
                 continue
         else:
             processed.append(line)

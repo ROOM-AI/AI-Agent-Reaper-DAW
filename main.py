@@ -60,6 +60,11 @@ class ElevenVoxRequest(BaseModel):
     mood: str = "soulful"
     melody_midi: Optional[List[int]] = None
     music_length_ms: Optional[int] = None
+    # NEW: Full chord progression and song structure for better vocal sync
+    chord_progression: Optional[List[Dict[str, Any]]] = None  # [{"bar": 1, "beat": 1, "chord": "Am"}, ...]
+    song_structure: Optional[List[Dict[str, Any]]] = None  # [{"section": "Verse", "start_bar": 1, "end_bar": 16}, ...]
+    song_length_seconds: Optional[float] = None
+    instruments: Optional[List[str]] = None  # ["Piano", "808 Bass", "Hi-hats"]
 
 
 @app.post("/api/vocals/elevenlabs")
@@ -86,6 +91,11 @@ def elevenlabs_vocals_bytes(body: ElevenVoxRequest, request: Request):
             style=body.mood,
             melody_midi=body.melody_midi,
             voice_tags=["lead vocal", "a cappella", "vocals only"],
+            # NEW: Full musical context for better vocal sync
+            chord_progression=body.chord_progression,
+            song_structure=body.song_structure,
+            song_length_seconds=body.song_length_seconds,
+            instruments=body.instruments,
         )
         prompt = build_vocals_prompt(brief)
         length_ms = body.music_length_ms
@@ -121,12 +131,115 @@ def elevenlabs_vocals_bytes(body: ElevenVoxRequest, request: Request):
             },
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Preserve more detail for debugging (SDK errors often have useful fields).
+        detail = {"error": str(e), "type": type(e).__name__}
+        try:
+            body = getattr(e, "body", None)
+            if body is not None:
+                detail["body"] = body
+            status_code = getattr(e, "status_code", None)
+            if status_code is not None:
+                detail["status_code"] = status_code
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=detail)
 
 # -------------------- Health --------------------
 @app.get("/health")
 def health():
     return {"ok": True, "ts": time.time()}
+
+
+# -------------------- EL1 Full Song + Stems --------------------
+class EL1SongRequest(BaseModel):
+    session_id: str = "demo"
+    lyrics: str
+    genre: str = "pop"
+    mood: str = "uplifting"
+    tempo: int = 120
+    key: str = "C"
+    vocal_style: str = "male"
+    title: str = "Untitled"
+    song_length_seconds: float = 120.0
+    description: str = ""
+
+
+@app.post("/api/el1/generate")
+def el1_generate_fullsong(body: EL1SongRequest, request: Request):
+    """
+    EL1 Mode: Generate full song via ElevenLabs + separate into stems.
+    
+    Returns a JSON response with:
+    - full_song: base64-encoded full song MP3
+    - stems: dict of stem_name -> base64-encoded audio
+    - filenames: dict of stem_name -> filename
+    """
+    import base64
+    
+    # Optional auth
+    if API_KEY:
+        x_api_key = request.headers.get("X-API-KEY", "")
+        if x_api_key != API_KEY:
+            raise HTTPException(status_code=401, detail="bad api key")
+    
+    try:
+        from elevenlabs_fullsong import FullSongBrief, generate_and_stem
+        
+        brief = FullSongBrief(
+            lyrics=body.lyrics,
+            genre=body.genre,
+            mood=body.mood,
+            tempo=body.tempo,
+            key=body.key,
+            vocal_style=body.vocal_style,
+            title=body.title,
+            song_length_seconds=body.song_length_seconds,
+            additional_instructions=body.description
+        )
+        
+        full_song_bytes, stems, metadata = generate_and_stem(brief)
+        
+        # Encode everything as base64 for JSON transport
+        result = {
+            "full_song": base64.b64encode(full_song_bytes).decode('utf-8'),
+            "full_song_filename": f"fullsong_{body.session_id}.mp3",
+            "stems": {
+                "vocals": base64.b64encode(stems.vocals).decode('utf-8') if stems.vocals else "",
+                "drums": base64.b64encode(stems.drums).decode('utf-8') if stems.drums else "",
+                "bass": base64.b64encode(stems.bass).decode('utf-8') if stems.bass else "",
+                "other": base64.b64encode(stems.other).decode('utf-8') if stems.other else "",
+            },
+            "filenames": stems.filenames,
+            "metadata": metadata
+        }
+        
+        add_event(
+            "el1_song_generated",
+            {
+                "title": body.title,
+                "genre": body.genre,
+                "tempo": body.tempo,
+                "full_song_size": len(full_song_bytes),
+                "stems_count": sum(1 for s in [stems.vocals, stems.drums, stems.bass, stems.other] if s)
+            },
+            session_id=body.session_id,
+        )
+        
+        return result
+        
+    except Exception as e:
+        detail = {"error": str(e), "type": type(e).__name__}
+        try:
+            body_attr = getattr(e, "body", None)
+            if body_attr is not None:
+                detail["body"] = body_attr
+            status_code = getattr(e, "status_code", None)
+            if status_code is not None:
+                detail["status_code"] = status_code
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=detail)
+
 
 # -------------------- Public read-only for investors --------------------
 @app.get("/public/events")
