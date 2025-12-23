@@ -1561,15 +1561,20 @@ async def root():
                 return;
             }
             
-            try {
-                addEvent('✨ Enhancing prompt...');
-                const response = await fetch('/api/enhance', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ session_id: getSessionId(), text: message })
-                });
-                
-                if (response.ok) {
+            addEvent('✨ Enhancing prompt...');
+            const maxAttempts = 3;
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                try {
+                    const response = await fetch('/api/enhance', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ session_id: getSessionId(), text: message })
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error('HTTP ' + response.status);
+                    }
+                    
                     const data = await response.json();
                     
                     // Check for error status from API
@@ -1582,17 +1587,21 @@ async def root():
                     if (data.enhanced && data.enhanced !== message) {
                         input.value = data.enhanced;
                         addEvent('✅ Prompt enhanced! Review and click Send');
-                        // Log to console so user can see what changed
                         console.log('Original:', message);
                         console.log('Enhanced:', data.enhanced);
                     } else {
                         addEvent('💡 Prompt already specific enough');
                     }
-                } else {
-                    addEvent('❌ Enhancement failed: HTTP ' + response.status);
+                    return;
+                } catch (error) {
+                    const msg = (error && error.message) ? error.message : String(error);
+                    if (attempt < maxAttempts) {
+                        addEvent(`⚠️ Enhance failed (${msg}) — retrying (${attempt}/${maxAttempts - 1})...`);
+                        await new Promise(r => setTimeout(r, 600 * Math.pow(2, attempt - 1)));
+                        continue;
+                    }
+                    addEvent('❌ Enhancement error: ' + msg + ' (network/DNS — try again)');
                 }
-            } catch (error) {
-                addEvent('❌ Enhancement error: ' + error.message);
             }
         }
 
