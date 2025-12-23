@@ -8,6 +8,7 @@ Returns 6 stems: vocals, drums, bass, guitar, piano, other
 import os
 import time
 import tempfile
+import re
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Tuple
 from pathlib import Path
@@ -39,6 +40,77 @@ class StemResult:
     filenames: Dict[str, str] = field(default_factory=dict)
 
 
+class ElevenLabsBadPromptError(RuntimeError):
+    """Raised when ElevenLabs rejects a prompt as bad_prompt (non-transient)."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        prompt_suggestion: Optional[str] = None,
+        status_code: Optional[int] = None,
+        body: Any = None,
+    ):
+        super().__init__(message)
+        self.prompt_suggestion = prompt_suggestion
+        self.status_code = status_code
+        self.body = body
+
+
+# Keep these conservative: we only aim to remove the most common ToS triggers (artist/title refs).
+_LIKE_PATTERNS = [
+    r"\b(sounds?\s+like|in\s+the\s+style\s+of|in\s+style\s+of|make\s+it\s+like|like|similar\s+to|inspired\s+by|channeling)\b\s+[^.\n;:]{1,160}",
+]
+
+
+def sanitize_for_elevenlabs(text: str) -> str:
+    """
+    Remove/neutralize likely ToS-triggering copycat phrasing and quoted titles.
+    This is not a bypass; it's compliance automation.
+    """
+    if not text:
+        return ""
+    out = str(text)
+
+    # Remove quoted spans (often song/album titles or artist references).
+    out = re.sub(r"[\"“”']([^\"“”']{2,120})[\"“”']", "", out)
+
+    # Remove "in the style of X" / "sounds like X" etc.
+    for pat in _LIKE_PATTERNS:
+        out = re.sub(pat, "", out, flags=re.IGNORECASE)
+
+    # Collapse whitespace
+    out = re.sub(r"\s{2,}", " ", out).strip(" ,.-;\n\t")
+    return out.strip()
+
+
+def _parse_bad_prompt_suggestion(err: Exception) -> Optional[str]:
+    """
+    ElevenLabs may return structured error bodies containing prompt_suggestion.
+    We parse defensively to handle variations (detail vs detaill).
+    """
+    body = getattr(err, "body", None)
+    if not isinstance(body, dict):
+        return None
+    detail = body.get("detail") or body.get("detaill")
+    if not isinstance(detail, dict):
+        return None
+    if detail.get("status") != "bad_prompt":
+        return None
+    data = detail.get("data") or {}
+    if isinstance(data, dict):
+        return data.get("prompt_suggestion")
+    return None
+
+
+def _is_bad_prompt(err: Exception) -> bool:
+    body = getattr(err, "body", None)
+    if not isinstance(body, dict):
+        return False
+    detail = body.get("detail") or body.get("detaill")
+    return isinstance(detail, dict) and detail.get("status") == "bad_prompt"
+
+
 def _get_client():
     """Get ElevenLabs client with API key from environment. Lazy import."""
     try:
@@ -50,7 +122,8 @@ def _get_client():
     if not api_key:
         raise ValueError("ELEVENLABS_API_KEY environment variable not set")
     
-    return ElevenLabs(api_key=api_key)
+    # Long timeout - song generation can take 2-5 minutes!
+    return ElevenLabs(api_key=api_key, timeout=600.0)
 
 
 def _format_exception(e: Exception) -> str:
@@ -77,7 +150,7 @@ def build_fullsong_prompt(brief: FullSongBrief) -> str:
     
     # If there's a description/context, include it first
     if brief.additional_instructions:
-        parts.append(brief.additional_instructions)
+        parts.append(sanitize_for_elevenlabs(brief.additional_instructions))
         parts.append("")
     
     # Only include genre/mood/tempo if explicitly set (non-default)
@@ -89,7 +162,13 @@ def build_fullsong_prompt(brief: FullSongBrief) -> str:
     # Lyrics are the main content
     parts.append("")
     parts.append("LYRICS:")
-    parts.append(brief.lyrics.strip())
+    parts.append(sanitize_for_elevenlabs(brief.lyrics.strip()))
+
+    # Compliance guardrail (does not attempt to bypass; clarifies originality requirement)
+    parts.append("")
+    parts.append(
+        "CONSTRAINTS: Do not imitate or reference any real artists, bands, songs, albums, or copyrighted lyrics. Keep everything original."
+    )
     
     return "\n".join([p for p in parts if p or p == ""])
 
@@ -115,16 +194,23 @@ def generate_full_song(
     
     print(f"🎵 [EL1] Generating full song ({length_ms/1000:.0f}s)...")
     print(f"   Prompt preview: {prompt[:200]}...")
+    print(f"   ⏳ Calling ElevenLabs API... this takes 2-5 MINUTES, please wait!")
+    import sys
+    sys.stdout.flush()  # Force log output immediately
     
     last_error = None
+    tried_suggestion = False
     for attempt in range(retries):
         try:
+            start_time = time.time()
             # Use music.compose_detailed for full song (same API as vocals)
             # Returns object with .audio (bytes), .filename, .json (metadata)
             track_details = client.music.compose_detailed(
                 prompt=prompt,
                 music_length_ms=length_ms
             )
+            elapsed = time.time() - start_time
+            print(f"   ✅ ElevenLabs returned after {elapsed:.1f}s")
             
             # Extract audio bytes from response
             audio_bytes = getattr(track_details, "audio", None)
@@ -161,6 +247,37 @@ def generate_full_song(
             
         except Exception as e:
             last_error = e
+
+            # bad_prompt is not transient; handle explicitly
+            if _is_bad_prompt(e):
+                suggestion = _parse_bad_prompt_suggestion(e)
+                if suggestion and not tried_suggestion:
+                    tried_suggestion = True
+                    print("⚠️ [EL1] ElevenLabs rejected prompt (bad_prompt). Retrying once with prompt_suggestion...")
+                    # Replace the user-provided description with suggestion, keep lyrics (sanitized).
+                    brief2 = FullSongBrief(
+                        lyrics=brief.lyrics,
+                        genre=brief.genre,
+                        mood=brief.mood,
+                        tempo=brief.tempo,
+                        key=brief.key,
+                        vocal_style=brief.vocal_style,
+                        language=brief.language,
+                        song_length_seconds=brief.song_length_seconds,
+                        title=brief.title,
+                        additional_instructions=suggestion,
+                    )
+                    prompt = build_fullsong_prompt(brief2)
+                    continue
+
+                # No suggestion (often implies non-retriable) OR suggestion already tried.
+                raise ElevenLabsBadPromptError(
+                    "ElevenLabs rejected prompt (bad_prompt). Please revise request.",
+                    prompt_suggestion=suggestion,
+                    status_code=getattr(e, "status_code", None),
+                    body=getattr(e, "body", None),
+                ) from e
+
             print(f"⚠️ [EL1] Attempt {attempt+1}/{retries} failed: {_format_exception(e)}")
             if attempt < retries - 1:
                 time.sleep(2 ** attempt)
@@ -297,17 +414,98 @@ def _extract_bytes(data) -> bytes:
     return bytes(data) if data else b''
 
 
-def generate_and_stem(
-    brief: FullSongBrief
-) -> Tuple[bytes, StemResult, Dict[str, Any]]:
+def generate_and_stem_zip(brief: FullSongBrief) -> Tuple[bytes, Dict[str, Any]]:
     """
     Full EL1 pipeline: generate song, then separate into stems.
     
     Returns:
-        (full_song_bytes, stems, metadata)
+        (zip_bytes, metadata)
         
-    If stem separation fails, returns full song as 'other' stem so at least 
-    something gets imported to Reaper.
+    Returns the ZIP directly from ElevenLabs (with full song added).
+    No re-packaging - just forward the bytes!
+    """
+    import zipfile
+    import io
+    
+    # Step 1: Generate full song
+    full_song_bytes, filename, metadata = generate_full_song(brief)
+    
+    # Step 2: Get stems ZIP from ElevenLabs
+    try:
+        stems_zip_bytes = separate_stems_raw(full_song_bytes)
+        print(f"✅ [EL1] Got stems ZIP: {len(stems_zip_bytes)/1024:.1f} KB")
+        
+        # Add full song to the ZIP
+        zip_buffer = io.BytesIO(stems_zip_bytes)
+        with zipfile.ZipFile(zip_buffer, 'a', zipfile.ZIP_STORED) as zf:
+            zf.writestr("fullsong.mp3", full_song_bytes)
+        
+        final_zip = zip_buffer.getvalue()
+        print(f"✅ [EL1] Final ZIP with fullsong: {len(final_zip)/1024:.1f} KB")
+        return final_zip, metadata
+        
+    except Exception as e:
+        print(f"⚠️ [EL1] Stem separation failed: {e}")
+        print(f"   Returning just full song in ZIP")
+        # Fallback: return just full song in a ZIP
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_STORED) as zf:
+            zf.writestr("fullsong.mp3", full_song_bytes)
+        return zip_buffer.getvalue(), metadata
+
+
+def separate_stems_raw(audio_bytes: bytes, retries: int = 3) -> bytes:
+    """
+    Get raw ZIP bytes from ElevenLabs stem separation.
+    No extraction - just return the ZIP directly.
+    """
+    import requests
+    import sys
+    
+    api_key = os.getenv("ELEVENLABS_API_KEY")
+    if not api_key:
+        raise ValueError("ELEVENLABS_API_KEY environment variable not set")
+    
+    print(f"🔀 [EL1] Getting stems ZIP ({len(audio_bytes)/1024:.1f} KB audio)...")
+    print(f"   ⏳ Calling stem separation API... this takes 1-2 MINUTES, please wait!")
+    sys.stdout.flush()
+    
+    url = "https://api.elevenlabs.io/v1/music/stem-separation"
+    params = {"output_format": "mp3_44100_128"}
+    headers = {"xi-api-key": api_key}
+    files = {"file": ("song.mp3", audio_bytes, "audio/mpeg")}
+    data = {"stem_variation_id": "six_stems_v1"}
+    
+    last_error = None
+    for attempt in range(retries):
+        try:
+            start_time = time.time()
+            response = requests.post(url, params=params, headers=headers, 
+                                    files=files, data=data, timeout=600)
+            elapsed = time.time() - start_time
+            
+            if response.status_code != 200:
+                raise RuntimeError(f"HTTP {response.status_code}: {response.text[:300]}")
+            
+            zip_bytes = response.content
+            print(f"✅ [EL1] Received stems ZIP: {len(zip_bytes)/1024:.1f} KB (took {elapsed:.1f}s)")
+            return zip_bytes
+            
+        except Exception as e:
+            last_error = e
+            print(f"⚠️ [EL1] Attempt {attempt+1}/{retries} failed: {e}")
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt)
+    
+    raise RuntimeError(f"Failed after {retries} attempts: {last_error}")
+
+
+def generate_and_stem(
+    brief: FullSongBrief
+) -> Tuple[bytes, StemResult, Dict[str, Any]]:
+    """
+    Legacy function - kept for compatibility.
+    Use generate_and_stem_zip for better performance.
     """
     # Step 1: Generate full song
     full_song_bytes, filename, metadata = generate_full_song(brief)
@@ -319,9 +517,8 @@ def generate_and_stem(
     except Exception as e:
         print(f"⚠️ [EL1] Stem separation failed: {e}")
         print(f"   Returning full song as 'other' stem instead")
-        # Fallback: return full song as the 'other' stem
         stems = StemResult(
-            other=full_song_bytes,  # Full song goes here
+            other=full_song_bytes,
             filenames={'other': filename}
         )
     

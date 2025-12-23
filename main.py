@@ -157,6 +157,7 @@ class EL1SongRequest(BaseModel):
     title: str = "Untitled"
     song_length_seconds: float = 120.0
     description: str = ""  # Original user request for context
+    start_time: float = 0.0  # Reaper start time for INSERT_AUDIO
     # Optional overrides (ElevenLabs decides if not provided)
     genre: Optional[str] = None
     mood: Optional[str] = None
@@ -165,17 +166,136 @@ class EL1SongRequest(BaseModel):
     vocal_style: Optional[str] = None
 
 
+# ==================== MODEL O ====================
+# MODEL O: Handles ALL ElevenLabs communication.
+# When user types EL1, MODEL O:
+# 1. Calls ElevenLabs (generates song + stems)
+# 2. Waits for all MP3s to return
+# 3. Queues INSERT_AUDIO_B64 commands with audio bytes directly
+# Bridge just decodes and imports - zero requests back to cloud.
+
+def _modelo_worker(session_id: str, start_time: float, brief_dict: Dict[str, Any]):
+    """
+    MODEL O worker: calls ElevenLabs, extracts stems, queues audio bytes to bridge.
+    Bridge receives INSERT_AUDIO_B64 commands and just decodes + saves + imports.
+    """
+    import traceback
+    import base64
+    import zipfile
+    import io
+    
+    job_id = f"modelo_{uuid.uuid4().hex[:8]}"
+    
+    try:
+        from elevenlabs_fullsong import FullSongBrief, generate_and_stem_zip, ElevenLabsBadPromptError
+        
+        print(f"🎵 [MODEL O] {job_id} starting ElevenLabs generation...", flush=True)
+        add_event("modelo_started", {"job_id": job_id, "title": brief_dict.get("title")}, session_id=session_id)
+        
+        brief = FullSongBrief(
+            lyrics=brief_dict.get("lyrics", ""),
+            title=brief_dict.get("title", "Untitled"),
+            song_length_seconds=brief_dict.get("song_length_seconds", 120.0),
+            additional_instructions=brief_dict.get("description", ""),
+            genre=brief_dict.get("genre") or "pop",
+            mood=brief_dict.get("mood") or "uplifting",
+            tempo=brief_dict.get("tempo") or 120,
+            key=brief_dict.get("key") or "C",
+            vocal_style=brief_dict.get("vocal_style") or "mixed",
+        )
+        
+        # Call ElevenLabs - this takes 3-8 minutes
+        zip_bytes, metadata = generate_and_stem_zip(brief)
+        print(f"✅ [MODEL O] {job_id} got ZIP from ElevenLabs: {len(zip_bytes)/1024:.1f} KB", flush=True)
+        
+        # Extract stems and queue INSERT_AUDIO_B64 commands for each
+        stem_tracks = {
+            "vocals": 0, "drums": 1, "bass": 2,
+            "guitar": 3, "piano": 4, "other": 5, "fullsong": 6
+        }
+        
+        if session_id not in REAPER_SESSIONS:
+            REAPER_SESSIONS[session_id] = []
+        
+        with zipfile.ZipFile(io.BytesIO(zip_bytes), 'r') as zf:
+            print(f"   [MODEL O] ZIP contents: {zf.namelist()}", flush=True)
+            
+            for filename in zf.namelist():
+                stem_bytes = zf.read(filename)
+                if len(stem_bytes) < 1024:
+                    continue
+                
+                file_lower = filename.lower().replace('.mp3', '')
+                track_idx = stem_tracks.get(file_lower)
+                
+                if track_idx is not None:
+                    # Base64 encode the audio bytes
+                    b64_audio = base64.b64encode(stem_bytes).decode('ascii')
+                    
+                    # Queue command: INSERT_AUDIO_B64 <track> <start> <base64_bytes>
+                    cmd = f"INSERT_AUDIO_B64 {track_idx} {start_time} {b64_audio}"
+                    REAPER_SESSIONS[session_id].append(cmd)
+                    
+                    print(f"📤 [MODEL O] Queued {file_lower} ({len(stem_bytes)/1024:.1f} KB) → track {track_idx}", flush=True)
+        
+        add_event("modelo_done", {"job_id": job_id, "stems_queued": len(stem_tracks)}, session_id=session_id)
+        print(f"✅ [MODEL O] {job_id} complete! All stems queued for bridge.", flush=True)
+        
+    except Exception as e:
+        print(f"🛑 [MODEL O] {job_id} failed: {e}", flush=True)
+        traceback.print_exc()
+        add_event("modelo_failed", {"job_id": job_id, "error": str(e)[:500]}, session_id=session_id)
+
+
+@app.post("/api/modelo/el1")
+def modelo_el1(body: EL1SongRequest, request: Request):
+    """
+    MODEL O endpoint for EL1.
+    Starts worker that calls ElevenLabs and queues audio bytes to bridge.
+    Returns immediately - bridge will receive INSERT_AUDIO_B64 commands when ready.
+    """
+    # Optional auth
+    if API_KEY:
+        x_api_key = request.headers.get("X-API-KEY", "")
+        if x_api_key != API_KEY:
+            raise HTTPException(status_code=401, detail="bad api key")
+    
+    brief_dict = {
+        "lyrics": body.lyrics,
+        "title": body.title,
+        "song_length_seconds": body.song_length_seconds,
+        "description": body.description,
+        "genre": body.genre,
+        "mood": body.mood,
+        "tempo": body.tempo,
+        "key": body.key,
+        "vocal_style": body.vocal_style,
+    }
+    
+    # Start MODEL O worker thread
+    t = threading.Thread(
+        target=_modelo_worker,
+        args=(body.session_id, body.start_time, brief_dict),
+        daemon=True,
+    )
+    t.start()
+    
+    print(f"🧾 [MODEL O] Started for '{body.title}'", flush=True)
+    
+    return {"status": "started", "message": "MODEL O is working. Stems will appear in bridge when ready."}
+
+
+# Legacy sync endpoint (kept for backwards compatibility - but will timeout on long jobs)
 @app.post("/api/el1/generate")
 def el1_generate_fullsong(body: EL1SongRequest, request: Request):
     """
     EL1 Mode: Generate full song via ElevenLabs + separate into stems.
     
-    Returns a JSON response with:
-    - full_song: base64-encoded full song MP3
-    - stems: dict of stem_name -> base64-encoded audio
-    - filenames: dict of stem_name -> filename
+    Returns a ZIP file containing all stems as MP3 files.
+    Same format as ElevenLabs stem separation API.
     """
-    import base64
+    import zipfile
+    import io
     
     # Optional auth
     if API_KEY:
@@ -184,7 +304,7 @@ def el1_generate_fullsong(body: EL1SongRequest, request: Request):
             raise HTTPException(status_code=401, detail="bad api key")
     
     try:
-        from elevenlabs_fullsong import FullSongBrief, generate_and_stem
+        from elevenlabs_fullsong import FullSongBrief, generate_and_stem_zip, ElevenLabsBadPromptError
         
         # Build brief with only what's provided (let ElevenLabs decide the rest)
         brief = FullSongBrief(
@@ -200,23 +320,8 @@ def el1_generate_fullsong(body: EL1SongRequest, request: Request):
             vocal_style=body.vocal_style or "mixed"
         )
         
-        full_song_bytes, stems, metadata = generate_and_stem(brief)
-        
-        # Encode everything as base64 for JSON transport
-        result = {
-            "full_song": base64.b64encode(full_song_bytes).decode('utf-8'),
-            "full_song_filename": f"fullsong_{body.session_id}.mp3",
-            "stems": {
-                "vocals": base64.b64encode(stems.vocals).decode('utf-8') if stems.vocals else "",
-                "drums": base64.b64encode(stems.drums).decode('utf-8') if stems.drums else "",
-                "bass": base64.b64encode(stems.bass).decode('utf-8') if stems.bass else "",
-                "guitar": base64.b64encode(stems.guitar).decode('utf-8') if stems.guitar else "",
-                "piano": base64.b64encode(stems.piano).decode('utf-8') if stems.piano else "",
-                "other": base64.b64encode(stems.other).decode('utf-8') if stems.other else "",
-            },
-            "filenames": stems.filenames,
-            "metadata": metadata
-        }
+        # Get ZIP directly (no re-packaging, much simpler!)
+        zip_bytes, metadata = generate_and_stem_zip(brief)
         
         add_event(
             "el1_song_generated",
@@ -224,14 +329,34 @@ def el1_generate_fullsong(body: EL1SongRequest, request: Request):
                 "title": body.title,
                 "genre": body.genre,
                 "tempo": body.tempo,
-                "full_song_size": len(full_song_bytes),
-                "stems_count": sum(1 for s in [stems.vocals, stems.drums, stems.bass, stems.guitar, stems.piano, stems.other] if s)
+                "zip_size": len(zip_bytes),
             },
             session_id=body.session_id,
         )
         
-        return result
+        # Return ZIP directly - same as vocals endpoint returns MP3
+        print(f"📤 [EL1] Returning ZIP: {len(zip_bytes)/1024:.1f} KB")
+        return Response(
+            content=zip_bytes,
+            media_type="application/zip",
+            headers={
+                "X-Filename": f"el1_stems_{body.session_id}.zip",
+                "X-Bytes": str(len(zip_bytes)),
+            },
+        )
         
+    except ElevenLabsBadPromptError as e:
+        # Non-transient: don't pretend it's a server failure.
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "bad_prompt",
+                "message": str(e),
+                "prompt_suggestion": getattr(e, "prompt_suggestion", None),
+                "status_code": getattr(e, "status_code", None),
+                "body": getattr(e, "body", None),
+            },
+        )
     except Exception as e:
         detail = {"error": str(e), "type": type(e).__name__}
         try:

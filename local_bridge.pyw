@@ -119,7 +119,9 @@ def write_commands(cmds):
         elif line.startswith("EL1_SONG"):
             # EL1_SONG <startTime> <json_payload>
             # Full song via ElevenLabs + stem separation
-            import base64
+            # Response is ZIP file with stems
+            import zipfile
+            import io
             
             parts = line.split(maxsplit=2)
             if len(parts) >= 3:
@@ -138,7 +140,7 @@ def write_commands(cmds):
                     if agent_key:
                         headers["X-API-KEY"] = agent_key
                     
-                    r = requests.post(url, headers=headers, json=payload, timeout=600)
+                    r = requests.post(url, headers=headers, json=payload, timeout=900)
                     try:
                         r.raise_for_status()
                     except requests.HTTPError as he:
@@ -148,42 +150,46 @@ def write_commands(cmds):
                         except Exception:
                             body_preview = ""
                         log(f"[EL1] HTTP {r.status_code} body: {body_preview}")
+                        # If cloud returns 400, it's non-transient (usually ElevenLabs bad_prompt).
+                        if r.status_code == 400:
+                            suggestion = None
+                            try:
+                                data = json.loads(r.text) if r.text else {}
+                                detail = data.get("detail") if isinstance(data, dict) else None
+                                if isinstance(detail, dict):
+                                    suggestion = detail.get("prompt_suggestion") or detail.get("promptSuggestion")
+                            except Exception:
+                                suggestion = None
+
+                            msg = "EL1 rejected prompt (HTTP 400 bad_prompt). Please revise your EL1 text."
+                            if suggestion:
+                                msg += f" Suggested prompt: {suggestion}"
+                            raise RuntimeError(msg) from he
                         raise he
                     
-                    result = r.json()
+                    # Response is ZIP file
+                    zip_bytes = r.content
+                    log(f"[EL1] received ZIP: {len(zip_bytes)/1024:.1f} KB")
                     
-                    # Track mapping for 6 stems
-                    stem_tracks = {"vocals": 0, "drums": 1, "bass": 2, "guitar": 3, "piano": 4, "other": 5}
-                    stems_data = result.get("stems", {})
+                    stem_tracks = {"vocals": 0, "drums": 1, "bass": 2, "guitar": 3, "piano": 4, "other": 5, "fullsong": 6}
                     timestamp = int(time.time())
                     
-                    for stem_name, track_idx in stem_tracks.items():
-                        stem_b64 = stems_data.get(stem_name, "")
-                        if stem_b64:
-                            try:
-                                stem_bytes = base64.b64decode(stem_b64)
-                                if len(stem_bytes) > 1024:
-                                    filename = f"{stem_name}_{timestamp}.mp3"
-                                    out_path = (TEMP_AUDIO_DIR / filename).resolve()
-                                    out_path.write_bytes(stem_bytes)
-                                    log(f"[EL1] saved {stem_name}: {out_path}")
-                                    processed.append(f'INSERT_AUDIO {track_idx} "{out_path}" {start_time}')
-                            except Exception as stem_err:
-                                log(f"[EL1] failed to save {stem_name}: {stem_err}")
+                    with zipfile.ZipFile(io.BytesIO(zip_bytes), 'r') as zf:
+                        log(f"[EL1] ZIP contents: {zf.namelist()}")
+                        for filename in zf.namelist():
+                            stem_bytes = zf.read(filename)
+                            if len(stem_bytes) < 1024:
+                                continue
+                            file_lower = filename.lower().replace('.mp3', '')
+                            track_idx = stem_tracks.get(file_lower)
+                            if track_idx is not None:
+                                out_filename = f"{file_lower}_{timestamp}.mp3"
+                                out_path = (TEMP_AUDIO_DIR / out_filename).resolve()
+                                out_path.write_bytes(stem_bytes)
+                                log(f"[EL1] saved {file_lower}: {out_path}")
+                                processed.append(f'INSERT_AUDIO {track_idx} "{out_path}" {start_time}')
                     
-                    # Full song to track 4
-                    full_b64 = result.get("full_song", "")
-                    if full_b64:
-                        try:
-                            full_bytes = base64.b64decode(full_b64)
-                            full_path = (TEMP_AUDIO_DIR / f"fullsong_{timestamp}.mp3").resolve()
-                            full_path.write_bytes(full_bytes)
-                            log(f"[EL1] saved full song: {full_path}")
-                            processed.append(f'INSERT_AUDIO 6 "{full_path}" {start_time}')
-                        except Exception as full_err:
-                            log(f"[EL1] failed to save full song: {full_err}")
-                    
-                    log("[EL1] Complete! 6 stems → tracks 0-5, full song → track 6")
+                    log("[EL1] Complete! Stems imported")
                     
                 except Exception as e:
                     log(f"[EL1] failed: {e}")

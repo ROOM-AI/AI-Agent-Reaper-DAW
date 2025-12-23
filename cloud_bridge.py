@@ -2,6 +2,17 @@
 CursorDAW Cloud Bridge - Bidirectional file-based bridge
 Connects local Reaper (via files) to cloud (via HTTP)
 """
+
+# Build/version banner (to prove which file/process is actually running)
+import os as _os_banner
+import time as _time_banner
+BRIDGE_BUILD = "MODEL-O-v1 2025-12-15"
+print(f"[BRIDGE] Build: {BRIDGE_BUILD}", flush=True)
+try:
+    print(f"[BRIDGE] Running file: {__file__}", flush=True)
+    print(f"[BRIDGE] File mtime: {_time_banner.ctime(_os_banner.path.getmtime(__file__))}", flush=True)
+except Exception:
+    pass
 import requests
 import time
 import os
@@ -316,6 +327,42 @@ def process_commands_locally(cmd_text):
             else:
                 processed.append(line)
 
+        elif line.startswith('INSERT_AUDIO_B64'):
+            # INSERT_AUDIO_B64 <track> <start_time> <base64_audio_bytes>
+            # MODEL O sends audio bytes directly. Bridge just decodes, saves, imports.
+            # NO requests to cloud - audio is inline in the command.
+            import base64
+            
+            parts = line.split(maxsplit=3)
+            if len(parts) >= 4:
+                track_idx = parts[1]
+                start_time = parts[2]
+                b64_data = parts[3].strip()
+                
+                try:
+                    # Decode base64 to bytes
+                    audio_bytes = base64.b64decode(b64_data)
+                    if len(audio_bytes) < 1024:
+                        raise ValueError("Audio data too small")
+                    
+                    # Save to temp file
+                    timestamp = int(time.time())
+                    out_filename = f"modelo_track{track_idx}_{timestamp}.mp3"
+                    out_path = (TEMP_AUDIO_DIR / out_filename).resolve()
+                    out_path.write_bytes(audio_bytes)
+                    
+                    print(f"✅ [MODEL O] Received track {track_idx}: {len(audio_bytes)/1024:.1f} KB → {out_path}")
+                    
+                    # Convert to INSERT_AUDIO for Lua
+                    processed.append(f'INSERT_AUDIO {track_idx} "{out_path}" {start_time}')
+                    
+                except Exception as e:
+                    print(f"⚠️ [MODEL O] Failed to decode/save audio for track {track_idx}: {e}")
+                    continue
+            else:
+                print("⚠️ [MODEL O] Bad INSERT_AUDIO_B64 format; dropping command.")
+                continue
+        
         elif line.startswith('ELEVEN_VOCALS'):
             # ELEVEN_VOCALS <trackIdx> <startTime> <json_payload>
             # Local bridge calls cloud /api/vocals/elevenlabs to fetch MP3 bytes,
@@ -376,13 +423,9 @@ def process_commands_locally(cmd_text):
         
         elif line.startswith('EL1_SONG'):
             # EL1_SONG <startTime> <json_payload>
-            # Full song generation via ElevenLabs + stem separation.
-            # Cloud returns: full_song + 4 stems (vocals, drums, bass, other)
-            # We save each stem and create INSERT_AUDIO commands for tracks 0-3.
-            #
-            # Example:
-            # EL1_SONG 0.0 {"lyrics":"...","genre":"pop","mood":"uplifting","tempo":120}
-            import base64
+            # NEW FLOW: Just tell cloud to START the job. Cloud does ElevenLabs in background.
+            # When done, cloud queues EL1_FETCH command which we pick up on next poll.
+            # This avoids holding a connection open for 5+ minutes.
             
             parts = line.split(maxsplit=2)
             if len(parts) >= 3:
@@ -393,80 +436,119 @@ def process_commands_locally(cmd_text):
                     if not isinstance(payload, dict):
                         raise ValueError("payload must be JSON object")
                     payload.setdefault("session_id", SESSION_ID)
+                    payload["start_time"] = float(start_time)  # Cloud needs this to queue EL1_FETCH later
 
-                    url = f"{CLOUD_URL}/api/el1/generate"
-                    print(f"🎵 [EL1] Requesting full song + stems from cloud...")
+                    url = f"{CLOUD_URL}/api/el1/start"
+                    print(f"🎵 [EL1] Starting async job on cloud...")
                     print(f"   Title: {payload.get('title', 'Untitled')}")
-                    print(f"   Genre: {payload.get('genre')}, Tempo: {payload.get('tempo')} BPM")
                     
                     headers = {}
                     agent_key = os.getenv("AGENT_API_KEY", "")
                     if agent_key:
                         headers["X-API-KEY"] = agent_key
                     
-                    # This request takes longer (song gen + stem separation)
-                    r = requests.post(url, json=payload, timeout=600, headers=headers)
-                    try:
-                        r.raise_for_status()
-                    except requests.HTTPError as he:
-                        body_preview = ""
-                        try:
-                            body_preview = (r.text or "")[:1200]
-                        except Exception:
-                            body_preview = ""
-                        print(f"⚠️ [EL1] Cloud returned HTTP {r.status_code}. Body: {body_preview}")
-                        raise he
-                    
+                    # This returns IMMEDIATELY with job_id
+                    r = requests.post(url, json=payload, headers=headers, timeout=(10, 30))
+                    r.raise_for_status()
                     result = r.json()
+                    job_id = result.get("job_id", "unknown")
                     
-                    # Track mapping for 6 stems
-                    stem_tracks = {
-                        "vocals": 0,
-                        "drums": 1,
-                        "bass": 2,
-                        "guitar": 3,
-                        "piano": 4,
-                        "other": 5
-                    }
-                    
-                    # Save and import each stem
-                    stems_data = result.get("stems", {})
-                    timestamp = int(time.time())
-                    
-                    for stem_name, track_idx in stem_tracks.items():
-                        stem_b64 = stems_data.get(stem_name, "")
-                        if stem_b64:
-                            try:
-                                stem_bytes = base64.b64decode(stem_b64)
-                                if len(stem_bytes) > 1024:  # Only save if non-empty
-                                    filename = f"{stem_name}_{timestamp}.mp3"
-                                    out_path = (TEMP_AUDIO_DIR / filename).resolve()
-                                    out_path.write_bytes(stem_bytes)
-                                    print(f"✅ [EL1] Saved {stem_name}: {out_path} ({len(stem_bytes)/1024:.1f} KB)")
-                                    processed.append(f'INSERT_AUDIO {track_idx} "{out_path}" {start_time}')
-                            except Exception as stem_err:
-                                print(f"⚠️ [EL1] Failed to save {stem_name}: {stem_err}")
-                    
-                    # Also save full song to track 4 for reference
-                    full_song_b64 = result.get("full_song", "")
-                    if full_song_b64:
-                        try:
-                            full_bytes = base64.b64decode(full_song_b64)
-                            full_path = (TEMP_AUDIO_DIR / f"fullsong_{timestamp}.mp3").resolve()
-                            full_path.write_bytes(full_bytes)
-                            print(f"✅ [EL1] Saved full song: {full_path} ({len(full_bytes)/1024:.1f} KB)")
-                            processed.append(f'INSERT_AUDIO 6 "{full_path}" {start_time}')
-                        except Exception as full_err:
-                            print(f"⚠️ [EL1] Failed to save full song: {full_err}")
-                    
-                    print(f"✅ [EL1] Complete! 6 stems → tracks 0-5, full song → track 6")
+                    print(f"🧾 [EL1] Job started: {job_id}")
+                    print(f"   Cloud is working. Will auto-import when ready (watch for EL1_FETCH).")
+                    # Don't add to processed - cloud will queue EL1_FETCH when done
                     
                 except Exception as e:
-                    print(f"⚠️ [EL1] Failed to generate/download full song: {e}")
-                    # Drop the command on failure
+                    print(f"⚠️ [EL1] Failed to start job: {e}")
                     continue
             else:
                 print("⚠️ [EL1] Bad EL1_SONG format; dropping command.")
+                continue
+        
+        elif line.startswith('EL1_FETCH'):
+            # EL1_FETCH <job_id> <start_time>
+            # Cloud queues this when ElevenLabs job is DONE. ZIP is ready to download.
+            # We download fast (no waiting), extract stems, create INSERT_AUDIO commands.
+            import zipfile
+            
+            parts = line.split()
+            if len(parts) >= 3:
+                job_id = parts[1]
+                start_time = parts[2]
+                
+                try:
+                    url = f"{CLOUD_URL}/api/el1/result/{job_id}"
+                    print(f"📥 [EL1] Fetching completed job {job_id}...")
+                    
+                    headers = {}
+                    agent_key = os.getenv("AGENT_API_KEY", "")
+                    if agent_key:
+                        headers["X-API-KEY"] = agent_key
+                    
+                    timestamp = int(time.time())
+                    zip_path = (TEMP_AUDIO_DIR / f"{job_id}_{timestamp}.zip").resolve()
+                    
+                    # Download ZIP (should be fast - it's already generated)
+                    with requests.get(url, headers=headers, stream=True, timeout=(15, 300)) as r:
+                        if r.status_code == 400:
+                            # Job failed (bad_prompt etc)
+                            try:
+                                err = r.json()
+                                print(f"🛑 [EL1] Job {job_id} failed: {err.get('error', r.text[:200])}")
+                            except Exception:
+                                print(f"🛑 [EL1] Job {job_id} failed: {r.text[:200]}")
+                            continue
+                        if r.status_code == 404:
+                            print(f"⚠️ [EL1] Job {job_id} not found or expired")
+                            continue
+                        r.raise_for_status()
+                        
+                        total = r.headers.get("Content-Length")
+                        total_bytes = int(total) if total and total.isdigit() else None
+                        downloaded = 0
+                        
+                        with open(zip_path, "wb") as f:
+                            for chunk in r.iter_content(chunk_size=256 * 1024):
+                                if not chunk:
+                                    continue
+                                f.write(chunk)
+                                downloaded += len(chunk)
+                                if total_bytes and downloaded % (2 * 1024 * 1024) < (256 * 1024):
+                                    print(f"📥 [EL1] {downloaded/1024/1024:.1f}MB / {total_bytes/1024/1024:.1f}MB")
+                    
+                    size = zip_path.stat().st_size
+                    if not zipfile.is_zipfile(zip_path):
+                        raise ValueError("Downloaded file is not a valid ZIP")
+                    
+                    print(f"📦 [EL1] Downloaded: {size/1024:.1f} KB -> {zip_path}")
+                    
+                    # Extract stems
+                    stem_tracks = {
+                        "vocals": 0, "drums": 1, "bass": 2,
+                        "guitar": 3, "piano": 4, "other": 5, "fullsong": 6
+                    }
+                    
+                    with zipfile.ZipFile(str(zip_path), 'r') as zf:
+                        print(f"   ZIP contents: {zf.namelist()}")
+                        for filename in zf.namelist():
+                            stem_bytes = zf.read(filename)
+                            if len(stem_bytes) < 1024:
+                                continue
+                            file_lower = filename.lower().replace('.mp3', '')
+                            track_idx = stem_tracks.get(file_lower)
+                            if track_idx is not None:
+                                out_filename = f"{file_lower}_{timestamp}.mp3"
+                                out_path = (TEMP_AUDIO_DIR / out_filename).resolve()
+                                out_path.write_bytes(stem_bytes)
+                                print(f"✅ [EL1] Saved {file_lower}: {out_path} ({len(stem_bytes)/1024:.1f} KB)")
+                                processed.append(f'INSERT_AUDIO {track_idx} "{out_path}" {start_time}')
+                    
+                    print(f"✅ [EL1] Job {job_id} complete! Stems imported.")
+                    
+                except Exception as e:
+                    print(f"⚠️ [EL1] Failed to fetch/import job {job_id}: {e}")
+                    continue
+            else:
+                print("⚠️ [EL1] Bad EL1_FETCH format; dropping command.")
                 continue
         
         else:
@@ -506,7 +588,7 @@ def poll_commands():
                             cmd_text = raw[1:-1]
                     
                     # Process commands locally (resolve sample IDs, convert cloud paths)
-                    if any(kw in cmd_text for kw in ['USE_SAMPLE', 'DRUM_SAMPLE', 'LOAD_SAMPLER', 'EXPORT_AUDIO', 'ELEVEN_VOCALS', 'EL1_SONG']):
+                    if any(kw in cmd_text for kw in ['USE_SAMPLE', 'DRUM_SAMPLE', 'LOAD_SAMPLER', 'EXPORT_AUDIO', 'ELEVEN_VOCALS', 'EL1_SONG', 'EL1_FETCH', 'INSERT_AUDIO_B64']):
                         print(f"[BRIDGE] Processing commands locally...")
                         cmd_text = process_commands_locally(cmd_text)
                     
