@@ -12,6 +12,39 @@ from dotenv import load_dotenv
 load_dotenv()
 client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY_ENHANCER") or os.getenv("ANTHROPIC_API_KEY"))
 
+def _claude_text(*, model: str, messages, max_tokens: int, temperature: float = 0.7) -> str:
+    """
+    Anthropic SDK requires streaming for operations that may take longer than ~10 minutes
+    (e.g. high max_tokens). Stream and return the accumulated final text.
+    """
+    kwargs = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "messages": messages,
+    }
+
+    try:
+        with client.messages.stream(**kwargs) as stream:
+            chunks = []
+            if hasattr(stream, "text_stream"):
+                for text in stream.text_stream:
+                    chunks.append(text)
+            out = "".join(chunks).strip()
+            if out:
+                return out
+
+            final_msg = stream.get_final_message()
+            parts = []
+            for block in getattr(final_msg, "content", []) or []:
+                txt = getattr(block, "text", None)
+                if txt:
+                    parts.append(txt)
+            return "".join(parts).strip()
+    except Exception:
+        resp = client.messages.create(**kwargs)
+        return resp.content[0].text.strip()
+
 
 def extract_bpm_from_text(text: str) -> int | None:
     """Best-effort BPM extraction from user prompt (e.g. '160 bpm', 'bpm 140', 'tempo=128')."""
@@ -100,12 +133,12 @@ Classify this DAW request:
 Answer with ONE word: SONG, COMPOSE_AROUND, or AGENTIC"""
 
     try:
-        response = client.messages.create(
+        response = _claude_text(
             model="claude-opus-4-20250514",
             max_tokens=15,
             temperature=0,
-            messages=[{"role": "user", "content": prompt}]
-        ).content[0].text.strip().upper()
+            messages=[{"role": "user", "content": prompt}],
+        ).strip().upper()
         
         if "COMPOSE" in response or "AROUND" in response:
             return "compose_around"
@@ -286,8 +319,8 @@ def generate_song_commands(user_input):
     # Build drum sample info ONLY if user wants drums and doesn't want no-drums
     drum_info = ""
     if wants_drums and not wants_no_drums:
-        if DRUM_SAMPLES_AVAILABLE and DRUM_SUMMARY:
-            drum_info = f"""
+    if DRUM_SAMPLES_AVAILABLE and DRUM_SUMMARY:
+        drum_info = f"""
 DRUM SAMPLES (use ONLY if drums fit the music):
 LOAD_SAMPLER [track] [sample_id] 60 60 60
 MIDI_CREATE_ITEM [track] [start] [end]
@@ -295,8 +328,8 @@ MIDI_INSERT_NOTE [track] 60 [velocity] [start] [end]
 
 SAMPLES: {DRUM_SUMMARY}
 """
-        else:
-            drum_info = """
+    else:
+        drum_info = """
 DRUMS (use ONLY if drums fit the music):
 INSERT_INSTRUMENT [track] VSTi: ReaSynDr (Cockos)
 kick=36, snare=38, hihat=42
@@ -350,12 +383,12 @@ Generate at least 1 minute of MUSICAL, EMOTIONAL, CREATIVE composition."""
     if DRUM_SAMPLES_AVAILABLE:
         print(f"   🥁 Real drum samples enabled!")
     
-    response = client.messages.create(
+    response = _claude_text(
         model="claude-opus-4-20250514",
         max_tokens=16000,
         temperature=0.95,
         messages=[{"role": "user", "content": prompt}]
-    ).content[0].text.strip()
+    )
     
     # Keep only valid commands
     valid_prefixes = ('SET_TEMPO', 'INSERT_INSTRUMENT', 'MIDI_CREATE_ITEM', 
@@ -475,12 +508,12 @@ Output ONLY commands, one per line."""
     if DRUM_SAMPLES_AVAILABLE:
         print(f"   🥁 Real drum samples enabled!")
 
-    response = client.messages.create(
+    response = _claude_text(
         model="claude-opus-4-20250514",
         max_tokens=16000,
         temperature=0.9,
         messages=[{"role": "user", "content": prompt}]
-    ).content[0].text.strip()
+    )
 
     # Keep only valid commands
     valid_prefixes = ('SET_TEMPO', 'INSERT_INSTRUMENT', 'MIDI_CREATE_ITEM', 
@@ -504,12 +537,12 @@ Output ONLY commands, one per line."""
 
 def enhance_simple_prompt(user_input):
     """Fix typos for mixing requests."""
-    response = client.messages.create(
+    response = _claude_text(
         model="claude-opus-4-20250514",
         max_tokens=200,
         temperature=0,
         messages=[{"role": "user", "content": f"Fix typos: \"{user_input}\"\nOutput only the fixed text:"}]
-    ).content[0].text.strip().strip('"\'')
+    ).strip().strip('"\'')
     return response
 
 
@@ -518,14 +551,25 @@ def enhance_prompt(user_input, reaper_state="", midi_notes=None):
     mode = classify_request(user_input)
     
     if mode == "el1_fullsong":
-        print(f"🎵 EL1 MODE - Full song via ElevenLabs + stems")
+        print(f"🎵 EL1 MODE - Full song via ElevenLabs + stems (MODEL O)")
         # Strip the "EL1" prefix to get the actual song description
         description = user_input.strip()
         if description.lower().startswith("el1 "):
             description = description[4:].strip()
         elif description.lower().startswith("el1:"):
             description = description[4:].strip()
-        return generate_el1_fullsong(description)
+        # Try to get session_id from agent module
+        session_id = "demo"
+        try:
+            import sys
+            main_module = sys.modules.get('main') or sys.modules.get('__main__')
+            if main_module:
+                agent = getattr(main_module, 'agent', None)
+                if agent:
+                    session_id = getattr(agent, '_CURRENT_SESSION_ID', 'demo') or 'demo'
+        except Exception:
+            pass
+        return generate_el1_fullsong(description, session_id=session_id)
     elif mode == "song_generation":
         print(f"🎵 SONG MODE - Full song (instrumental + vocals trigger)")
         # IMPORTANT: In song mode we want the prompt enhancer to do everything:
@@ -875,12 +919,12 @@ Write the complete lyrics now:"""
     print(f"📝 Generating lyrics: {mood} song about '{topic}'")
     
     try:
-        response = client.messages.create(
+        response = _claude_text(
             model="claude-opus-4-20250514",
             max_tokens=2000,
             temperature=0.9,
-            messages=[{"role": "user", "content": prompt}]
-        ).content[0].text.strip()
+            messages=[{"role": "user", "content": prompt}],
+        )
     except Exception as e:
         print(f"   ❌ Lyrics API error: {e}")
         return f"[VERSE 1]\nCouldn't generate lyrics\nPlease try again\n\n[CHORUS]\nTry again\nTry again"
@@ -963,12 +1007,12 @@ Generate the complete vocal melody:"""
     print(f"🎤 Generating vocal melody in {key} at {tempo} BPM")
     
     try:
-        response = client.messages.create(
+        response = _claude_text(
             model="claude-opus-4-20250514",
             max_tokens=8000,
             temperature=0.8,
-            messages=[{"role": "user", "content": prompt}]
-        ).content[0].text.strip()
+            messages=[{"role": "user", "content": prompt}],
+        )
     except Exception as e:
         print(f"   ❌ Melody API error: {e}")
         # Return minimal fallback melody
@@ -1133,18 +1177,18 @@ def call_diffsinger_api(diffsinger_input, runpod_endpoint=None, api_key=None,
     
     # No inference method available - return placeholder
     print("⚠️ DiffSinger not configured - returning placeholder")
-    lyrics_preview = diffsinger_input.get('lyrics', '')[:100]
-    notes_preview = diffsinger_input.get('notes', '')[:50]
-    return {
-        'status': 'pending',
+        lyrics_preview = diffsinger_input.get('lyrics', '')[:100]
+        notes_preview = diffsinger_input.get('notes', '')[:50]
+        return {
+            'status': 'pending',
         'message': 'DiffSinger not configured. Provide experiment_name for local inference or runpod_endpoint for API.',
-        'input_preview': {
-            'lyrics': lyrics_preview + ('...' if len(lyrics_preview) >= 100 else ''),
-            'notes': notes_preview + ('...' if len(notes_preview) >= 50 else ''),
-            'tempo': diffsinger_input.get('tempo', 120)
+            'input_preview': {
+                'lyrics': lyrics_preview + ('...' if len(lyrics_preview) >= 100 else ''),
+                'notes': notes_preview + ('...' if len(notes_preview) >= 50 else ''),
+                'tempo': diffsinger_input.get('tempo', 120)
+            }
         }
-    }
-
+    
 
 def call_elevenlabs_music_api(
     *,
@@ -1260,7 +1304,7 @@ Match the energy and vibe of the beat.
     
     # Step 5: Format (legacy DiffSinger input) - kept for debugging / compatibility
     diffsinger_input = format_for_diffsinger(lyrics, melody, beat_info['tempo'])
-
+    
     # Step 6: Synthesize vocals (optional)
     # In the current cloud→local bridge architecture, we often only want a "vocal brief"
     # here and let the local bridge trigger ElevenLabs via ELEVEN_VOCALS.
@@ -1333,20 +1377,23 @@ Match the energy and vibe of the beat.
 # EL1 MODE - Full ElevenLabs Song + Stems
 # =============================================
 
-def generate_el1_fullsong(song_description: str) -> str:
+def generate_el1_fullsong(song_description: str, session_id: str = "demo") -> str:
     """
     EL1 Mode: Generate full song with ElevenLabs + split into stems.
     
-    Claude ONLY writes lyrics. ElevenLabs decides everything else (key, tempo, genre, style).
-    This is the "auto" mode - minimal control, maximum creative freedom for ElevenLabs.
+    Claude writes lyrics, then MODEL O handles ALL ElevenLabs communication.
+    When done, MODEL O queues INSERT_AUDIO_B64 commands directly to bridge.
+    Bridge NEVER calls cloud - just receives audio bytes.
     
     Args:
         song_description: What the song should be about (already stripped of "EL1" prefix)
+        session_id: Session for queueing results
     
     Returns:
-        Commands including EL1_SONG with lyrics payload
+        Message that MODEL O is working
     """
     import json
+    import threading
     
     print(f"🎵 [EL1] Generating lyrics for: {song_description[:100]}...")
     
@@ -1368,13 +1415,12 @@ Guidelines:
 - ONLY provide lyrics and title - nothing else"""
 
     try:
-        response = client.messages.create(
+        response_text = _claude_text(
             model="claude-opus-4-20250514",
             max_tokens=2000,
             temperature=0.9,
-            messages=[{"role": "user", "content": lyrics_prompt}]
-        )
-        response_text = response.content[0].text.strip()
+            messages=[{"role": "user", "content": lyrics_prompt}],
+        ).strip()
         
         # Extract JSON from response
         json_start = response_text.find('{')
@@ -1394,23 +1440,61 @@ Guidelines:
     
     print(f"✅ [EL1] Generated lyrics for '{song_data.get('title', 'Untitled')}'")
     
-    # EL1 payload: ONLY lyrics + description
-    # ElevenLabs will decide key, tempo, genre, style automatically
-    payload = {
-        "lyrics": song_data.get("lyrics", ""),
-        "title": song_data.get("title", "Untitled"),
-        "description": song_description,  # Pass original description for context
-        "song_length_seconds": 120
-    }
-    
-    # EL1_SONG format: EL1_SONG <start_time> <json_payload>
-    payload_json = json.dumps(payload)
-    commands = [f'EL1_SONG 0.0 {payload_json}']
-    
-    result = "\n".join(commands)
-    print(f"✅ [EL1] Commands ready (lyrics only, ElevenLabs handles the rest)")
-    
-    return result
+    # Trigger MODEL O directly - it will queue INSERT_AUDIO_B64 commands when done
+    # This import is inside function to avoid circular imports
+    try:
+        # Import the MODEL O worker from main.py
+        import sys
+        import importlib
+        
+        # Get REAPER_SESSIONS from main module (we're running inside cloud)
+        main_module = sys.modules.get('main') or sys.modules.get('__main__')
+        if main_module and hasattr(main_module, '_modelo_worker'):
+            brief_dict = {
+                "lyrics": song_data.get("lyrics", ""),
+                "title": song_data.get("title", "Untitled"),
+                "song_length_seconds": 120.0,
+                "description": song_description,
+                "genre": None,
+                "mood": None,
+                "tempo": None,
+                "key": None,
+                "vocal_style": None,
+            }
+            
+            # Start MODEL O worker in background thread
+            t = threading.Thread(
+                target=main_module._modelo_worker,
+                args=(session_id, 0.0, brief_dict),
+                daemon=True,
+            )
+            t.start()
+            
+            print(f"🚀 [MODEL O] Started! Stems will appear in bridge when ready.")
+            return f"# MODEL O is generating '{song_data.get('title', 'Untitled')}'\n# Stems will auto-import when ready (3-8 minutes)"
+        else:
+            print("⚠️ [EL1] Could not find MODEL O worker, falling back to EL1_SONG")
+            # Fallback to old method
+            payload = {
+                "lyrics": song_data.get("lyrics", ""),
+                "title": song_data.get("title", "Untitled"),
+                "description": song_description,
+                "song_length_seconds": 120
+            }
+            payload_json = json.dumps(payload)
+            return f'EL1_SONG 0.0 {payload_json}'
+            
+    except Exception as e:
+        print(f"⚠️ [EL1] Failed to start MODEL O: {e}")
+        # Fallback to old method
+        payload = {
+            "lyrics": song_data.get("lyrics", ""),
+            "title": song_data.get("title", "Untitled"),
+            "description": song_description,
+            "song_length_seconds": 120
+        }
+        payload_json = json.dumps(payload)
+        return f'EL1_SONG 0.0 {payload_json}'
 
 
 # =============================================
@@ -1513,7 +1597,7 @@ def generate_full_song(user_prompt, runpod_endpoint=None, experiment_name=None, 
         beat_commands_with_vocals = beat_commands.rstrip() + "\n\n" + eleven_cmd + "\n"
     except Exception:
         beat_commands_with_vocals = beat_commands
-
+    
     return {
         # Backward compatible fields
         'beat_commands': beat_commands_with_vocals,
