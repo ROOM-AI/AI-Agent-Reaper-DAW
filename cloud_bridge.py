@@ -6,7 +6,7 @@ Connects local Reaper (via files) to cloud (via HTTP)
 # Build/version banner (to prove which file/process is actually running)
 import os as _os_banner
 import time as _time_banner
-BRIDGE_BUILD = "MODEL-O-v1 2025-12-15"
+BRIDGE_BUILD = "MODEL-O-v1 2025-12-23 dns-retry"
 print(f"[BRIDGE] Build: {BRIDGE_BUILD}", flush=True)
 try:
     print(f"[BRIDGE] Running file: {__file__}", flush=True)
