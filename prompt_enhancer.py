@@ -319,8 +319,8 @@ def generate_song_commands(user_input):
     # Build drum sample info ONLY if user wants drums and doesn't want no-drums
     drum_info = ""
     if wants_drums and not wants_no_drums:
-    if DRUM_SAMPLES_AVAILABLE and DRUM_SUMMARY:
-        drum_info = f"""
+        if DRUM_SAMPLES_AVAILABLE and DRUM_SUMMARY:
+            drum_info = f"""
 DRUM SAMPLES (use ONLY if drums fit the music):
 LOAD_SAMPLER [track] [sample_id] 60 60 60
 MIDI_CREATE_ITEM [track] [start] [end]
@@ -328,8 +328,8 @@ MIDI_INSERT_NOTE [track] 60 [velocity] [start] [end]
 
 SAMPLES: {DRUM_SUMMARY}
 """
-    else:
-        drum_info = """
+        else:
+            drum_info = """
 DRUMS (use ONLY if drums fit the music):
 INSERT_INSTRUMENT [track] VSTi: ReaSynDr (Cockos)
 kick=36, snare=38, hihat=42
@@ -1177,17 +1177,17 @@ def call_diffsinger_api(diffsinger_input, runpod_endpoint=None, api_key=None,
     
     # No inference method available - return placeholder
     print("⚠️ DiffSinger not configured - returning placeholder")
-        lyrics_preview = diffsinger_input.get('lyrics', '')[:100]
-        notes_preview = diffsinger_input.get('notes', '')[:50]
-        return {
-            'status': 'pending',
+    lyrics_preview = diffsinger_input.get('lyrics', '')[:100]
+    notes_preview = diffsinger_input.get('notes', '')[:50]
+    return {
+        'status': 'pending',
         'message': 'DiffSinger not configured. Provide experiment_name for local inference or runpod_endpoint for API.',
-            'input_preview': {
-                'lyrics': lyrics_preview + ('...' if len(lyrics_preview) >= 100 else ''),
-                'notes': notes_preview + ('...' if len(notes_preview) >= 50 else ''),
-                'tempo': diffsinger_input.get('tempo', 120)
-            }
+        'input_preview': {
+            'lyrics': lyrics_preview + ('...' if len(lyrics_preview) >= 100 else ''),
+            'notes': notes_preview + ('...' if len(notes_preview) >= 50 else ''),
+            'tempo': diffsinger_input.get('tempo', 120)
         }
+    }
     
 
 def call_elevenlabs_music_api(
