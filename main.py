@@ -424,6 +424,21 @@ def api_chat(body: ChatIn):
         _ensure_agent_loaded()
         # Import prompt enhancer
         from prompt_enhancer import enhance_prompt, generate_song_commands
+
+        # If the client sends status text (not an actual request), don't run the agent.
+        # This avoids the agent replying "needs clarification" to informational updates.
+        raw_text = (body.text or "").strip()
+        if raw_text.startswith("# MODEL O is generating"):
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+            return {
+                "reply": "⏳ MODEL O is already generating. Stems will import when ready.",
+                "plan": {"plan_id": f"plan-{int(time.time()*1000)}", "steps": []},
+                "commands": [],
+                "status": "success",
+                "agent_reasoning": raw_text,
+                "full_output": "",
+            }
         
         # Step 1: Enhance vague prompt to be specific/technical
         reaper_state = REAPER_STATE.get(body.session_id, {})
@@ -449,6 +464,27 @@ def api_chat(body: ChatIn):
         
         print(f"📝 Original: {body.text}")
         print(f"✨ Enhanced: {enhanced_prompt[:500]}..." if len(enhanced_prompt) > 500 else f"✨ Enhanced: {enhanced_prompt}")
+
+        # EL1/MODEL O: the enhancer may start a background worker and return a status message.
+        # In that case, do NOT execute the Reaper agent (there are no DAW commands to run yet).
+        if isinstance(enhanced_prompt, str) and (
+            enhanced_prompt.strip().startswith("# MODEL O is generating")
+            or "MODEL O is working" in enhanced_prompt
+            or enhanced_prompt.strip().startswith("🎵 [EL1]")
+        ):
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+            agent_output = output_capture.getvalue()
+            plan = {"plan_id": f"plan-{int(time.time()*1000)}", "steps": []}
+            add_event("plan_created", {"prompt": body.text, **plan}, session_id=body.session_id)
+            return {
+                "reply": enhanced_prompt,
+                "plan": plan,
+                "commands": [],
+                "status": "success",
+                "agent_reasoning": enhanced_prompt,
+                "full_output": agent_output,
+            }
         
         # Step 2: Execute using REAL agent with cloud hooks
         agent._CURRENT_SESSION_ID = body.session_id
