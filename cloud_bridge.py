@@ -14,6 +14,8 @@ try:
 except Exception:
     pass
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import time
 import os
 import json
@@ -33,6 +35,21 @@ except ImportError:
 
 CLOUD_URL = "https://feelings36lex36slo14moossolo-97692729550.europe-west1.run.app"
 SESSION_ID = "demo"  # Default session - change this if multiple users
+
+# Resilient HTTP session (handles transient DNS/network drops better than raw requests.* calls)
+_HTTP = requests.Session()
+_retry = Retry(
+    total=5,
+    connect=5,
+    read=3,
+    status=3,
+    backoff_factor=0.6,
+    status_forcelist=(429, 500, 502, 503, 504),
+    allowed_methods=frozenset(["GET", "POST"]),
+    raise_on_status=False,
+)
+_HTTP.mount("https://", HTTPAdapter(max_retries=_retry))
+_HTTP.mount("http://", HTTPAdapter(max_retries=_retry))
 
 # Local files that Lua reads/writes - MUST match Lua script paths!
 # Auto-detect base directory (matches Lua logic)
@@ -148,7 +165,7 @@ def _send_state_if_changed(force: bool = False):
             except Exception:
                 state_payload = {"state_text": content}
             state_payload["session_id"] = SESSION_ID
-            requests.post(
+            _HTTP.post(
                 f"{CLOUD_URL}/api/reaper/state",
                 json=state_payload,
                 timeout=5,  # Slightly longer timeout for trimmed state
@@ -180,7 +197,7 @@ def _send_feedback_if_changed(force: bool = False):
                 "session_id": SESSION_ID,
                 "feedback": content
             }
-            requests.post(
+            _HTTP.post(
                 f"{CLOUD_URL}/api/reaper/feedback",
                 json=feedback_payload,
                 timeout=5,
@@ -388,7 +405,7 @@ def process_commands_locally(cmd_text):
                     agent_key = os.getenv("AGENT_API_KEY", "")
                     if agent_key:
                         headers["X-API-KEY"] = agent_key
-                    r = requests.post(url, json=payload, timeout=180, headers=headers)
+                    r = _HTTP.post(url, json=payload, timeout=180, headers=headers)
                     try:
                         r.raise_for_status()
                     except requests.HTTPError as he:
@@ -448,7 +465,7 @@ def process_commands_locally(cmd_text):
                         headers["X-API-KEY"] = agent_key
                     
                     # This returns IMMEDIATELY with job_id
-                    r = requests.post(url, json=payload, headers=headers, timeout=(10, 30))
+                    r = _HTTP.post(url, json=payload, headers=headers, timeout=(10, 30))
                     r.raise_for_status()
                     result = r.json()
                     job_id = result.get("job_id", "unknown")
@@ -488,7 +505,7 @@ def process_commands_locally(cmd_text):
                     zip_path = (TEMP_AUDIO_DIR / f"{job_id}_{timestamp}.zip").resolve()
                     
                     # Download ZIP (should be fast - it's already generated)
-                    with requests.get(url, headers=headers, stream=True, timeout=(15, 300)) as r:
+                    with _HTTP.get(url, headers=headers, stream=True, timeout=(15, 300)) as r:
                         if r.status_code == 400:
                             # Job failed (bad_prompt etc)
                             try:
@@ -563,7 +580,7 @@ def poll_commands():
     last_cmd_time = 0.0
     while True:
         try:
-            r = requests.get(
+            r = _HTTP.get(
                 f"{CLOUD_URL}/api/reaper/poll",
                 params={"session_id": SESSION_ID},
                 timeout=5
@@ -637,7 +654,7 @@ def lyrics_cache_worker():
     print("✓ Lyrics cache thread running")
     while True:
         try:
-            r = requests.get(
+            r = _HTTP.get(
                 f"{CLOUD_URL}/api/lyrics/pending",
                 params={"session_id": SESSION_ID},
                 timeout=5
@@ -753,7 +770,7 @@ def upload_audio_worker():
                             params = {"session_id": SESSION_ID}
                             if track_idx is not None:
                                 params["track_idx"] = track_idx
-                            resp = requests.post(
+                            resp = _HTTP.post(
                                 f"{CLOUD_URL}/api/upload/audio",
                                 params=params,
                                 files=files,
