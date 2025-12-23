@@ -245,8 +245,27 @@ def ensure_instruments_and_items(commands):
     # Resolve drum samples to actual files
     drum_cmds = resolve_drum_samples(drum_cmds)
     
-    # SAFETY: Ensure EVERY track with MIDI notes or sampler/instrument has everything it needs
-    all_active_tracks = tracks_with_notes.union(instrument_cmds.keys()).union(sampler_cmds.keys())
+    # SAFETY: Ensure EVERY track that might produce sound has everything it needs.
+    # Include tracks referenced by:
+    # - MIDI notes
+    # - MIDI items
+    # - instruments/samplers
+    # - drum/audio commands (DRUM_SAMPLE / USE_SAMPLE / INSERT_AUDIO)
+    # - automation (VOL_DIP)
+    all_active_tracks = set()
+    all_active_tracks |= set(tracks_with_notes)
+    all_active_tracks |= set(midi_create_cmds.keys())
+    all_active_tracks |= set(instrument_cmds.keys())
+    all_active_tracks |= set(sampler_cmds.keys())
+    all_active_tracks |= set(tracks_with_drums)
+    for cmd in other_cmds:
+        if cmd.startswith("VOL_DIP"):
+            parts = cmd.split()
+            if len(parts) >= 2:
+                try:
+                    all_active_tracks.add(int(parts[1]))
+                except Exception:
+                    pass
     
     for track in all_active_tracks:
         has_instrument = track in instrument_cmds
@@ -254,21 +273,22 @@ def ensure_instruments_and_items(commands):
         
         # 1. Ensure Sound Source (Instrument or Sampler)
         if not has_instrument and not has_sampler:
-            # If it looks like a drum track (checked via default map or heuristic), give it a sampler
-            if DRUM_SAMPLES_AVAILABLE and track in DEFAULT_DRUM_SAMPLES:
+            # Only force a sampler on tracks 2-5 if this track is actually being used as drums/samples.
+            is_drum_track = (track in tracks_with_drums)
+            if DRUM_SAMPLES_AVAILABLE and is_drum_track and track in DEFAULT_DRUM_SAMPLES:
                 sample_id, base, start, end = DEFAULT_DRUM_SAMPLES[track]
                 sampler_cmds[track] = f'LOAD_SAMPLER {track} {sample_id} {base} {start} {end}'
                 print(f"   🎹 Added missing sampler for track {track}")
             else:
-                # Otherwise default to Analog Lab
-                vst = 'VSTi: Analog Lab V (Arturia)'
+                # Otherwise choose a sensible default instrument
+                vst = DEFAULT_VSTS.get(track) or DEFAULT_VSTS.get(4) or 'VSTi: Analog Lab V (Arturia)'
                 instrument_cmds[track] = f'INSERT_INSTRUMENT {track} {vst}'
                 print(f"   🎸 Added missing instrument for track {track}")
         
         # 2. Ensure MIDI Item (so notes can exist)
         if track not in midi_create_cmds:
-             midi_create_cmds[track] = f'MIDI_CREATE_ITEM {track} 0.0 {round(max_end_time + 1, 1)}'
-             print(f"   📝 Added missing MIDI item for track {track}")
+            midi_create_cmds[track] = f'MIDI_CREATE_ITEM {track} 0.0 {round(max_end_time + 1, 1)}'
+            print(f"   📝 Added missing MIDI item for track {track}")
 
     # Rebuild commands in correct order
     final_commands = []
