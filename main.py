@@ -174,7 +174,12 @@ class EL1SongRequest(BaseModel):
 # 3. Queues INSERT_AUDIO_B64 commands with audio bytes directly
 # Bridge just decodes and imports - zero requests back to cloud.
 
-def _modelo_worker(session_id: str, start_time: float, brief_dict: Dict[str, Any]):
+# Track in-flight MODEL O jobs per session to avoid accidental duplicates
+_MODELO_LOCK = threading.Lock()
+_MODELO_INFLIGHT: Dict[str, str] = {}  # session_id -> job_id
+
+
+def _modelo_worker(job_id: str, session_id: str, start_time: float, brief_dict: Dict[str, Any]):
     """
     MODEL O worker: calls ElevenLabs, extracts stems, queues audio bytes to bridge.
     Bridge receives INSERT_AUDIO_B64 commands and just decodes + saves + imports.
@@ -183,8 +188,6 @@ def _modelo_worker(session_id: str, start_time: float, brief_dict: Dict[str, Any
     import base64
     import zipfile
     import io
-    
-    job_id = f"modelo_{uuid.uuid4().hex[:8]}"
     
     try:
         from elevenlabs_fullsong import FullSongBrief, generate_and_stem_zip, ElevenLabsBadPromptError
@@ -245,6 +248,14 @@ def _modelo_worker(session_id: str, start_time: float, brief_dict: Dict[str, Any
         print(f"🛑 [MODEL O] {job_id} failed: {e}", flush=True)
         traceback.print_exc()
         add_event("modelo_failed", {"job_id": job_id, "error": str(e)[:500]}, session_id=session_id)
+    finally:
+        # Clear inflight marker so the user can try again.
+        try:
+            with _MODELO_LOCK:
+                if _MODELO_INFLIGHT.get(session_id) == job_id:
+                    _MODELO_INFLIGHT.pop(session_id, None)
+        except Exception:
+            pass
 
 
 @app.post("/api/modelo/el1")
@@ -260,6 +271,18 @@ def modelo_el1(body: EL1SongRequest, request: Request):
         if x_api_key != API_KEY:
             raise HTTPException(status_code=401, detail="bad api key")
     
+    # Prevent multiple EL1 jobs for the same session (common if user clicks twice).
+    with _MODELO_LOCK:
+        existing = _MODELO_INFLIGHT.get(body.session_id)
+        if existing:
+            return {
+                "status": "busy",
+                "job_id": existing,
+                "message": "MODEL O is already generating for this session. Please wait for stems to appear.",
+            }
+        job_id = f"modelo_{uuid.uuid4().hex[:8]}"
+        _MODELO_INFLIGHT[body.session_id] = job_id
+
     brief_dict = {
         "lyrics": body.lyrics,
         "title": body.title,
@@ -275,14 +298,14 @@ def modelo_el1(body: EL1SongRequest, request: Request):
     # Start MODEL O worker thread
     t = threading.Thread(
         target=_modelo_worker,
-        args=(body.session_id, body.start_time, brief_dict),
+        args=(job_id, body.session_id, body.start_time, brief_dict),
         daemon=True,
     )
     t.start()
     
-    print(f"🧾 [MODEL O] Started for '{body.title}'", flush=True)
+    print(f"🧾 [MODEL O] {job_id} started for '{body.title}'", flush=True)
     
-    return {"status": "started", "message": "MODEL O is working. Stems will appear in bridge when ready."}
+    return {"status": "started", "job_id": job_id, "message": "MODEL O is working. Stems will appear in bridge when ready."}
 
 
 # Legacy sync endpoint (kept for backwards compatibility - but will timeout on long jobs)

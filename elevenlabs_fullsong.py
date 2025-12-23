@@ -9,6 +9,8 @@ import os
 import time
 import tempfile
 import re
+import random
+import threading
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Tuple
 from pathlib import Path
@@ -141,6 +143,30 @@ def _format_exception(e: Exception) -> str:
     return msg
 
 
+_ELEVENLABS_MAX_CONCURRENT = int(os.getenv("ELEVENLABS_MAX_CONCURRENT", "2") or "2")
+_ELEVENLABS_SEM = threading.BoundedSemaphore(_ELEVENLABS_MAX_CONCURRENT)
+
+
+def _is_too_many_concurrent(err: Exception) -> bool:
+    sc = getattr(err, "status_code", None)
+    if sc == 429:
+        return True
+    body = getattr(err, "body", None)
+    if isinstance(body, dict):
+        detail = body.get("detail") or body.get("detaill")
+        if isinstance(detail, dict) and detail.get("status") == "too_many_concurrent_requests":
+            return True
+    s = str(err) or ""
+    return ("too_many_concurrent_requests" in s) or ("HTTP 429" in s) or ("status_code: 429" in s)
+
+
+def _sleep_429_backoff(attempt: int) -> None:
+    base = 15.0
+    cap = 120.0
+    secs = min(cap, base * (2 ** min(attempt, 4)))
+    jitter = random.uniform(0.0, 0.25 * secs)
+    time.sleep(secs + jitter)
+
 def build_fullsong_prompt(brief: FullSongBrief) -> str:
     """
     Build prompt for ElevenLabs full song generation.
@@ -175,7 +201,7 @@ def build_fullsong_prompt(brief: FullSongBrief) -> str:
 
 def generate_full_song(
     brief: FullSongBrief,
-    retries: int = 3,
+    retries: int = 12,
     timeout: int = 300
 ) -> Tuple[bytes, str, Dict[str, Any]]:
     """
@@ -205,10 +231,11 @@ def generate_full_song(
             start_time = time.time()
             # Use music.compose_detailed for full song (same API as vocals)
             # Returns object with .audio (bytes), .filename, .json (metadata)
-            track_details = client.music.compose_detailed(
-                prompt=prompt,
-                music_length_ms=length_ms
-            )
+            with _ELEVENLABS_SEM:
+                track_details = client.music.compose_detailed(
+                    prompt=prompt,
+                    music_length_ms=length_ms
+                )
             elapsed = time.time() - start_time
             print(f"   ✅ ElevenLabs returned after {elapsed:.1f}s")
             
@@ -247,6 +274,12 @@ def generate_full_song(
             
         except Exception as e:
             last_error = e
+
+            # 429 is a concurrency/capacity limit; wait and retry (not a hard failure).
+            if _is_too_many_concurrent(e):
+                print(f"⏳ [EL1] ElevenLabs concurrency limit hit (429). Waiting for capacity... ({attempt+1}/{retries})")
+                _sleep_429_backoff(attempt)
+                continue
 
             # bad_prompt is not transient; handle explicitly
             if _is_bad_prompt(e):
@@ -454,7 +487,7 @@ def generate_and_stem_zip(brief: FullSongBrief) -> Tuple[bytes, Dict[str, Any]]:
         return zip_buffer.getvalue(), metadata
 
 
-def separate_stems_raw(audio_bytes: bytes, retries: int = 3) -> bytes:
+def separate_stems_raw(audio_bytes: bytes, retries: int = 12) -> bytes:
     """
     Get raw ZIP bytes from ElevenLabs stem separation.
     No extraction - just return the ZIP directly.
@@ -480,8 +513,15 @@ def separate_stems_raw(audio_bytes: bytes, retries: int = 3) -> bytes:
     for attempt in range(retries):
         try:
             start_time = time.time()
-            response = requests.post(url, params=params, headers=headers, 
-                                    files=files, data=data, timeout=600)
+            with _ELEVENLABS_SEM:
+                response = requests.post(
+                    url,
+                    params=params,
+                    headers=headers,
+                    files=files,
+                    data=data,
+                    timeout=600,
+                )
             elapsed = time.time() - start_time
             
             if response.status_code != 200:
@@ -493,6 +533,10 @@ def separate_stems_raw(audio_bytes: bytes, retries: int = 3) -> bytes:
             
         except Exception as e:
             last_error = e
+            if _is_too_many_concurrent(e):
+                print(f"⏳ [EL1] Stem separation concurrency limit hit (429). Waiting for capacity... ({attempt+1}/{retries})")
+                _sleep_429_backoff(attempt)
+                continue
             print(f"⚠️ [EL1] Attempt {attempt+1}/{retries} failed: {e}")
             if attempt < retries - 1:
                 time.sleep(2 ** attempt)
