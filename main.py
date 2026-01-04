@@ -151,8 +151,23 @@ def health():
 
 
 # -------------------- M1 - MIDI FOUNDATION MODEL --------------------
+# In-memory storage for generated MIDI files (for download)
+MIDI_STORAGE: Dict[str, bytes] = {}
+
+@app.get("/api/midi/{midi_id}")
+def download_midi(midi_id: str):
+    """Download a generated MIDI file by ID."""
+    from fastapi.responses import Response
+    if midi_id not in MIDI_STORAGE:
+        return {"error": "MIDI not found"}
+    return Response(
+        content=MIDI_STORAGE[midi_id],
+        media_type="audio/midi",
+        headers={"Content-Disposition": f"attachment; filename={midi_id}.mid"}
+    )
+
 @app.post("/api/m1")
-def api_m1(session_id: str = "demo"):
+def api_m1(session_id: str = "demo", request: Request = None):
     """
     M1 - Completely separate endpoint for MIDI Foundation Model.
     No agent. No enhance_prompt. Just calls the model and queues commands.
@@ -180,17 +195,20 @@ def api_m1(session_id: str = "demo"):
         if not data.get("success") or not data.get("midi_b64"):
             return {"status": "error", "message": "No MIDI returned from model"}
         
-        # Decode and save
+        # Decode and store with unique ID
         midi_bytes = base64.b64decode(data["midi_b64"])
-        midi_dir = os.path.join(os.path.dirname(__file__), "generated_midi")
-        os.makedirs(midi_dir, exist_ok=True)
-        midi_path = os.path.join(midi_dir, f"m1_{int(time.time())}.mid")
-        with open(midi_path, "wb") as f:
-            f.write(midi_bytes)
+        midi_id = f"m1_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+        MIDI_STORAGE[midi_id] = midi_bytes
         
-        # Queue commands
+        # Clean up old MIDI files (keep last 50)
+        if len(MIDI_STORAGE) > 50:
+            oldest_keys = list(MIDI_STORAGE.keys())[:-50]
+            for k in oldest_keys:
+                del MIDI_STORAGE[k]
+        
+        # Queue commands with DOWNLOAD_MIDI command (local agent will fetch via URL)
         commands = [
-            f'INSERT_AUDIO 1 "{midi_path}" 0.0',
+            f'DOWNLOAD_MIDI 1 "{midi_id}" 0.0',
             'INSERT_INSTRUMENT 1 ReaSynth',
             'INSERT_INSTRUMENT 2 ReaSynth', 
             'INSERT_INSTRUMENT 3 ReaSynth',
@@ -204,7 +222,7 @@ def api_m1(session_id: str = "demo"):
         return {
             "status": "success",
             "message": f"Generated {data.get('num_notes', 0)} notes, queued {len(commands)} commands",
-            "midi_path": midi_path,
+            "midi_id": midi_id,
             "commands": commands,
         }
     except Exception as e:

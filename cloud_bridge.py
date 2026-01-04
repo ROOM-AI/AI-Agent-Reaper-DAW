@@ -1,18 +1,31 @@
 """
 CursorDAW Cloud Bridge - Bidirectional file-based bridge
 Connects local Reaper (via files) to cloud (via HTTP)
+
+Standalone .exe version: reads config from bridge_config.json
 """
 
 # Build/version banner (to prove which file/process is actually running)
 import os as _os_banner
 import time as _time_banner
-BRIDGE_BUILD = "MODEL-O-v1 2025-12-23 dns-retry"
+import sys as _sys_banner
+
+BRIDGE_BUILD = "MODEL-O-v3 2025-12-27 auto-config"
 print(f"[BRIDGE] Build: {BRIDGE_BUILD}", flush=True)
+
+# Determine where the exe/script is located (for finding config file)
+if getattr(_sys_banner, 'frozen', False):
+    # Running as PyInstaller .exe
+    _EXE_DIR = _os_banner.path.dirname(_sys_banner.executable)
+else:
+    # Running as .py script
+    _EXE_DIR = _os_banner.path.dirname(_os_banner.path.abspath(__file__))
+
 try:
-    print(f"[BRIDGE] Running file: {__file__}", flush=True)
-    print(f"[BRIDGE] File mtime: {_time_banner.ctime(_os_banner.path.getmtime(__file__))}", flush=True)
+    print(f"[BRIDGE] Running from: {_EXE_DIR}", flush=True)
 except Exception:
     pass
+
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -24,17 +37,122 @@ from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
-import numpy as np
-
+# Optional: audio processing (only needed for upload downsampling)
 try:
+    import numpy as np
     import soundfile as sf
     import librosa
     AUDIO_TOOLS_AVAILABLE = True
 except ImportError:
     AUDIO_TOOLS_AVAILABLE = False
+    np = None  # Not used if audio tools unavailable
 
-CLOUD_URL = "https://feelings36lex36slo14moossolo-97692729550.europe-west1.run.app"
-SESSION_ID = "demo"  # Default session - change this if multiple users
+# ============ CONFIG FROM JSON ============
+# Defaults (used if no config file found)
+_DEFAULT_CLOUD_URL = "https://feelings36lex36slo14moossolo-97692729550.europe-west1.run.app"
+
+def _generate_session_id():
+    """Generate a unique session ID for this user/machine"""
+    import socket
+    import hashlib
+    try:
+        # Use machine name + username for uniqueness
+        machine = socket.gethostname()
+        user = os.getenv("USERNAME") or os.getenv("USER") or "user"
+        unique = f"{machine}-{user}"
+        # Short hash to keep it readable
+        short_hash = hashlib.md5(unique.encode()).hexdigest()[:8]
+        return f"{user[:12]}-{short_hash}"
+    except Exception:
+        # Fallback: random ID
+        import random
+        return f"user-{random.randint(10000, 99999)}"
+
+def _get_default_sample_paths():
+    """Get default paths to scan for samples based on OS.
+    Priority: first external/non-C drive found, then common folders.
+    """
+    paths = []
+    
+    # On Windows, find the first non-C drive (external/secondary drive)
+    # This is where most producers keep their samples
+    if os.name == 'nt':
+        for letter in "DEFGHIJKLMNOPQRSTUVWXYZ":
+            drive = f"{letter}:\\"
+            if os.path.exists(drive):
+                # Found an external drive - use the whole drive root
+                paths.append(drive)
+                print(f"[BRIDGE] Auto-detected sample drive: {drive}")
+                break  # Only use first external drive found
+    
+    # Fallback: common sample locations in user folder
+    home = os.getenv("USERPROFILE") or os.getenv("HOME") or ""
+    if home:
+        for folder in ["Music\\Samples", "Music", "Documents\\Samples"]:
+            p = os.path.join(home, folder)
+            if os.path.exists(p) and p not in paths:
+                paths.append(p)
+    
+    return paths
+
+def _load_config():
+    """Load config from bridge_config.json next to the exe/script"""
+    config_path = Path(_EXE_DIR) / "bridge_config.json"
+    
+    # Generate unique session ID for this user
+    default_session = _generate_session_id()
+    default_sample_paths = _get_default_sample_paths()
+    
+    config = {
+        "cloud_url": _DEFAULT_CLOUD_URL,
+        "session_id": default_session,
+        "sample_paths": default_sample_paths,
+    }
+    
+    needs_save = False
+    
+    if config_path.exists():
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                user_config = json.load(f)
+            if "cloud_url" in user_config:
+                config["cloud_url"] = user_config["cloud_url"].rstrip("/")
+            if "session_id" in user_config:
+                config["session_id"] = user_config["session_id"]
+            if "sample_paths" in user_config:
+                # Filter to paths that actually exist
+                config["sample_paths"] = [p for p in user_config["sample_paths"] if os.path.exists(p)]
+            else:
+                # Old config without sample_paths - add it
+                needs_save = True
+            print(f"[BRIDGE] Loaded config from {config_path}")
+        except Exception as e:
+            print(f"[BRIDGE] Warning: Could not load config: {e}")
+            needs_save = True
+    else:
+        needs_save = True
+    
+    if needs_save:
+        # Create/update config file
+        try:
+            save_config = {
+                "cloud_url": config["cloud_url"],
+                "session_id": config["session_id"],
+                "sample_paths": config["sample_paths"],
+                "_comment": "Edit this file to customize. sample_paths = folders with your drum samples."
+            }
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(save_config, f, indent=2)
+            print(f"[BRIDGE] Saved config: {config_path}")
+        except Exception:
+            pass
+    
+    return config
+
+_CONFIG = _load_config()
+CLOUD_URL = _CONFIG["cloud_url"]
+SESSION_ID = _CONFIG["session_id"]
+SAMPLE_PATHS = _CONFIG.get("sample_paths", [])
 
 # Resilient HTTP session (handles transient DNS/network drops better than raw requests.* calls)
 _HTTP = requests.Session()
@@ -76,7 +194,7 @@ print(f"Feedback file: {FEEDBACK_FILE}")
 print("=" * 50)
 print()
 print("NOTE: Only ONE user can use 'demo' session at a time.")
-print("If sharing, edit SESSION_ID in cloud_bridge.py")
+print("To change session or cloud URL, edit bridge_config.json")
 print()
 
 _last_state_sent = ""
@@ -237,24 +355,112 @@ class StateFileHandler(FileSystemEventHandler):
         except Exception:
             pass
 
-# Try to load drum index for ID-based sample resolution
-try:
-    from drum_index import get_path_by_id, load_index, get_cloud_summary
-    _drum_index = load_index()
-    DRUMS_AVAILABLE = _drum_index is not None
-    if DRUMS_AVAILABLE:
-        total = len(_drum_index.get("samples", {}))
-        print(f"🥁 Drum index loaded: {total} samples")
-except ImportError:
-    DRUMS_AVAILABLE = False
-    print("⚠️ Drum index not available - run: python drum_index.py F:\\")
+# ============ DRUM INDEX (auto-built per user) ============
+# Index file lives next to the exe/config
+_DRUM_INDEX_FILE = Path(_EXE_DIR) / "drum_index.json"
+_drum_index = None
+DRUMS_AVAILABLE = False
+
+DRUM_CATEGORIES = {
+    "kick": ["kick", "kik", "bd"],
+    "snare": ["snare", "snr", "sd", "rim"],
+    "hihat": ["hihat", "hi-hat", "hat", "hh", "chh", "ohh"],
+    "808": ["808"],
+    "clap": ["clap", "clp"],
+    "perc": ["perc", "tom", "shaker", "tamb"],
+}
+
+def _build_drum_index(sample_paths, max_per_category=30):
+    """Build drum index from user's sample folders"""
+    print(f"🥁 Building drum index from {len(sample_paths)} folder(s)...")
+    
+    extensions = {'.wav', '.mp3'}
+    index = {"samples": {}, "by_category": {cat: [] for cat in DRUM_CATEGORIES}}
+    sample_id = 1
+    
+    for root_path in sample_paths:
+        if not os.path.exists(root_path):
+            continue
+        for dirpath, dirnames, filenames in os.walk(root_path):
+            for filename in filenames:
+                ext = os.path.splitext(filename)[1].lower()
+                if ext not in extensions:
+                    continue
+                
+                name_lower = filename.lower()
+                full_path = os.path.join(dirpath, filename)
+                
+                for cat, keywords in DRUM_CATEGORIES.items():
+                    if len(index["by_category"][cat]) >= max_per_category:
+                        continue
+                    
+                    if any(kw in name_lower for kw in keywords):
+                        index["samples"][str(sample_id)] = {
+                            "name": os.path.splitext(filename)[0],
+                            "path": full_path,
+                            "category": cat
+                        }
+                        index["by_category"][cat].append(sample_id)
+                        sample_id += 1
+                        break
+    
+    # Save
+    try:
+        with open(_DRUM_INDEX_FILE, 'w') as f:
+            json.dump(index, f, indent=2)
+    except Exception as e:
+        print(f"⚠️ Could not save drum index: {e}")
+    
+    total = len(index["samples"])
+    print(f"🥁 Indexed {total} samples")
+    for cat, ids in index["by_category"].items():
+        if ids:
+            print(f"   {cat}: {len(ids)}")
+    
+    return index
+
+def _load_drum_index():
+    """Load or build drum index"""
+    global _drum_index, DRUMS_AVAILABLE
+    
+    # Try to load existing
+    if _DRUM_INDEX_FILE.exists():
+        try:
+            with open(_DRUM_INDEX_FILE, 'r') as f:
+                _drum_index = json.load(f)
+            # Verify at least some samples exist
+            valid_count = 0
+            for sid, data in list(_drum_index.get("samples", {}).items())[:5]:
+                if os.path.exists(data.get("path", "")):
+                    valid_count += 1
+            if valid_count > 0:
+                total = len(_drum_index.get("samples", {}))
+                print(f"🥁 Drum index loaded: {total} samples")
+                DRUMS_AVAILABLE = total > 0
+                return
+            else:
+                print("🥁 Drum index exists but paths invalid, rebuilding...")
+        except Exception:
+            pass
+    
+    # Build new index from user's sample paths
+    if SAMPLE_PATHS:
+        _drum_index = _build_drum_index(SAMPLE_PATHS)
+        DRUMS_AVAILABLE = len(_drum_index.get("samples", {})) > 0
+    else:
+        print("ℹ️ No sample_paths configured in bridge_config.json")
+        print("   Add folders containing your drum samples to enable sample features")
+        DRUMS_AVAILABLE = False
+
+_load_drum_index()
 
 def resolve_sample_id(sample_id):
     """Get full file path by sample ID"""
-    if not DRUMS_AVAILABLE:
+    if not DRUMS_AVAILABLE or not _drum_index:
         return None
     
-    path = get_path_by_id(sample_id)
+    sample = _drum_index.get("samples", {}).get(str(sample_id))
+    path = sample.get("path") if sample else None
     # If index was built on D:\ but samples are now on F:\, try drive-swap fallback.
     try:
         if path and isinstance(path, str) and len(path) >= 3 and path[1:3] == ":\\":
@@ -378,6 +584,39 @@ def process_commands_locally(cmd_text):
                     continue
             else:
                 print("⚠️ [MODEL O] Bad INSERT_AUDIO_B64 format; dropping command.")
+                continue
+        
+        elif line.startswith('DOWNLOAD_MIDI'):
+            # DOWNLOAD_MIDI <trackIdx> "<midi_id>" <startTime>
+            # Downloads MIDI from cloud /api/midi/{midi_id} and rewrites to INSERT_AUDIO
+            parts = line.split(maxsplit=3)
+            if len(parts) >= 4:
+                track_idx = parts[1]
+                # Extract midi_id (may be quoted)
+                midi_id = parts[2].strip('"')
+                start_time = parts[3] if len(parts) > 3 else "0.0"
+                
+                try:
+                    url = f"{CLOUD_URL}/api/midi/{midi_id}"
+                    print(f"🎹 [M1] Downloading MIDI from cloud: {midi_id}")
+                    r = _HTTP.get(url, timeout=30)
+                    r.raise_for_status()
+                    midi_bytes = r.content
+                    
+                    if not midi_bytes or len(midi_bytes) < 50:
+                        raise ValueError("Empty or invalid MIDI returned")
+                    
+                    # Save locally
+                    out_path = (TEMP_AUDIO_DIR / f"{midi_id}.mid").resolve()
+                    out_path.write_bytes(midi_bytes)
+                    print(f"✅ [M1] Saved MIDI: {out_path} ({len(midi_bytes)} bytes)")
+                    
+                    processed.append(f'INSERT_AUDIO {track_idx} "{out_path}" {start_time}')
+                except Exception as e:
+                    print(f"⚠️ [M1] Failed to download MIDI: {e}")
+                    continue
+            else:
+                print("⚠️ [M1] Bad DOWNLOAD_MIDI format; dropping command.")
                 continue
         
         elif line.startswith('ELEVEN_VOCALS'):
@@ -605,7 +844,7 @@ def poll_commands():
                             cmd_text = raw[1:-1]
                     
                     # Process commands locally (resolve sample IDs, convert cloud paths)
-                    if any(kw in cmd_text for kw in ['USE_SAMPLE', 'DRUM_SAMPLE', 'LOAD_SAMPLER', 'EXPORT_AUDIO', 'ELEVEN_VOCALS', 'EL1_SONG', 'EL1_FETCH', 'INSERT_AUDIO_B64']):
+                    if any(kw in cmd_text for kw in ['USE_SAMPLE', 'DRUM_SAMPLE', 'LOAD_SAMPLER', 'EXPORT_AUDIO', 'ELEVEN_VOCALS', 'EL1_SONG', 'EL1_FETCH', 'INSERT_AUDIO_B64', 'DOWNLOAD_MIDI']):
                         print(f"[BRIDGE] Processing commands locally...")
                         cmd_text = process_commands_locally(cmd_text)
                     
@@ -803,7 +1042,8 @@ if __name__ == "__main__":
     
     # Start periodic state pump fallback
     threading.Thread(target=state_pump, daemon=True).start()
-    threading.Thread(target=upload_audio_worker, daemon=True).start()
+    # Disabled: audio upload watcher (was causing 413 errors on large files)
+    # threading.Thread(target=upload_audio_worker, daemon=True).start()
     threading.Thread(target=lyrics_cache_worker, daemon=True).start()
     
     # Kick an initial state to the cloud: request export if file is empty, otherwise force-send
