@@ -150,6 +150,68 @@ def health():
     return {"ok": True, "ts": time.time()}
 
 
+# -------------------- M1 - MIDI FOUNDATION MODEL --------------------
+@app.post("/api/m1")
+def api_m1(session_id: str = "demo"):
+    """
+    M1 - Completely separate endpoint for MIDI Foundation Model.
+    No agent. No enhance_prompt. Just calls the model and queues commands.
+    """
+    import requests
+    import base64
+    import os
+    import uuid
+    
+    MIDI_API = "https://izcwa-192-222-51-140.a.free.pinggy.link"
+    
+    print(f"🎹 [M1] Endpoint called for session {session_id}")
+    
+    try:
+        # Call MIDI model
+        print(f"🎹 [M1] Calling {MIDI_API}/generate ...")
+        resp = requests.post(
+            f"{MIDI_API}/generate",
+            json={"max_tokens": 512, "temperature": 0.9},  # 512 tokens = faster, works with Serveo timeout
+            timeout=120  # 2 min timeout
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        
+        if not data.get("success") or not data.get("midi_b64"):
+            return {"status": "error", "message": "No MIDI returned from model"}
+        
+        # Decode and save
+        midi_bytes = base64.b64decode(data["midi_b64"])
+        midi_dir = os.path.join(os.path.dirname(__file__), "generated_midi")
+        os.makedirs(midi_dir, exist_ok=True)
+        midi_path = os.path.join(midi_dir, f"m1_{int(time.time())}.mid")
+        with open(midi_path, "wb") as f:
+            f.write(midi_bytes)
+        
+        # Queue commands
+        commands = [
+            f'INSERT_AUDIO 1 "{midi_path}" 0.0',
+            'INSERT_INSTRUMENT 1 ReaSynth',
+            'INSERT_INSTRUMENT 2 ReaSynth', 
+            'INSERT_INSTRUMENT 3 ReaSynth',
+            'INSERT_INSTRUMENT 4 ReaSynth',
+        ]
+        if session_id not in REAPER_SESSIONS:
+            REAPER_SESSIONS[session_id] = []
+        for cmd in commands:
+            REAPER_SESSIONS[session_id].append(cmd)
+        
+        return {
+            "status": "success",
+            "message": f"Generated {data.get('num_notes', 0)} notes, queued {len(commands)} commands",
+            "midi_path": midi_path,
+            "commands": commands,
+        }
+    except Exception as e:
+        print(f"❌ [M1] Error: {e}")
+        return {"status": "error", "message": str(e)}
+
+
 # -------------------- EL1 Full Song + Stems --------------------
 class EL1SongRequest(BaseModel):
     session_id: str = "demo"
@@ -413,6 +475,68 @@ def api_chat(body: ChatIn):
     import io
     import sys
     
+    raw_text = (body.text or "").strip()
+    
+    # ============================================================
+    # M1 - HARDCODED - RUNS FIRST BEFORE ANYTHING ELSE
+    # ============================================================
+    if raw_text.lower().startswith("m1 ") or raw_text.lower().startswith("m1:"):
+        import requests
+        import base64
+        import os
+        import uuid
+        
+        MIDI_API = "https://izcwa-192-222-51-140.a.free.pinggy.link"
+        
+        print(f"🎹 [M1] CALLING MIDI MODEL...")
+        
+        try:
+            # Call MIDI model - wait up to 10 minutes
+            resp = requests.post(
+                f"{MIDI_API}/generate",
+                json={"max_tokens": 512, "temperature": 0.9},  # Shorter for faster generation
+                timeout=600
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            
+            if not data.get("success") or not data.get("midi_b64"):
+                return {"reply": f"❌ M1: No MIDI returned", "status": "error", "commands": []}
+            
+            # Decode and save MIDI
+            midi_bytes = base64.b64decode(data["midi_b64"])
+            midi_dir = os.path.join(os.path.dirname(__file__), "generated_midi")
+            os.makedirs(midi_dir, exist_ok=True)
+            midi_path = os.path.join(midi_dir, f"m1_{int(time.time())}.mid")
+            with open(midi_path, "wb") as f:
+                f.write(midi_bytes)
+            
+            # Queue commands to REAPER_SESSIONS
+            commands = [
+                f'INSERT_AUDIO 1 "{midi_path}" 0.0',
+                'INSERT_INSTRUMENT 1 ReaSynth',
+                'INSERT_INSTRUMENT 2 ReaSynth',
+                'INSERT_INSTRUMENT 3 ReaSynth',
+                'INSERT_INSTRUMENT 4 ReaSynth',
+            ]
+            if body.session_id not in REAPER_SESSIONS:
+                REAPER_SESSIONS[body.session_id] = []
+            for cmd in commands:
+                REAPER_SESSIONS[body.session_id].append(cmd)
+            
+            return {
+                "reply": f"🎹 M1: {data.get('num_notes', 0)} notes → queued {len(commands)} commands",
+                "status": "success",
+                "commands": commands,
+                "plan": {"plan_id": f"m1-{int(time.time()*1000)}", "steps": []},
+            }
+        except Exception as e:
+            return {"reply": f"❌ M1 Error: {e}", "status": "error", "commands": []}
+    
+    # ============================================================
+    # EVERYTHING ELSE (agent, enhance_prompt, etc.)
+    # ============================================================
+    
     # Capture stdout with StringIO
     output_capture = io.StringIO()
     old_stdout = sys.stdout
@@ -424,10 +548,6 @@ def api_chat(body: ChatIn):
         _ensure_agent_loaded()
         # Import prompt enhancer
         from prompt_enhancer import enhance_prompt, generate_song_commands
-
-        # If the client sends status text (not an actual request), don't run the agent.
-        # This avoids the agent replying "needs clarification" to informational updates.
-        raw_text = (body.text or "").strip()
         if raw_text.startswith("# MODEL O is generating"):
             sys.stdout = old_stdout
             sys.stderr = old_stderr
@@ -463,7 +583,13 @@ def api_chat(body: ChatIn):
                 enhanced_prompt = generate_song_commands(body.text)
         
         print(f"📝 Original: {body.text}")
-        print(f"✨ Enhanced: {enhanced_prompt[:500]}..." if len(enhanced_prompt) > 500 else f"✨ Enhanced: {enhanced_prompt}")
+        print(f"✨ Enhanced ({len(enhanced_prompt)} chars): {enhanced_prompt[:500]}..." if len(enhanced_prompt) > 500 else f"✨ Enhanced: {enhanced_prompt}")
+        
+        # Debug: Check if it looks like commands
+        first_line = enhanced_prompt.strip().split('\n')[0] if enhanced_prompt else ""
+        print(f"🔍 First line: '{first_line[:80]}'")
+        is_command = any(first_line.startswith(p) for p in ('SET_TEMPO', 'INSERT_INSTRUMENT', 'INSERT_AUDIO', 'MIDI_'))
+        print(f"🔍 Looks like command: {is_command}")
 
         # EL1/MODEL O: the enhancer may start a background worker and return a status message.
         # In that case, do NOT execute the Reaper agent (there are no DAW commands to run yet).
@@ -485,6 +611,47 @@ def api_chat(body: ChatIn):
                 "agent_reasoning": enhanced_prompt,
                 "full_output": agent_output,
             }
+        
+        # M1 MODE / Direct commands: if enhanced prompt contains Reaper commands,
+        # queue them directly instead of passing to agent
+        DIRECT_COMMAND_PREFIXES = (
+            'SET_TEMPO', 'INSERT_INSTRUMENT', 'MIDI_CREATE_ITEM', 'MIDI_INSERT_NOTE',
+            'ADD_FX', 'SET_FX_PARAM', 'INSERT_AUDIO', 'VOL_DIP', 'USE_SAMPLE', 'LOAD_SAMPLER'
+        )
+        if isinstance(enhanced_prompt, str):
+            lines = [l.strip() for l in enhanced_prompt.strip().split('\n') if l.strip()]
+            # Check if first non-empty line is a command
+            if lines and any(lines[0].startswith(prefix) for prefix in DIRECT_COMMAND_PREFIXES):
+                print(f"🎹 Direct mode - queueing {len(lines)} commands directly")
+                # Queue commands directly (skip agent)
+                if body.session_id not in REAPER_SESSIONS:
+                    REAPER_SESSIONS[body.session_id] = []
+                for cmd in lines:
+                    if any(cmd.startswith(prefix) for prefix in DIRECT_COMMAND_PREFIXES):
+                        REAPER_SESSIONS[body.session_id].append(cmd)
+                        add_event("command_queued", {"command": cmd}, session_id=body.session_id)
+                
+                sys.stdout = old_stdout
+                sys.stderr = old_stderr
+                agent_output = output_capture.getvalue()
+                
+                plan = {
+                    "plan_id": f"plan-{int(time.time()*1000)}",
+                    "steps": [
+                        {"id": f"s{i}", "action": "REAPER_COMMAND", "command": cmd}
+                        for i, cmd in enumerate(lines) if any(cmd.startswith(p) for p in DIRECT_COMMAND_PREFIXES)
+                    ]
+                }
+                add_event("plan_created", {"prompt": body.text, **plan}, session_id=body.session_id)
+                
+                return {
+                    "reply": f"🎹 MIDI Foundation Model: Queued {len(lines)} commands",
+                    "plan": plan,
+                    "commands": lines,
+                    "status": "success",
+                    "agent_reasoning": f"M1 mode - direct command execution",
+                    "full_output": agent_output,
+                }
         
         # Step 2: Execute using REAL agent with cloud hooks
         agent._CURRENT_SESSION_ID = body.session_id
@@ -544,6 +711,18 @@ def api_chat(body: ChatIn):
 def api_enhance(body: ChatIn):
     """Enhance a vague prompt to be specific/technical (no execution)"""
     try:
+        raw_text = (body.text or "").strip().lower()
+        
+        # M1 (MIDI Foundation Model) - no enhancement, just generation
+        # Tell user to use Send instead
+        if raw_text.startswith("m1 ") or raw_text.startswith("m1:"):
+            return {
+                "original": body.text, 
+                "enhanced": body.text,  # Keep original
+                "status": "success",
+                "message": "🎹 M1 mode: Click Send to generate. No enhancement needed."
+            }
+        
         from prompt_enhancer import enhance_prompt
         reaper_state = REAPER_STATE.get(body.session_id, {})
         state_str = json.dumps(reaper_state) if reaper_state else ""
@@ -1443,6 +1622,7 @@ async def root():
                         <button onclick="sendMessage()"><span>Send</span></button>
                         <button class="enhance-btn" onclick="enhancePrompt()"><span>✨ Enhance</span></button>
                         <button class="sync-btn" onclick="syncState()"><span>Sync State</span></button>
+                        <button class="m1-btn" onclick="generateM1()" style="background: linear-gradient(135deg, #9b59b6, #8e44ad); margin-left: 10px;"><span>🎹 M1 Generate</span></button>
                     </div>
                 </div>
             </div>
@@ -1520,6 +1700,31 @@ async def root():
             return false;
         }
         
+        // M1 - Direct MIDI Foundation Model call
+        async function generateM1() {
+            addEvent('🎹 M1: Calling MIDI Foundation Model...');
+            addMessage('🎹 Generating MIDI with Foundation Model...', 'user');
+            
+            try {
+                const response = await fetch('/api/m1?session_id=' + getSessionId(), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                const data = await response.json();
+                
+                if (data.status === 'success') {
+                    addEvent('🎹 M1: ' + data.message);
+                    addMessage('🎹 ' + data.message, 'agent');
+                } else {
+                    addEvent('❌ M1 Error: ' + data.message);
+                    addMessage('❌ M1 Error: ' + data.message, 'agent');
+                }
+            } catch (error) {
+                addEvent('❌ M1 Network Error: ' + error.message);
+                addMessage('❌ Network error: ' + error.message, 'agent');
+            }
+        }
+        
         async function sendMessage() {
             const input = document.getElementById('messageInput');
             let message = input.value.trim();
@@ -1581,6 +1786,12 @@ async def root():
                     if (data.status === 'error') {
                         addEvent('❌ Enhancement failed: ' + (data.error || 'Unknown error'));
                         console.error('Enhance error:', data);
+                        return;
+                    }
+                    
+                    // M1 mode - no enhancement, just tell user to click Send
+                    if (data.message && data.message.includes('M1 mode')) {
+                        addEvent(data.message);
                         return;
                     }
                     
