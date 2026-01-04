@@ -186,7 +186,7 @@ def api_m1(session_id: str = "demo", request: Request = None):
         print(f"🎹 [M1] Calling {MIDI_API}/generate ...")
         resp = requests.post(
             f"{MIDI_API}/generate",
-            json={"max_tokens": 512, "temperature": 0.9},  # 512 tokens = faster, works with Serveo timeout
+            json={"max_tokens": 4096, "temperature": 0.9},  # More tokens = more notes
             timeout=120  # 2 min timeout
         )
         resp.raise_for_status()
