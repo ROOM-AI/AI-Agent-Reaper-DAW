@@ -1,0 +1,1043 @@
+"""
+CursorDAW Cloud Bridge - Bidirectional file-based bridge
+Connects local Reaper (via files) to cloud (via HTTP)
+
+Standalone .exe version: reads config from bridge_config.json
+"""
+
+# Build/version banner (to prove which file/process is actually running)
+import os as _os_banner
+import time as _time_banner
+import sys as _sys_banner
+
+BRIDGE_BUILD = "MODEL-O-v3 2025-12-27 auto-config"
+print(f"[BRIDGE] Build: {BRIDGE_BUILD}", flush=True)
+
+# Determine where the exe/script is located (for finding config file)
+if getattr(_sys_banner, 'frozen', False):
+    # Running as PyInstaller .exe
+    _EXE_DIR = _os_banner.path.dirname(_sys_banner.executable)
+else:
+    # Running as .py script
+    _EXE_DIR = _os_banner.path.dirname(_os_banner.path.abspath(__file__))
+
+try:
+    print(f"[BRIDGE] Running from: {_EXE_DIR}", flush=True)
+except Exception:
+    pass
+
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+import time
+import os
+import json
+import threading
+from pathlib import Path
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+
+# Optional: audio processing (only needed for upload downsampling)
+try:
+    import numpy as np
+    import soundfile as sf
+    import librosa
+    AUDIO_TOOLS_AVAILABLE = True
+except ImportError:
+    AUDIO_TOOLS_AVAILABLE = False
+    np = None  # Not used if audio tools unavailable
+
+# ============ CONFIG FROM JSON ============
+# Defaults (used if no config file found)
+_DEFAULT_CLOUD_URL = "https://feelings36lex36slo14moossolo-97692729550.europe-west1.run.app"
+
+def _generate_session_id():
+    """Generate a unique session ID for this user/machine"""
+    import socket
+    import hashlib
+    try:
+        # Use machine name + username for uniqueness
+        machine = socket.gethostname()
+        user = os.getenv("USERNAME") or os.getenv("USER") or "user"
+        unique = f"{machine}-{user}"
+        # Short hash to keep it readable
+        short_hash = hashlib.md5(unique.encode()).hexdigest()[:8]
+        return f"{user[:12]}-{short_hash}"
+    except Exception:
+        # Fallback: random ID
+        import random
+        return f"user-{random.randint(10000, 99999)}"
+
+def _get_default_sample_paths():
+    """Get default paths to scan for samples based on OS.
+    Priority: first external/non-C drive found, then common folders.
+    """
+    paths = []
+    
+    # On Windows, find the first non-C drive (external/secondary drive)
+    # This is where most producers keep their samples
+    if os.name == 'nt':
+        for letter in "DEFGHIJKLMNOPQRSTUVWXYZ":
+            drive = f"{letter}:\\"
+            if os.path.exists(drive):
+                # Found an external drive - use the whole drive root
+                paths.append(drive)
+                print(f"[BRIDGE] Auto-detected sample drive: {drive}")
+                break  # Only use first external drive found
+    
+    # Fallback: common sample locations in user folder
+    home = os.getenv("USERPROFILE") or os.getenv("HOME") or ""
+    if home:
+        for folder in ["Music\\Samples", "Music", "Documents\\Samples"]:
+            p = os.path.join(home, folder)
+            if os.path.exists(p) and p not in paths:
+                paths.append(p)
+    
+    return paths
+
+def _load_config():
+    """Load config from bridge_config.json next to the exe/script"""
+    config_path = Path(_EXE_DIR) / "bridge_config.json"
+    
+    # Generate unique session ID for this user
+    default_session = _generate_session_id()
+    default_sample_paths = _get_default_sample_paths()
+    
+    config = {
+        "cloud_url": _DEFAULT_CLOUD_URL,
+        "session_id": default_session,
+        "sample_paths": default_sample_paths,
+    }
+    
+    needs_save = False
+    
+    if config_path.exists():
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                user_config = json.load(f)
+            if "cloud_url" in user_config:
+                config["cloud_url"] = user_config["cloud_url"].rstrip("/")
+            if "session_id" in user_config:
+                config["session_id"] = user_config["session_id"]
+            if "sample_paths" in user_config:
+                # Filter to paths that actually exist
+                config["sample_paths"] = [p for p in user_config["sample_paths"] if os.path.exists(p)]
+            else:
+                # Old config without sample_paths - add it
+                needs_save = True
+            print(f"[BRIDGE] Loaded config from {config_path}")
+        except Exception as e:
+            print(f"[BRIDGE] Warning: Could not load config: {e}")
+            needs_save = True
+    else:
+        needs_save = True
+    
+    if needs_save:
+        # Create/update config file
+        try:
+            save_config = {
+                "cloud_url": config["cloud_url"],
+                "session_id": config["session_id"],
+                "sample_paths": config["sample_paths"],
+                "_comment": "Edit this file to customize. sample_paths = folders with your drum samples."
+            }
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(save_config, f, indent=2)
+            print(f"[BRIDGE] Saved config: {config_path}")
+        except Exception:
+            pass
+    
+    return config
+
+_CONFIG = _load_config()
+CLOUD_URL = _CONFIG["cloud_url"]
+SESSION_ID = _CONFIG["session_id"]
+SAMPLE_PATHS = _CONFIG.get("sample_paths", [])
+
+# Resilient HTTP session (handles transient DNS/network drops better than raw requests.* calls)
+_HTTP = requests.Session()
+_retry = Retry(
+    total=5,
+    connect=5,
+    read=3,
+    status=3,
+    backoff_factor=0.6,
+    status_forcelist=(429, 500, 502, 503, 504),
+    allowed_methods=frozenset(["GET", "POST"]),
+    raise_on_status=False,
+)
+_HTTP.mount("https://", HTTPAdapter(max_retries=_retry))
+_HTTP.mount("http://", HTTPAdapter(max_retries=_retry))
+
+# Local files that Lua reads/writes - MUST match Lua script paths!
+# Auto-detect base directory (matches Lua logic)
+BASE_DIR_STR = os.getenv("REAPER_AGENT_DIR")
+if not BASE_DIR_STR:
+    home = os.getenv("USERPROFILE") or os.getenv("HOME") or "."
+    BASE_DIR_STR = os.path.join(home, "AIAGENT DAW")
+BASE_DIR = Path(BASE_DIR_STR)
+COMMAND_FILE = BASE_DIR / "reaper_commands.txt"
+STATE_FILE = BASE_DIR / "reaper_state.txt"
+FEEDBACK_FILE = BASE_DIR / "reaper_feedback.txt"
+TEMP_AUDIO_DIR = BASE_DIR / "temp_audio"
+LYRICS_CACHE_DIR = BASE_DIR / "AI-Agent-Reaper-DAW" / "lyrics_cache"
+
+print("=" * 50)
+print("  CursorDAW Cloud Bridge")
+print("=" * 50)
+print(f"Cloud: {CLOUD_URL}")
+print(f"Session: {SESSION_ID}")
+print(f"Base directory: {BASE_DIR}")
+print(f"Command file: {COMMAND_FILE}")
+print(f"State file: {STATE_FILE}")
+print(f"Feedback file: {FEEDBACK_FILE}")
+print("=" * 50)
+print()
+print("NOTE: Only ONE user can use 'demo' session at a time.")
+print("To change session or cloud URL, edit bridge_config.json")
+print()
+
+_last_state_sent = ""
+_last_send_ts = 0.0
+_last_feedback_sent = ""
+_last_feedback_ts = 0.0
+MIN_SEND_INTERVAL = 1.5  # seconds, to avoid spam on partial writes
+
+# Ensure directory and files exist
+BASE_DIR.mkdir(parents=True, exist_ok=True)
+COMMAND_FILE.touch(exist_ok=True)
+STATE_FILE.touch(exist_ok=True)
+FEEDBACK_FILE.touch(exist_ok=True)
+TEMP_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+LYRICS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+def _trim_state(content: str, max_chars: int = 60000) -> str:
+    """Trim large state to prevent upload timeouts while keeping all tracks visible."""
+    if len(content) <= max_chars:
+        return content
+    
+    # Find all track sections
+    lines = content.split('\n')
+    header_lines = []
+    track_sections = []
+    current_track = []
+    in_tracks = False
+    
+    for line in lines:
+        if line.startswith('--- Track '):
+            if current_track:
+                track_sections.append('\n'.join(current_track))
+            current_track = [line]
+            in_tracks = True
+        elif in_tracks:
+            current_track.append(line)
+        else:
+            header_lines.append(line)
+    
+    if current_track:
+        track_sections.append('\n'.join(current_track))
+    
+    header = '\n'.join(header_lines)
+    
+    # Trim each track evenly to fit
+    if track_sections:
+        available = max_chars - len(header) - 200
+        per_track = max(1500, available // len(track_sections))
+        trimmed_tracks = [t[:per_track] for t in track_sections]
+        result = header + '\n' + '\n'.join(trimmed_tracks)
+    else:
+        result = content[:max_chars]
+    
+    if len(content) > len(result):
+        result += f"\n\n... [{len(content) - len(result):,} chars trimmed for upload] ..."
+    
+    print(f"📦 State trimmed: {len(content):,} → {len(result):,} chars")
+    return result
+
+
+def _send_state_if_changed(force: bool = False):
+    global _last_state_sent
+    global _last_send_ts
+    try:
+        if not STATE_FILE.exists():
+            return
+        # Let file writes settle briefly to avoid reading partial content
+        time.sleep(0.05)
+
+        # Basic rate limit unless forced
+        now_ts = time.time()
+        if not force and (now_ts - _last_send_ts) < MIN_SEND_INTERVAL:
+            return
+
+        content = STATE_FILE.read_text()
+        
+        # Trim large states to prevent upload timeouts
+        content = _trim_state(content)
+        
+        if content and (force or content != _last_state_sent):
+            # Prefer raw text as 'state_text' so server can display it
+            try:
+                data = json.loads(content)
+                # If JSON, still include the pretty text for logs
+                state_payload = data if isinstance(data, dict) else {"state_text": str(data)}
+            except Exception:
+                state_payload = {"state_text": content}
+            state_payload["session_id"] = SESSION_ID
+            _HTTP.post(
+                f"{CLOUD_URL}/api/reaper/state",
+                json=state_payload,
+                timeout=5,  # Slightly longer timeout for trimmed state
+            )
+            _last_state_sent = content
+            _last_send_ts = now_ts
+            print(f"→ Sent state to cloud (session: {SESSION_ID})")
+    except Exception as e:
+        print(f"⚠️ State send error: {e}")
+
+
+def _send_feedback_if_changed(force: bool = False):
+    """Send feedback (including MIDI notes) to cloud"""
+    global _last_feedback_sent
+    global _last_feedback_ts
+    try:
+        if not FEEDBACK_FILE.exists():
+            return
+        time.sleep(0.05)
+
+        now_ts = time.time()
+        if not force and (now_ts - _last_feedback_ts) < MIN_SEND_INTERVAL:
+            return
+
+        content = FEEDBACK_FILE.read_text()
+        
+        if content and (force or content != _last_feedback_sent):
+            feedback_payload = {
+                "session_id": SESSION_ID,
+                "feedback": content
+            }
+            _HTTP.post(
+                f"{CLOUD_URL}/api/reaper/feedback",
+                json=feedback_payload,
+                timeout=5,
+            )
+            _last_feedback_sent = content
+            _last_feedback_ts = now_ts
+            
+            # Check if it contains MIDI notes
+            if "MIDI_NOTES:" in content:
+                note_count = content.count(";") + 1 if "MIDI_NOTES:" in content else 0
+                print(f"→ Sent feedback with {note_count} MIDI notes to cloud")
+            else:
+                print(f"→ Sent feedback to cloud")
+    except Exception as e:
+        print(f"⚠️ Feedback send error: {e}")
+
+
+class StateFileHandler(FileSystemEventHandler):
+    """Watch for state and feedback file changes and send to cloud"""
+    def on_modified(self, event):
+        try:
+            path = Path(event.src_path).resolve()
+            if path == STATE_FILE.resolve():
+                _send_state_if_changed()
+            elif path == FEEDBACK_FILE.resolve():
+                _send_feedback_if_changed()
+        except Exception:
+            pass
+
+    def on_created(self, event):
+        try:
+            path = Path(event.src_path).resolve()
+            if path == STATE_FILE.resolve():
+                _send_state_if_changed()
+            elif path == FEEDBACK_FILE.resolve():
+                _send_feedback_if_changed()
+        except Exception:
+            pass
+
+# ============ DRUM INDEX (auto-built per user) ============
+# Index file lives next to the exe/config
+_DRUM_INDEX_FILE = Path(_EXE_DIR) / "drum_index.json"
+_drum_index = None
+DRUMS_AVAILABLE = False
+
+DRUM_CATEGORIES = {
+    "kick": ["kick", "kik", "bd"],
+    "snare": ["snare", "snr", "sd", "rim"],
+    "hihat": ["hihat", "hi-hat", "hat", "hh", "chh", "ohh"],
+    "808": ["808"],
+    "clap": ["clap", "clp"],
+    "perc": ["perc", "tom", "shaker", "tamb"],
+}
+
+def _build_drum_index(sample_paths, max_per_category=30):
+    """Build drum index from user's sample folders"""
+    print(f"🥁 Building drum index from {len(sample_paths)} folder(s)...")
+    
+    extensions = {'.wav', '.mp3'}
+    index = {"samples": {}, "by_category": {cat: [] for cat in DRUM_CATEGORIES}}
+    sample_id = 1
+    
+    for root_path in sample_paths:
+        if not os.path.exists(root_path):
+            continue
+        for dirpath, dirnames, filenames in os.walk(root_path):
+            for filename in filenames:
+                ext = os.path.splitext(filename)[1].lower()
+                if ext not in extensions:
+                    continue
+                
+                name_lower = filename.lower()
+                full_path = os.path.join(dirpath, filename)
+                
+                for cat, keywords in DRUM_CATEGORIES.items():
+                    if len(index["by_category"][cat]) >= max_per_category:
+                        continue
+                    
+                    if any(kw in name_lower for kw in keywords):
+                        index["samples"][str(sample_id)] = {
+                            "name": os.path.splitext(filename)[0],
+                            "path": full_path,
+                            "category": cat
+                        }
+                        index["by_category"][cat].append(sample_id)
+                        sample_id += 1
+                        break
+    
+    # Save
+    try:
+        with open(_DRUM_INDEX_FILE, 'w') as f:
+            json.dump(index, f, indent=2)
+    except Exception as e:
+        print(f"⚠️ Could not save drum index: {e}")
+    
+    total = len(index["samples"])
+    print(f"🥁 Indexed {total} samples")
+    for cat, ids in index["by_category"].items():
+        if ids:
+            print(f"   {cat}: {len(ids)}")
+    
+    return index
+
+def _load_drum_index():
+    """Load or build drum index"""
+    global _drum_index, DRUMS_AVAILABLE
+    
+    # Try to load existing
+    if _DRUM_INDEX_FILE.exists():
+        try:
+            with open(_DRUM_INDEX_FILE, 'r') as f:
+                _drum_index = json.load(f)
+            # Verify at least some samples exist
+            valid_count = 0
+            for sid, data in list(_drum_index.get("samples", {}).items())[:5]:
+                if os.path.exists(data.get("path", "")):
+                    valid_count += 1
+            if valid_count > 0:
+                total = len(_drum_index.get("samples", {}))
+                print(f"🥁 Drum index loaded: {total} samples")
+                DRUMS_AVAILABLE = total > 0
+                return
+            else:
+                print("🥁 Drum index exists but paths invalid, rebuilding...")
+        except Exception:
+            pass
+    
+    # Build new index from user's sample paths
+    if SAMPLE_PATHS:
+        _drum_index = _build_drum_index(SAMPLE_PATHS)
+        DRUMS_AVAILABLE = len(_drum_index.get("samples", {})) > 0
+    else:
+        print("ℹ️ No sample_paths configured in bridge_config.json")
+        print("   Add folders containing your drum samples to enable sample features")
+        DRUMS_AVAILABLE = False
+
+_load_drum_index()
+
+def resolve_sample_id(sample_id):
+    """Get full file path by sample ID"""
+    if not DRUMS_AVAILABLE or not _drum_index:
+        return None
+    
+    sample = _drum_index.get("samples", {}).get(str(sample_id))
+    path = sample.get("path") if sample else None
+    # If index was built on D:\ but samples are now on F:\, try drive-swap fallback.
+    try:
+        if path and isinstance(path, str) and len(path) >= 3 and path[1:3] == ":\\":
+            if path[0].upper() == "D" and not Path(path).exists():
+                alt = "F" + path[1:]
+                if Path(alt).exists():
+                    path = alt
+    except Exception:
+        pass
+    if path:
+        print(f"   🥁 Resolved ID {sample_id}: {os.path.basename(path)}")
+    return path
+
+def process_commands_locally(cmd_text):
+    """
+    Process commands before sending to Reaper.
+    Resolves sample IDs to actual local file paths.
+    """
+    lines = cmd_text.strip().split('\n')
+    processed = []
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        
+        if line.startswith('LOAD_SAMPLER'):
+            # LOAD_SAMPLER <track> <sample_id> <base_note> [note_start] [note_end]
+            # Convert to: LOAD_SAMPLER <track> "<full_path>" <base_note> [note_start] [note_end]
+            parts = line.split()
+            if len(parts) >= 4:
+                track = parts[1]
+                try:
+                    sample_id = int(parts[2])
+                    sample_path = resolve_sample_id(sample_id)
+                    if sample_path:
+                        # Rebuild command with full path
+                        rest = ' '.join(parts[3:])  # base_note and optional range
+                        processed.append(f'LOAD_SAMPLER {track} "{sample_path}" {rest}')
+                        print(f"   🎹 Sampler: ID {sample_id} -> {sample_path}")
+                    else:
+                        print(f"   ⚠️ Sample ID {sample_id} not found, skipping")
+                except ValueError:
+                    # Not a number, might already be a path - pass through
+                    processed.append(line)
+            else:
+                processed.append(line)
+        
+        elif line.startswith('USE_SAMPLE'):
+            # USE_SAMPLE <track> <sample_id> <start_time> -> INSERT_AUDIO
+            parts = line.split()
+            if len(parts) >= 4:
+                track = parts[1]
+                try:
+                    sample_id = int(parts[2])
+                    start_time = parts[3]
+                    sample_path = resolve_sample_id(sample_id)
+                    if sample_path:
+                        processed.append(f'INSERT_AUDIO {track} "{sample_path}" {start_time}')
+                    else:
+                        print(f"   ⚠️ Sample ID {sample_id} not found, skipping")
+                except ValueError:
+                    processed.append(line)
+            else:
+                processed.append(line)
+        
+        elif line.startswith('DRUM_SAMPLE'):
+            # Legacy - pass through
+            processed.append(line)
+        
+        elif line.startswith('EXPORT_AUDIO'):
+            # EXPORT_AUDIO <track> <cloud_path>
+            # Convert cloud Linux path to local Windows path
+            parts = line.split()
+            if len(parts) >= 3:
+                track = parts[1]
+                cloud_path = ' '.join(parts[2:])
+                # Extract just the folder name (e.g., "track_4_1765067377")
+                folder_name = cloud_path.split('/')[-1]
+                if not folder_name:
+                    folder_name = f"track_{track}_{int(time.time())}"
+                # Create local path
+                local_path = TEMP_AUDIO_DIR / folder_name
+                local_path.mkdir(parents=True, exist_ok=True)
+                processed.append(f'EXPORT_AUDIO {track} "{local_path}"')
+                print(f"   📤 Export: track {track} -> {local_path}")
+            else:
+                processed.append(line)
+
+        elif line.startswith('INSERT_AUDIO_B64'):
+            # INSERT_AUDIO_B64 <track> <start_time> <base64_audio_bytes>
+            # MODEL O sends audio bytes directly. Bridge just decodes, saves, imports.
+            # NO requests to cloud - audio is inline in the command.
+            import base64
+            
+            parts = line.split(maxsplit=3)
+            if len(parts) >= 4:
+                track_idx = parts[1]
+                start_time = parts[2]
+                b64_data = parts[3].strip()
+                
+                try:
+                    # Decode base64 to bytes
+                    audio_bytes = base64.b64decode(b64_data)
+                    if len(audio_bytes) < 1024:
+                        raise ValueError("Audio data too small")
+                    
+                    # Save to temp file
+                    timestamp = int(time.time())
+                    out_filename = f"modelo_track{track_idx}_{timestamp}.mp3"
+                    out_path = (TEMP_AUDIO_DIR / out_filename).resolve()
+                    out_path.write_bytes(audio_bytes)
+                    
+                    print(f"✅ [MODEL O] Received track {track_idx}: {len(audio_bytes)/1024:.1f} KB → {out_path}")
+                    
+                    # Convert to INSERT_AUDIO for Lua
+                    processed.append(f'INSERT_AUDIO {track_idx} "{out_path}" {start_time}')
+                    
+                except Exception as e:
+                    print(f"⚠️ [MODEL O] Failed to decode/save audio for track {track_idx}: {e}")
+                    continue
+            else:
+                print("⚠️ [MODEL O] Bad INSERT_AUDIO_B64 format; dropping command.")
+                continue
+        
+        elif line.startswith('ELEVEN_VOCALS'):
+            # ELEVEN_VOCALS <trackIdx> <startTime> <json_payload>
+            # Local bridge calls cloud /api/vocals/elevenlabs to fetch MP3 bytes,
+            # saves to temp_audio, then rewrites to INSERT_AUDIO for Lua.
+            #
+            # Example:
+            # ELEVEN_VOCALS 1 0.0 {"session_id":"demo","lyrics":"...","tempo":140,"key":"C","mood":"reflective"}
+            parts = line.split(maxsplit=3)
+            if len(parts) >= 4:
+                track_idx = parts[1]
+                start_time = parts[2]
+                payload_raw = parts[3].strip()
+                try:
+                    payload = json.loads(payload_raw)
+                    if not isinstance(payload, dict):
+                        raise ValueError("payload must be JSON object")
+                    payload.setdefault("session_id", SESSION_ID)
+
+                    url = f"{CLOUD_URL}/api/vocals/elevenlabs"
+                    print(f"🎤 [ELEVEN] Requesting vocals-only MP3 from cloud...")
+                    headers = {}
+                    # Optional: if you protect cloud with AGENT_API_KEY, set AGENT_API_KEY locally too.
+                    agent_key = os.getenv("AGENT_API_KEY", "")
+                    if agent_key:
+                        headers["X-API-KEY"] = agent_key
+                    r = _HTTP.post(url, json=payload, timeout=180, headers=headers)
+                    try:
+                        r.raise_for_status()
+                    except requests.HTTPError as he:
+                        # Print response body for debugging (Cloud Run often returns {"detail": "..."}).
+                        body_preview = ""
+                        try:
+                            body_preview = (r.text or "")[:1200]
+                        except Exception:
+                            body_preview = ""
+                        print(f"⚠️ [ELEVEN] Cloud returned HTTP {r.status_code}. Body: {body_preview}")
+                        raise he
+                    audio_bytes = r.content
+                    if not audio_bytes or len(audio_bytes) < 1024:
+                        raise ValueError("Empty audio bytes returned")
+
+                    fname = r.headers.get("X-Filename") or f"vocals_{int(time.time())}.mp3"
+                    safe_name = fname.replace("/", "_").replace("\\", "_")
+                    out_path = (TEMP_AUDIO_DIR / safe_name).resolve()
+                    out_path.write_bytes(audio_bytes)
+                    print(f"✅ [ELEVEN] Saved: {out_path} ({len(audio_bytes)/1024:.1f} KB)")
+
+                    processed.append(f'INSERT_AUDIO {track_idx} "{out_path}" {start_time}')
+                except Exception as e:
+                    print(f"⚠️ [ELEVEN] Failed to generate/download vocals: {e}")
+                    # IMPORTANT: never pass ELEVEN_VOCALS through to Lua, or Reaper will log "Unknown command".
+                    # Drop the command on failure; the user can re-run once the issue is fixed.
+                    continue
+            else:
+                # Bad format; drop it so Lua never sees it
+                print("⚠️ [ELEVEN] Bad ELEVEN_VOCALS format; dropping command.")
+                continue
+        
+        elif line.startswith('EL1_SONG'):
+            # EL1_SONG <startTime> <json_payload>
+            # NEW FLOW: Just tell cloud to START the job. Cloud does ElevenLabs in background.
+            # When done, cloud queues EL1_FETCH command which we pick up on next poll.
+            # This avoids holding a connection open for 5+ minutes.
+            
+            parts = line.split(maxsplit=2)
+            if len(parts) >= 3:
+                start_time = parts[1]
+                payload_raw = parts[2].strip()
+                try:
+                    payload = json.loads(payload_raw)
+                    if not isinstance(payload, dict):
+                        raise ValueError("payload must be JSON object")
+                    payload.setdefault("session_id", SESSION_ID)
+                    payload["start_time"] = float(start_time)  # Cloud needs this to queue EL1_FETCH later
+
+                    url = f"{CLOUD_URL}/api/el1/start"
+                    print(f"🎵 [EL1] Starting async job on cloud...")
+                    print(f"   Title: {payload.get('title', 'Untitled')}")
+                    
+                    headers = {}
+                    agent_key = os.getenv("AGENT_API_KEY", "")
+                    if agent_key:
+                        headers["X-API-KEY"] = agent_key
+                    
+                    # This returns IMMEDIATELY with job_id
+                    r = _HTTP.post(url, json=payload, headers=headers, timeout=(10, 30))
+                    r.raise_for_status()
+                    result = r.json()
+                    job_id = result.get("job_id", "unknown")
+                    
+                    print(f"🧾 [EL1] Job started: {job_id}")
+                    print(f"   Cloud is working. Will auto-import when ready (watch for EL1_FETCH).")
+                    # Don't add to processed - cloud will queue EL1_FETCH when done
+                    
+                except Exception as e:
+                    print(f"⚠️ [EL1] Failed to start job: {e}")
+                    continue
+            else:
+                print("⚠️ [EL1] Bad EL1_SONG format; dropping command.")
+                continue
+        
+        elif line.startswith('EL1_FETCH'):
+            # EL1_FETCH <job_id> <start_time>
+            # Cloud queues this when ElevenLabs job is DONE. ZIP is ready to download.
+            # We download fast (no waiting), extract stems, create INSERT_AUDIO commands.
+            import zipfile
+            
+            parts = line.split()
+            if len(parts) >= 3:
+                job_id = parts[1]
+                start_time = parts[2]
+                
+                try:
+                    url = f"{CLOUD_URL}/api/el1/result/{job_id}"
+                    print(f"📥 [EL1] Fetching completed job {job_id}...")
+                    
+                    headers = {}
+                    agent_key = os.getenv("AGENT_API_KEY", "")
+                    if agent_key:
+                        headers["X-API-KEY"] = agent_key
+                    
+                    timestamp = int(time.time())
+                    zip_path = (TEMP_AUDIO_DIR / f"{job_id}_{timestamp}.zip").resolve()
+                    
+                    # Download ZIP (should be fast - it's already generated)
+                    with _HTTP.get(url, headers=headers, stream=True, timeout=(15, 300)) as r:
+                        if r.status_code == 400:
+                            # Job failed (bad_prompt etc)
+                            try:
+                                err = r.json()
+                                print(f"🛑 [EL1] Job {job_id} failed: {err.get('error', r.text[:200])}")
+                            except Exception:
+                                print(f"🛑 [EL1] Job {job_id} failed: {r.text[:200]}")
+                            continue
+                        if r.status_code == 404:
+                            print(f"⚠️ [EL1] Job {job_id} not found or expired")
+                            continue
+                        r.raise_for_status()
+                        
+                        total = r.headers.get("Content-Length")
+                        total_bytes = int(total) if total and total.isdigit() else None
+                        downloaded = 0
+                        
+                        with open(zip_path, "wb") as f:
+                            for chunk in r.iter_content(chunk_size=256 * 1024):
+                                if not chunk:
+                                    continue
+                                f.write(chunk)
+                                downloaded += len(chunk)
+                                if total_bytes and downloaded % (2 * 1024 * 1024) < (256 * 1024):
+                                    print(f"📥 [EL1] {downloaded/1024/1024:.1f}MB / {total_bytes/1024/1024:.1f}MB")
+                    
+                    size = zip_path.stat().st_size
+                    if not zipfile.is_zipfile(zip_path):
+                        raise ValueError("Downloaded file is not a valid ZIP")
+                    
+                    print(f"📦 [EL1] Downloaded: {size/1024:.1f} KB -> {zip_path}")
+                    
+                    # Extract stems
+                    stem_tracks = {
+                        "vocals": 0, "drums": 1, "bass": 2,
+                        "guitar": 3, "piano": 4, "other": 5, "fullsong": 6
+                    }
+                    
+                    with zipfile.ZipFile(str(zip_path), 'r') as zf:
+                        print(f"   ZIP contents: {zf.namelist()}")
+                        for filename in zf.namelist():
+                            stem_bytes = zf.read(filename)
+                            if len(stem_bytes) < 1024:
+                                continue
+                            file_lower = filename.lower().replace('.mp3', '')
+                            track_idx = stem_tracks.get(file_lower)
+                            if track_idx is not None:
+                                out_filename = f"{file_lower}_{timestamp}.mp3"
+                                out_path = (TEMP_AUDIO_DIR / out_filename).resolve()
+                                out_path.write_bytes(stem_bytes)
+                                print(f"✅ [EL1] Saved {file_lower}: {out_path} ({len(stem_bytes)/1024:.1f} KB)")
+                                processed.append(f'INSERT_AUDIO {track_idx} "{out_path}" {start_time}')
+                    
+                    print(f"✅ [EL1] Job {job_id} complete! Stems imported.")
+                    
+                except Exception as e:
+                    print(f"⚠️ [EL1] Failed to fetch/import job {job_id}: {e}")
+                    continue
+            else:
+                print("⚠️ [EL1] Bad EL1_FETCH format; dropping command.")
+                continue
+        
+        else:
+            processed.append(line)
+    
+    return '\n'.join(processed)
+
+def poll_commands():
+    """Poll cloud for commands and write to local file (with simple de-dupe)"""
+    print(f"Starting polling loop...")
+    last_cmd_text = ""
+    last_cmd_time = 0.0
+    while True:
+        try:
+            r = _HTTP.get(
+                f"{CLOUD_URL}/api/reaper/poll",
+                params={"session_id": SESSION_ID},
+                timeout=5
+            )
+            if r.status_code == 200 and r.text and r.text.strip():
+                # Server might return JSON string (e.g., "1007") or an object/array
+                raw = r.text.strip()
+                if raw and raw != "null" and raw != '""':
+                    cmd_text = raw
+                    try:
+                        parsed = json.loads(raw)
+                        # If it's a dict with 'command', use that; if it's a list, join lines; else str(parsed)
+                        if isinstance(parsed, dict) and 'command' in parsed:
+                            cmd_text = str(parsed['command'])
+                        elif isinstance(parsed, (list, tuple)):
+                            cmd_text = "\n".join(str(x) for x in parsed if x)
+                        else:
+                            cmd_text = str(parsed)
+                    except Exception:
+                        # Strip surrounding quotes if present
+                        if (raw.startswith('"') and raw.endswith('"')) or (raw.startswith("'") and raw.endswith("'")):
+                            cmd_text = raw[1:-1]
+                    
+                    # Process commands locally (resolve sample IDs, convert cloud paths)
+                    if any(kw in cmd_text for kw in ['USE_SAMPLE', 'DRUM_SAMPLE', 'LOAD_SAMPLER', 'EXPORT_AUDIO', 'ELEVEN_VOCALS', 'EL1_SONG', 'EL1_FETCH', 'INSERT_AUDIO_B64']):
+                        print(f"[BRIDGE] Processing commands locally...")
+                        cmd_text = process_commands_locally(cmd_text)
+                    
+                    # Ensure trailing newline so Lua processes a single line cleanly
+                    if not cmd_text.endswith("\n"):
+                        cmd_text = cmd_text + "\n"
+                    # Skip immediate duplicates (identical command back-to-back within ~1s)
+                    now_ts = time.time()
+                    if cmd_text.strip() == last_cmd_text.strip() and (now_ts - last_cmd_time) < 1.0:
+                        # Still update last seen to extend window slightly
+                        last_cmd_time = now_ts
+                    else:
+                        COMMAND_FILE.write_text(cmd_text)
+                        # Count commands (newline-separated)
+                        cmd_count = len([c for c in cmd_text.strip().split('\n') if c.strip()])
+                        if cmd_count > 1:
+                            print(f"← Received {cmd_count} commands:")
+                            for i, c in enumerate(cmd_text.strip().split('\n')[:5], 1):
+                                print(f"   {i}. {c.strip()[:60]}")
+                            if cmd_count > 5:
+                                print(f"   ... and {cmd_count - 5} more")
+                        else:
+                            print(f"← Received command: {cmd_text.strip()[:80]}")
+                        last_cmd_text = cmd_text
+                        last_cmd_time = now_ts
+
+                        # If cloud requested a state refresh, force-send after Lua writes it
+                        if cmd_text.strip().upper() == "GET_STATE":
+                            # Give Lua a short window to export
+                            time.sleep(0.4)
+                            _send_state_if_changed(force=True)
+        except KeyboardInterrupt:
+            raise  # Let Ctrl+C work
+        except Exception as e:
+            print(f"⚠️ Poll error: {e}")
+        time.sleep(1.0)
+
+def state_pump():
+    """Periodic fallback to push state even if FS events are missed"""
+    while True:
+        _send_state_if_changed()
+        time.sleep(2.0)
+
+def lyrics_cache_worker():
+    """Poll cloud for lyrics to cache locally"""
+    print("✓ Lyrics cache thread running")
+    while True:
+        try:
+            r = _HTTP.get(
+                f"{CLOUD_URL}/api/lyrics/pending",
+                params={"session_id": SESSION_ID},
+                timeout=5
+            )
+            if r.status_code == 200:
+                data = r.json()
+                pending = data.get("lyrics", [])
+                for item in pending:
+                    track_name = item.get("track_name", "")
+                    lyrics = item.get("lyrics", [])
+                    if track_name and lyrics:
+                        # Save to local cache
+                        # Sanitize track name for filename
+                        safe_name = "".join(c if c.isalnum() or c in " -_()[]." else "_" for c in track_name)
+                        cache_file = LYRICS_CACHE_DIR / f"{safe_name}.json"
+                        try:
+                            with open(cache_file, 'w', encoding='utf-8') as f:
+                                json.dump({
+                                    "track_name": track_name,
+                                    "analyzed_at": time.strftime('%Y-%m-%d %H:%M:%S'),
+                                    "lyrics": lyrics
+                                }, f, indent=2)
+                            print(f"💾 Cached lyrics locally: {track_name} ({len(lyrics)} words)")
+                        except Exception as e:
+                            print(f"⚠️ Failed to cache lyrics for {track_name}: {e}")
+        except Exception as e:
+            # Only log if not a timeout/connection error
+            if "timeout" not in str(e).lower() and "connection" not in str(e).lower():
+                print(f"⚠️ Lyrics poll error: {e}")
+        time.sleep(3.0)  # Poll every 3 seconds
+
+def _prepare_upload_file(wav_path: Path) -> Path:
+    """
+    Downsample + downmix large exports to keep uploads under Cloud Run limits.
+    Returns path to file to upload (may be original path).
+    """
+    if not AUDIO_TOOLS_AVAILABLE:
+        return wav_path
+    try:
+        audio, sr = librosa.load(str(wav_path), sr=None, mono=False)
+        if audio is None or np.size(audio) == 0:
+            return wav_path
+
+        if audio.ndim > 1:
+            audio = np.mean(audio, axis=0)
+
+        target_sr = 16000
+        if sr != target_sr:
+            audio = librosa.resample(audio, orig_sr=sr, target_sr=target_sr)
+            sr = target_sr
+
+        temp_path = wav_path.with_name(wav_path.stem + "_16k.wav")
+        sf.write(str(temp_path), audio, sr, subtype="PCM_16")
+        size_mb = temp_path.stat().st_size / (1024 * 1024)
+        orig_mb = wav_path.stat().st_size / (1024 * 1024)
+        print(f"🎚️ Prepared upload {temp_path.name}: {size_mb:.2f}MB (orig {orig_mb:.2f}MB)")
+        return temp_path
+    except Exception as e:
+        print(f"⚠️ Downsample failed ({wav_path.name}): {e}")
+        return wav_path
+
+
+def upload_audio_worker():
+    """Watch local temp_audio exports and upload new WAV files to cloud"""
+    print("✓ Audio upload thread running")
+    seen_files = set()
+    # Use temp directory that works on both Windows and Linux
+    import tempfile
+    session_dir = Path(tempfile.gettempdir()) / "daw_uploads" / SESSION_ID
+    session_dir.mkdir(parents=True, exist_ok=True)
+    scan_count = 0
+    while True:
+        try:
+            if TEMP_AUDIO_DIR.exists():
+                # Periodic scan logging (every ~30 seconds)
+                scan_count += 1
+                if scan_count % 20 == 1:  # Log occasionally
+                    folders = list(TEMP_AUDIO_DIR.glob("track_*"))
+                    if folders:
+                        print(f"📂 Watching {len(folders)} export folder(s) in {TEMP_AUDIO_DIR}")
+                
+                for wav_path in TEMP_AUDIO_DIR.glob("track_*/*.wav"):
+                    resolved = wav_path.resolve()
+                    if str(resolved) in seen_files:
+                        continue
+                    
+                    print(f"🔍 Found new audio: {wav_path}")
+
+                    track_idx = None
+                    parent = wav_path.parent.name
+                    if parent.startswith("track_"):
+                        parts = parent.split("_")
+                        if len(parts) >= 2 and parts[1].isdigit():
+                            track_idx = parts[1]
+
+                    try:
+                        upload_path = _prepare_upload_file(wav_path)
+                        if upload_path != wav_path:
+                            target = session_dir / upload_path.name
+                            target.write_bytes(upload_path.read_bytes())
+                            try:
+                                upload_path.unlink()
+                            except Exception:
+                                pass
+                            upload_path = target
+                        else:
+                            target = session_dir / wav_path.name
+                            target.write_bytes(wav_path.read_bytes())
+                            upload_path = target
+
+                        with upload_path.open("rb") as f:
+                            files = {"file": (upload_path.name, f, "audio/wav")}
+                            params = {"session_id": SESSION_ID}
+                            if track_idx is not None:
+                                params["track_idx"] = track_idx
+                            resp = _HTTP.post(
+                                f"{CLOUD_URL}/api/upload/audio",
+                                params=params,
+                                files=files,
+                                timeout=60,
+                            )
+                        if resp.status_code == 200:
+                            seen_files.add(str(resolved))
+                            size_mb = upload_path.stat().st_size / (1024 * 1024)
+                            print(f"→ Uploaded {upload_path.name} ({size_mb:.2f} MB) for session {SESSION_ID}")
+                        else:
+                            print(f"⚠️ Upload failed ({resp.status_code}): {resp.text[:120]}")
+                        try:
+                            upload_path.unlink()
+                        except Exception:
+                            pass
+                    except FileNotFoundError:
+                        continue  # File removed between glob and open
+                    except Exception as e:
+                        print(f"⚠️ Upload error: {e}")
+        except Exception as outer_err:
+            print(f"⚠️ Audio watcher error: {outer_err}")
+        time.sleep(1.5)
+
+if __name__ == "__main__":
+    # Start watching state file
+    observer = Observer()
+    observer.schedule(StateFileHandler(), str(BASE_DIR), recursive=False)
+    observer.start()
+    print(f"✓ Watching {STATE_FILE} for changes")
+    
+    # Start periodic state pump fallback
+    threading.Thread(target=state_pump, daemon=True).start()
+    # Disabled: audio upload watcher (was causing 413 errors on large files)
+    # threading.Thread(target=upload_audio_worker, daemon=True).start()
+    threading.Thread(target=lyrics_cache_worker, daemon=True).start()
+    
+    # Kick an initial state to the cloud: request export if file is empty, otherwise force-send
+    def _kick_initial_state():
+        try:
+            time.sleep(0.2)  # allow observer/thread startup
+            content = STATE_FILE.read_text() if STATE_FILE.exists() else ""
+            if not content.strip():
+                COMMAND_FILE.write_text("GET_STATE\n")
+                print("→ Requested initial GET_STATE")
+                time.sleep(0.5)  # wait for Lua to export
+            _send_state_if_changed(force=True)
+        except Exception as e:
+            print(f"⚠️ Initial state kick error: {e}")
+    threading.Thread(target=_kick_initial_state, daemon=True).start()
+    
+    # Start polling for commands
+    print("✓ Polling cloud for commands")
+    print()
+    print("Bridge is running. Keep this window open.")
+    print("Press Ctrl+C to stop.")
+    print()
+    
+    try:
+        poll_commands()
+    except KeyboardInterrupt:
+        observer.stop()
+        print("\nBridge stopped.")
+    observer.join()
+

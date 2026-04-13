@@ -1,13 +1,28 @@
 """
-Prompt Enhancer - Claude generates everything freely.
+Prompt Enhancer - Routes to MIDI Foundation Model or Claude.
 Supports: song generation, compose around existing MIDI, and agentic mixing.
-Now with real drum sample support!
+Now with MIDI foundation model support (330M params, 175K+ MIDI files)!
 """
 
 import os
 import re
 from anthropic import Anthropic
 from dotenv import load_dotenv
+
+# MIDI Foundation Model integration
+# Set USE_MIDI_MODEL=true to use foundation model for ALL song generation (not just M1 prefix)
+USE_MIDI_MODEL_DEFAULT = os.getenv("USE_MIDI_MODEL", "false").lower() == "true"
+
+# Import midi_model but don't require health check at startup
+# M1 mode will try to use it regardless and fail gracefully if unavailable
+try:
+    import midi_model
+    MIDI_MODEL_AVAILABLE = True  # Assume available, will fail gracefully on actual call
+    print("🎹 MIDI Foundation Model module loaded")
+except ImportError:
+    MIDI_MODEL_AVAILABLE = False
+    midi_model = None
+    print("⚠️ midi_model.py not found")
 
 load_dotenv()
 client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY_ENHANCER") or os.getenv("ANTHROPIC_API_KEY"))
@@ -67,29 +82,26 @@ def extract_bpm_from_text(text: str) -> int | None:
     return None
 
 
-# Default VSTs for each track type (non-drum tracks only)
+# Default VSTs for each track type - using FREE Reaper built-in plugins
+# Just use "ReaSynth" - Lua will find it with various prefixes
 DEFAULT_VSTS = {
-    0: 'VSTi: Piano V3 (Arturia)',      # Track 0 = Piano/Keys
-    1: 'VSTi: Analog Lab V (Arturia)',   # Track 1 = Bass synth
-    # Track 2 = Drums (no VST - uses samples)
-    3: 'VSTi: Analog Lab V (Arturia)',   # Track 3 = Lead/Melody synth
-    4: 'VSTi: Analog Lab V (Arturia)',   # Track 4+ = Synth
+    0: 'ReaSynth',       # Track 0 = Keys/Chords (free)
+    1: 'ReaSynth',       # Track 1 = Bass synth (free)
+    2: 'ReaSynth',       # Track 2 = Drums/Perc (free) 
+    3: 'ReaSynth',       # Track 3 = Lead/Melody (free)
+    4: 'ReaSynth',       # Track 4+ = Synth (free)
+    5: 'ReaSynth',       # Track 5
+    6: 'ReaSynth',       # Track 6
+    7: 'ReaSynth',       # Track 7
 }
 
-# Load drum samples for MIDI-triggered sampler approach
-try:
-    from drum_index import get_cloud_summary, load_index
-    _drum_index = load_index()
-    DRUM_SAMPLES_AVAILABLE = _drum_index is not None and len(_drum_index.get("samples", {})) > 0
-    sample_count = len(_drum_index.get("samples", {})) if _drum_index else 0
-    DRUM_SUMMARY = get_cloud_summary() if DRUM_SAMPLES_AVAILABLE else ""
-    print(f"[DRUMS] Samples available: {DRUM_SAMPLES_AVAILABLE}, count: {sample_count}")
-    if DRUM_SAMPLES_AVAILABLE:
-        print(f"[DRUMS] Summary preview: {DRUM_SUMMARY[:200]}...")
-except Exception as e:
-    print(f"[DRUMS] No drum index: {e}")
-    DRUM_SAMPLES_AVAILABLE = False
-    DRUM_SUMMARY = ""
+# Drum samples are USER-SPECIFIC (each user has different samples on their PC)
+# The cloud should NOT assume any specific samples exist.
+# Users who want drums should add their own drum VSTi in Reaper.
+# In the future, we can make this per-session based on bridge state.
+DRUM_SAMPLES_AVAILABLE = False
+DRUM_SUMMARY = ""
+print("[DRUMS] Disabled on cloud (user-specific samples). Users add their own drum plugin.")
 
 
 def get_available_instruments():
@@ -101,25 +113,27 @@ def get_available_instruments():
                 if "VSTi:" in line or "VST3i:" in line or "CLAPi:" in line:
                     instruments.append(line.strip())
     except:
-        # Fallback if file not found
-        return [
-            "VSTi: Analog Lab V (Arturia)",
-            "VSTi: Piano V3 (Arturia)",
-            "VSTi: Acid V (Arturia)",
-            "VSTi: Ample Guitar M II Lite (Ample Sound)"
-        ]
+        # Fallback if file not found - use FREE Reaper built-in plugins
+        return ["ReaSynth", "ReaSamplOmatic5000"]
     
     # Return top 20 instruments to avoid cluttering context
-    return instruments[:30] if instruments else ["VSTi: Analog Lab V (Arturia)"]
+    return instruments[:30] if instruments else ["ReaSynth"]
 
 AVAILABLE_INSTRUMENTS = get_available_instruments()
 INSTRUMENT_LIST_STR = "\n".join([f"- {inst}" for inst in AVAILABLE_INSTRUMENTS])
 
 def classify_request(user_input):
-    """Classify: EL1 full song, new song, compose around existing MIDI, or mixing/effects?"""
+    """Classify: M1 MIDI model, EL1 full song, new song, compose around existing MIDI, or mixing/effects?"""
     
-    # Check for EL1 prefix first (case insensitive)
     user_lower = user_input.strip().lower()
+    print(f"[CLASSIFY] Input: '{user_input[:50]}', lower: '{user_lower[:50]}'")
+    
+    # Check for M1 prefix - MIDI Foundation Model
+    if user_lower.startswith("m1 ") or user_lower.startswith("m1:"):
+        print("[CLASSIFY] ✅ Detected M1 mode!")
+        return "midi_model"
+    
+    # Check for EL1 prefix - ElevenLabs full song
     if user_lower.startswith("el1 ") or user_lower.startswith("el1:"):
         return "el1_fullsong"
     
@@ -183,6 +197,8 @@ def ensure_instruments_and_items(commands):
     midi_create_cmds = {}  # track -> command
     midi_note_cmds = []
     drum_cmds = []  # DRUM_SAMPLE or INSERT_AUDIO commands
+    fx_cmds = {}  # track -> list of ADD_FX commands
+    fx_param_cmds = []  # SET_FX_PARAM commands
     other_cmds = []
     
     # Track which tracks have MIDI notes vs drum samples
@@ -237,6 +253,18 @@ def ensure_instruments_and_items(commands):
                     pass
         elif cmd.startswith('VOL_DIP'):
             other_cmds.append(cmd)
+        elif cmd.startswith('ADD_FX'):
+            parts = cmd.split()
+            if len(parts) >= 3:
+                try:
+                    track = int(parts[1])
+                    if track not in fx_cmds:
+                        fx_cmds[track] = []
+                    fx_cmds[track].append(cmd)
+                except:
+                    pass
+        elif cmd.startswith('SET_FX_PARAM') or cmd.startswith('FX_PARAM_AUTO'):
+            fx_param_cmds.append(cmd)
     
     # Default song length if not found
     if max_end_time == 0:
@@ -281,14 +309,40 @@ def ensure_instruments_and_items(commands):
                 print(f"   🎹 Added missing sampler for track {track}")
             else:
                 # Otherwise choose a sensible default instrument
-                vst = DEFAULT_VSTS.get(track) or DEFAULT_VSTS.get(4) or 'VSTi: Analog Lab V (Arturia)'
+                vst = DEFAULT_VSTS.get(track) or 'ReaSynth'
                 instrument_cmds[track] = f'INSERT_INSTRUMENT {track} {vst}'
                 print(f"   🎸 Added missing instrument for track {track}")
         
         # 2. Ensure MIDI Item (so notes can exist)
         if track not in midi_create_cmds:
-            midi_create_cmds[track] = f'MIDI_CREATE_ITEM {track} 0.0 {round(max_end_time + 1, 1)}'
-            print(f"   📝 Added missing MIDI item for track {track}")
+             midi_create_cmds[track] = f'MIDI_CREATE_ITEM {track} 0.0 {round(max_end_time + 1, 1)}'
+             print(f"   📝 Added missing MIDI item for track {track}")
+        
+        # 3. Ensure FX (at least 1 per track with instruments)
+        has_sound = (track in instrument_cmds) or (track in sampler_cmds)
+        has_fx = track in fx_cmds and len(fx_cmds[track]) > 0
+        if has_sound and not has_fx:
+            # Auto-add sensible FX based on track role
+            if track == 1:
+                # Bass track: EQ + Comp
+                if track not in fx_cmds:
+                    fx_cmds[track] = []
+                fx_cmds[track].append(f'ADD_FX {track} ReaEQ')
+                fx_cmds[track].append(f'ADD_FX {track} ReaComp')
+                print(f"   🎛️ Added FX (ReaEQ, ReaComp) for bass track {track}")
+            elif track in tracks_with_drums:
+                # Drum track: Comp for punch
+                if track not in fx_cmds:
+                    fx_cmds[track] = []
+                fx_cmds[track].append(f'ADD_FX {track} ReaComp')
+                print(f"   🎛️ Added FX (ReaComp) for drum track {track}")
+            else:
+                # Melodic/pad track: Reverb + EQ
+                if track not in fx_cmds:
+                    fx_cmds[track] = []
+                fx_cmds[track].append(f'ADD_FX {track} ReaVerbate')
+                fx_cmds[track].append(f'ADD_FX {track} ReaEQ')
+                print(f"   🎛️ Added FX (ReaVerbate, ReaEQ) for track {track}")
 
     # Rebuild commands in correct order
     final_commands = []
@@ -320,10 +374,132 @@ def ensure_instruments_and_items(commands):
     if midi_note_cmds:
         final_commands.append('')
     
-    # 5. Other commands (automation, etc.)
+    # 5. FX commands (sorted by track)
+    for track in sorted(fx_cmds.keys()):
+        for fx_cmd in fx_cmds[track]:
+            final_commands.append(fx_cmd)
+    if fx_cmds:
+        final_commands.append('')
+    
+    # 6. FX parameter commands
+    final_commands.extend(fx_param_cmds)
+    if fx_param_cmds:
+        final_commands.append('')
+    
+    # 7. Other commands (automation, etc.)
     final_commands.extend(other_cmds)
     
     return final_commands
+
+
+# =============================================
+# MIDI FOUNDATION MODEL GENERATION
+# =============================================
+
+def _parse_midi_hints(user_input: str) -> dict:
+    """
+    Parse user input for hints about length and style.
+    v1 model doesn't use prompts, but we can adjust parameters.
+    """
+    lower = user_input.lower()
+    hints = {
+        "max_tokens": 2048,  # Default: ~1 minute
+        "temperature": 0.9,  # Default: balanced
+    }
+    
+    # Length hints
+    if any(w in lower for w in ["short", "quick", "brief"]):
+        hints["max_tokens"] = 512
+    elif any(w in lower for w in ["long", "extended", "full"]):
+        hints["max_tokens"] = 4096
+    elif any(w in lower for w in ["epic", "cinematic", "symphony"]):
+        hints["max_tokens"] = 4096
+    
+    # Temperature/style hints
+    if any(w in lower for w in ["experimental", "crazy", "wild", "weird"]):
+        hints["temperature"] = 1.1
+    elif any(w in lower for w in ["safe", "simple", "basic", "conservative"]):
+        hints["temperature"] = 0.7
+    elif any(w in lower for w in ["creative", "unique", "interesting"]):
+        hints["temperature"] = 1.0
+    
+    return hints
+
+
+def generate_song_with_midi_model(user_input: str, bars: int = 32) -> str:
+    """
+    Generate song using the MIDI Foundation Model (170M params, 176K MIDI files).
+    
+    v1 model generates pure MIDI from scratch - no prompts, no control tokens.
+    The user prompt is used to adjust length and temperature parameters.
+    
+    Usage: Prefix prompt with "M1 " to trigger this mode.
+    Example: "M1 generate something" or "M1 long experimental"
+    """
+    print(f"[M1] generate_song_with_midi_model called with: '{user_input[:50]}'")
+    
+    if midi_model is None:
+        print("❌ [M1] midi_model module is None, falling back to Claude")
+        return generate_song_commands(user_input)
+    
+    # Check health at call time (not startup)
+    print("🎹 [M1] Checking MIDI model connection...")
+    try:
+        is_healthy = midi_model.check_health()
+        print(f"🎹 [M1] Health check result: {is_healthy}")
+    except Exception as e:
+        print(f"❌ [M1] Health check exception: {e}")
+        is_healthy = False
+    
+    if not is_healthy:
+        print("❌ [M1] MIDI model server not reachable, falling back to Claude")
+        return generate_song_commands(user_input)
+    
+    # Strip the M1 prefix
+    prompt = user_input.strip()
+    if prompt.lower().startswith("m1 "):
+        prompt = prompt[3:].strip()
+    elif prompt.lower().startswith("m1:"):
+        prompt = prompt[3:].strip()
+    
+    # Parse hints from prompt (v1 doesn't use prompts directly)
+    hints = _parse_midi_hints(prompt)
+    
+    print(f"🎹 MIDI Foundation Model generating...")
+    print(f"   📊 170M params • 176K MIDI training files (LAKH dataset)")
+    print(f"   🎚️ tokens={hints['max_tokens']}, temp={hints['temperature']}")
+    if prompt:
+        print(f"   💭 Hint: \"{prompt}\" (v1 model generates from scratch)")
+    
+    try:
+        # Generate MIDI and get import commands
+        commands = midi_model.generate_reaper_commands(
+            max_tokens=hints["max_tokens"],
+            temperature=hints["temperature"],
+            track=1,
+            start_time=0.0
+        )
+        
+        if commands:
+            print(f"   ✅ MIDI file generated and ready for import")
+            return '\n'.join(commands)
+        else:
+            raise RuntimeError("No commands returned")
+        
+    except Exception as e:
+        print(f"❌ MIDI model error: {e}")
+        print("   Falling back to Claude...")
+        return generate_song_commands(user_input)
+
+
+def generate_midi_file_import(midi_path: str, track: int = 1, start_time: float = 0.0) -> str:
+    """
+    Generate command to import a MIDI file into Reaper.
+    Use this when you have an existing .mid file to import.
+    """
+    # Normalize path for Windows
+    midi_path = midi_path.replace('/', '\\')
+    return f'INSERT_AUDIO {track} "{midi_path}" {start_time}'
 
 
 def generate_song_commands(user_input):
@@ -339,65 +515,71 @@ def generate_song_commands(user_input):
     # Build drum sample info ONLY if user wants drums and doesn't want no-drums
     drum_info = ""
     if wants_drums and not wants_no_drums:
-        if DRUM_SAMPLES_AVAILABLE and DRUM_SUMMARY:
-            drum_info = f"""
-DRUM SAMPLES (use ONLY if drums fit the music):
-LOAD_SAMPLER [track] [sample_id] 60 60 60
-MIDI_CREATE_ITEM [track] [start] [end]
-MIDI_INSERT_NOTE [track] 60 [velocity] [start] [end]
-
-SAMPLES: {DRUM_SUMMARY}
-"""
-        else:
-            drum_info = """
+        # Drums disabled on cloud (user-specific), so just give MIDI drum instructions
+        drum_info = """
 DRUMS (use ONLY if drums fit the music):
-INSERT_INSTRUMENT [track] VSTi: ReaSynDr (Cockos)
-kick=36, snare=38, hihat=42
+INSERT_INSTRUMENT [track] ReaSynth
+Use MIDI notes: kick=36, snare=38, hihat=42, crash=49
 """
 
-    prompt = f"""You are a CREATIVE MUSICIAN composing original music. NO TEMPLATES. NO FORMULAS.
+    prompt = f"""You are composing music. Every note is a choice. Make it meaningful.
 
-USER WANTS: "{user_input}"
+"{user_input}"
+{f'Tempo: {requested_bpm} BPM' if requested_bpm else ''}
 
-THINK LIKE A REAL MUSICIAN:
-1. What FEELING does this request evoke?
-2. What instruments ACTUALLY fit? (A piano ballad doesn't need kicks/hi-hats!)
-3. What key and chord progression creates the right mood?
-4. What tempo feels natural for this style?
-5. Should it be sparse and emotional, or dense and energetic?
+CRITICAL — WHAT MAKES MUSIC SOUND GOOD:
 
-COMMIT TO A KEY AND STAY IN IT:
-- Major keys: C (C-E-G), G (G-B-D), D (D-F#-A), A (A-C#-E), F (F-A-C)
-- Minor keys: Am (A-C-E), Em (E-G-B), Dm (D-F-A), Bm (B-D-F#)
-- USE CHORD TONES on strong beats (beats 1 and 3)
-- USE PASSING TONES on weak beats
+1. MELODIC CONVERSATION (tracks talk to each other):
+   - When lead plays a phrase, bass RESPONDS (not plays constantly)
+   - Tracks take TURNS — one speaks, others support or rest
+   - Call and response: melody asks, harmony answers
+   - NOT: all tracks playing nonstop at the same time
 
-{f'REQUESTED TEMPO: {requested_bpm} BPM - respect this!' if requested_bpm else 'PICK A TEMPO that fits the mood.'}
+2. SPACE AND BREATHING:
+   - Notes need GAPS between them — silence is music too
+   - A phrase is 2-8 notes, then PAUSE, then next phrase
+   - Bass plays root notes with SPACE (whole notes, half notes) — not every beat
+   - Pads SUSTAIN chords (2-4 bars per chord) — not rapid-fire changes
+   - NEVER notes every 0.1-0.2 seconds — that's machine gun, not music
+
+3. HARMONIC UNITY (same key, complementary notes):
+   - Pick ONE key (e.g., C minor) — ALL tracks use notes from that scale
+   - When bass plays C, pads play Cm chord (C-Eb-G), lead uses C minor scale
+   - Chord tones on strong beats, passing tones between
+   - Voice leading: top note of chord moves smoothly (step by step)
+
+4. MELODIC SHAPE (contour, not repetition):
+   - Melodies go UP and DOWN — they have direction
+   - Start phrase low → rise → peak → fall back
+   - Repeat a motif, then DEVELOP it (higher, inverted, rhythmically varied)
+   - NOT: same 2 notes alternating forever
+
+5. DYNAMIC ARC:
+   - Velocity changes tell the story (soft verse, loud chorus)
+   - Start sparse (1-2 tracks) → build → full arrangement → strip back → end
+
+TRACK ROLES:
+- Bass (track 1): Long notes on root/5th, SPACE between — anchor the harmony
+- Chords/Pads (track 2-3): Sustained chords, change every 2-4 bars — fill the space
+- Lead/Melody (track 4+): Singable phrases with rests — tell the story
 
 COMMANDS:
 SET_TEMPO [bpm]
-INSERT_INSTRUMENT [track] [instrument name]
-MIDI_CREATE_ITEM [track] [start_seconds] [end_seconds]
-MIDI_INSERT_NOTE [track] [pitch] [velocity] [start_seconds] [end_seconds]
-VOL_DIP [track] [start] [end] [volume_0_to_1]
+INSERT_INSTRUMENT [track] ReaSynth
+MIDI_CREATE_ITEM [track] [start] [end]
+MIDI_INSERT_NOTE [track] [pitch] [velocity] [start] [end]
 
-INSTRUMENTS (pick what FITS, not everything):
-{INSTRUMENT_LIST_STR}
+FX — REQUIRED (at least 1 per track):
+ADD_FX [track] [fx_name]
+SET_FX_PARAM [track] [fx_index] [param_index] [value 0.0-1.0]
+Available: ReaEQ, ReaComp, ReaVerbate, ReaDelay
+
 {drum_info}
-MIDI PITCH: C3=48, C4=60, C5=72 (chromatic: +2=D, +4=E, +5=F, +7=G, +9=A, +11=B)
-TIMING: In 4/4 at 120 BPM, each beat = 0.5 seconds. Adjust for your tempo.
+PITCH: C3=48, C4=60, C5=72. Add: D+2, E+4, F+5, G+7, A+9, B+11
+TIMING at 120bpm: quarter=0.5s, half=1.0s, whole=2.0s, bar=2.0s
 
-COMPOSE FREELY:
-- DON'T add drums/hi-hats unless the style actually needs them
-- DON'T follow a rigid verse/chorus template unless it fits
-- DO focus on melody and harmony first
-- DO create musical phrases that breathe and flow
-- DO use dynamics (velocity changes, volume automation)
-- DO make it sound like REAL MUSIC, not a robotic loop
-
-Output ONLY commands, one per line. 
-Start with SET_TEMPO, then instruments, then MIDI items/notes.
-Generate at least 1 minute of MUSICAL, EMOTIONAL, CREATIVE composition."""
+QUALITY over QUANTITY. 50 beautiful notes > 500 machine-gun notes.
+Tracks that BREATHE and CONVERSE. Output ONLY commands."""
 
     print(f"🎵 Claude composing: \"{user_input}\"")
     if DRUM_SAMPLES_AVAILABLE:
@@ -412,7 +594,8 @@ Generate at least 1 minute of MUSICAL, EMOTIONAL, CREATIVE composition."""
     
     # Keep only valid commands
     valid_prefixes = ('SET_TEMPO', 'INSERT_INSTRUMENT', 'MIDI_CREATE_ITEM', 
-                      'MIDI_INSERT_NOTE', 'VOL_DIP', 'USE_SAMPLE', 'INSERT_AUDIO', 'LOAD_SAMPLER')
+                      'MIDI_INSERT_NOTE', 'VOL_DIP', 'USE_SAMPLE', 'INSERT_AUDIO', 'LOAD_SAMPLER',
+                      'ADD_FX', 'SET_FX_PARAM', 'FX_PARAM_AUTO')
     raw_commands = []
     for line in response.split('\n'):
         line = line.strip()
@@ -425,9 +608,10 @@ Generate at least 1 minute of MUSICAL, EMOTIONAL, CREATIVE composition."""
     # Count stats
     inst_count = len([c for c in final_commands if c.startswith('INSERT_INSTRUMENT')])
     note_count = len([c for c in final_commands if c.startswith('MIDI_INSERT_NOTE')])
+    fx_count = len([c for c in final_commands if c.startswith(('ADD_FX', 'SET_FX_PARAM'))])
     sampler_count = len([c for c in final_commands if c.startswith('LOAD_SAMPLER')])
     midi_item_count = len([c for c in final_commands if c.startswith('MIDI_CREATE_ITEM')])
-    print(f"   ✅ Final: {inst_count} instruments, {sampler_count} samplers, {midi_item_count} MIDI items, {note_count} notes")
+    print(f"   ✅ Final: {inst_count} instruments, {fx_count} FX, {sampler_count} samplers, {midi_item_count} items, {note_count} notes")
     
     # Verify all tracks with notes have sound sources
     final_tracks_with_notes = set()
@@ -481,7 +665,7 @@ Example: Pick kick ID 86, reuse it: USE_SAMPLE 2 86 0.0, USE_SAMPLE 2 86 1.0, US
 FOR DRUMS & 808s - Use MIDI:
 - TRACK 2 for drums: INSERT_INSTRUMENT 2 VSTi: ReaSynDr (Cockos)
   Pitches: kick=36, snare=38, hihat=42
-- TRACK 3 for 808 bass: INSERT_INSTRUMENT 3 VSTi: Analog Lab V (Arturia)
+- TRACK 3 for 808/bass: INSERT_INSTRUMENT 3 ReaSynth
   Use LOW notes (C1=24, C2=36) - MATCH THE KEY of existing melody!
 
 """
@@ -503,8 +687,7 @@ COMMANDS YOU CAN USE:
 FOR MELODY/BASS/SYNTHS - Use MIDI:
 - SET_TEMPO [bpm] (if not already set)
 - INSERT_INSTRUMENT [track_number] [instrument]
-  * "VSTi: Piano V3 (Arturia)" - for piano, keys, chords
-  * "VSTi: Analog Lab V (Arturia)" - for synths, bass, pads, leads
+  * "ReaSynth" - for synths, bass, pads, leads (free, comes with Reaper)
 - MIDI_CREATE_ITEM [track] [start_seconds] [end_seconds]
 - MIDI_INSERT_NOTE [track] [midi_pitch] [velocity] [start_seconds] [end_seconds]
 
@@ -537,7 +720,8 @@ Output ONLY commands, one per line."""
 
     # Keep only valid commands
     valid_prefixes = ('SET_TEMPO', 'INSERT_INSTRUMENT', 'MIDI_CREATE_ITEM', 
-                      'MIDI_INSERT_NOTE', 'VOL_DIP', 'USE_SAMPLE', 'INSERT_AUDIO', 'LOAD_SAMPLER')
+                      'MIDI_INSERT_NOTE', 'VOL_DIP', 'USE_SAMPLE', 'INSERT_AUDIO', 'LOAD_SAMPLER',
+                      'ADD_FX', 'SET_FX_PARAM', 'FX_PARAM_AUTO')
     raw_commands = []
     for line in response.split('\n'):
         line = line.strip()
@@ -549,8 +733,9 @@ Output ONLY commands, one per line."""
     
     inst_count = len([c for c in final_commands if c.startswith('INSERT_INSTRUMENT')])
     note_count = len([c for c in final_commands if c.startswith('MIDI_INSERT_NOTE')])
+    fx_count = len([c for c in final_commands if c.startswith(('ADD_FX', 'SET_FX_PARAM'))])
     drum_count = len([c for c in final_commands if c.startswith(('USE_SAMPLE', 'INSERT_AUDIO'))])
-    print(f"   Generated {inst_count} instruments, {note_count} notes, {drum_count} drum hits")
+    print(f"   Generated {inst_count} instruments, {note_count} notes, {fx_count} FX, {drum_count} drum hits")
     
     return '\n'.join(final_commands)
 
@@ -567,8 +752,13 @@ def enhance_simple_prompt(user_input):
 
 
 def enhance_prompt(user_input, reaper_state="", midi_notes=None):
-    """Route to EL1 full song, song generation, compose-around, or agentic mode."""
+    """Route to M1 MIDI model, EL1 full song, song generation, compose-around, or agentic mode."""
     mode = classify_request(user_input)
+    
+    # MIDI Foundation Model - highest priority
+    if mode == "midi_model":
+        print(f"🎹 M1 MODE - MIDI Foundation Model (170M params, 176K MIDI)")
+        return generate_song_with_midi_model(user_input)
     
     if mode == "el1_fullsong":
         print(f"🎵 EL1 MODE - Full song via ElevenLabs + stems (MODEL O)")
@@ -591,6 +781,11 @@ def enhance_prompt(user_input, reaper_state="", midi_notes=None):
             pass
         return generate_el1_fullsong(description, session_id=session_id)
     elif mode == "song_generation":
+        # Use MIDI Foundation Model if available and set as default
+        if USE_MIDI_MODEL_DEFAULT and MIDI_MODEL_AVAILABLE:
+            print(f"🎹 SONG MODE - Using MIDI Foundation Model (170M params)")
+            return generate_song_with_midi_model(user_input)
+        
         print(f"🎵 SONG MODE - Full song (instrumental + vocals trigger)")
         # IMPORTANT: In song mode we want the prompt enhancer to do everything:
         # - generate instrumental commands

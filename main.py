@@ -177,7 +177,7 @@ def api_m1(session_id: str = "demo", request: Request = None):
     import os
     import uuid
     
-    MIDI_API = "https://izcwa-192-222-51-140.a.free.pinggy.link"
+    MIDI_API = "https://192-222-51-140.tail9f8b6b.ts.net"
     
     print(f"🎹 [M1] Endpoint called for session {session_id}")
     
@@ -187,7 +187,7 @@ def api_m1(session_id: str = "demo", request: Request = None):
         resp = requests.post(
             f"{MIDI_API}/generate",
             json={"max_tokens": 4096, "temperature": 0.9},  # More tokens = more notes
-            timeout=120  # 2 min timeout
+            timeout=600  # 10 min timeout for longer generations
         )
         resp.raise_for_status()
         data = resp.json()
@@ -504,7 +504,7 @@ def api_chat(body: ChatIn):
         import os
         import uuid
         
-        MIDI_API = "https://izcwa-192-222-51-140.a.free.pinggy.link"
+        MIDI_API = "https://192-222-51-140.tail9f8b6b.ts.net"
         
         print(f"🎹 [M1] CALLING MIDI MODEL...")
         

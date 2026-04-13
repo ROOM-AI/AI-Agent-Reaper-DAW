@@ -1,0 +1,16 @@
+# CursorDAW Bridge - minimal dependencies for standalone .exe
+# Install with: pip install -r bridge_requirements.txt
+
+requests>=2.31.0
+watchdog>=3.0.0
+numpy>=1.24.0
+urllib3>=2.0.0
+
+# Optional: audio processing (for upload downsampling)
+# Uncomment if you want smaller uploads:
+# librosa>=0.10.0
+# soundfile>=0.12.0
+
+# Build tool
+pyinstaller>=6.0.0
+
