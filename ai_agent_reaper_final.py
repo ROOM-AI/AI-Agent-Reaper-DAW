@@ -10,57 +10,6 @@ from contextlib import contextmanager
 from anthropic import Anthropic
 from openai import OpenAI
 from scipy.spatial.distance import cosine, euclidean
-from dotenv import load_dotenv
-import requests
-
-# Load environment variables
-load_dotenv()
-
-# Portable base directory and cloud bridge config
-REPO_DIR = Path(__file__).resolve().parent
-BASE_DIR = Path(os.getenv("REAPER_AGENT_DIR", str(Path.home() / "AIAGENT_DAW")))
-BASE_DIR.mkdir(parents=True, exist_ok=True)
-
-USE_CLOUD = bool(os.getenv("REAPER_AGENT_SERVER"))
-SERVER = os.getenv("REAPER_AGENT_SERVER", "").rstrip("/")
-TOKEN = os.getenv("AGENT_AUTH_TOKEN", "")
-CLIENT_ID = os.getenv("AGENT_CLIENT_ID", "server")
-HEADERS = {"Authorization": f"Bearer {TOKEN}"} if TOKEN else {}
-
-# -------------------- Cloud hook support --------------------
-# Minimal, opt-in hooks so the real agent can run in cloud without wrappers.
-# When hooks are set (or CLOUD_MODE=true), I/O is redirected to server-provided functions.
-CLOUD_MODE = str(os.getenv("CLOUD_MODE", "false")).lower() in ("1", "true", "yes", "on")
-
-_CLOUD_STATE_PROVIDER = None  # callable(session_id) -> str state_text
-_CLOUD_COMMAND_SINK = None    # callable(commands: List[str] | str, session_id) -> bool
-_CLOUD_FEEDBACK_PROVIDER = None  # callable(session_id) -> str
-_CLOUD_MEMORY_LOAD = None     # callable(session_id) -> dict
-_CLOUD_MEMORY_SAVE = None     # callable(session_id, data: dict) -> bool
-_CURRENT_SESSION_ID = "demo"
-
-def set_cloud_hooks(
-    state_provider=None,
-    command_sink=None,
-    feedback_provider=None,
-    memory_load=None,
-    memory_save=None,
-):
-    """Inject cloud I/O hooks so the real agent can run in server context.
-    Any hook left as None will keep default local behavior for that function.
-    """
-    global _CLOUD_STATE_PROVIDER, _CLOUD_COMMAND_SINK, _CLOUD_FEEDBACK_PROVIDER
-    global _CLOUD_MEMORY_LOAD, _CLOUD_MEMORY_SAVE
-    _CLOUD_STATE_PROVIDER = state_provider or _CLOUD_STATE_PROVIDER
-    _CLOUD_COMMAND_SINK = command_sink or _CLOUD_COMMAND_SINK
-    _CLOUD_FEEDBACK_PROVIDER = feedback_provider or _CLOUD_FEEDBACK_PROVIDER
-    _CLOUD_MEMORY_LOAD = memory_load or _CLOUD_MEMORY_LOAD
-    _CLOUD_MEMORY_SAVE = memory_save or _CLOUD_MEMORY_SAVE
-
-def set_current_session(session_id: str):
-    """Set the active session id for cloud hook calls."""
-    global _CURRENT_SESSION_ID
-    _CURRENT_SESSION_ID = session_id or "demo"
 
 # Clipboard for auto-copying enhanced prompts
 try:
@@ -130,10 +79,10 @@ CLAP_AVAILABLE = False
 MERT_AVAILABLE = False
 
 # Initialize Anthropic Claude
-client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+client = Anthropic(api_key="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")
 
 # Initialize OpenAI for Whisper
-openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+openai_client = OpenAI(api_key="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")
 
 # Parameter conversion helpers
 def db_to_normalized(target_db, min_db=-30, max_db=30):
@@ -144,18 +93,18 @@ def normalized_to_db(normalized, min_db=-30, max_db=30):
     """Convert normalized 0-1 value to dB"""
     return min_db + (normalized * (max_db - min_db))
 
-COMMAND_FILE = str(BASE_DIR / "reaper_commands.txt")
-STATE_FILE = str(BASE_DIR / "reaper_state.txt")
-MEMORY_FILE = str(BASE_DIR / "agent_memory.txt")
-FEEDBACK_FILE = str(BASE_DIR / "reaper_feedback.txt")
-DEBUG_LOG_FILE = str(BASE_DIR / "agent_debug.log")
-KNOWLEDGE_BASE_FILE = str((REPO_DIR / "sound_knowledge_base.json"))
-USER_PREFERENCES_FILE = str(BASE_DIR / "user_preferences.json")
-LYRICS_CACHE_DIR = str(BASE_DIR / "lyrics_cache")
-TEMP_AUDIO_DIR = str(BASE_DIR / "temp_audio")
-STATE_HISTORY_FILE = str(BASE_DIR / "state_history.json")
-REFERENCE_AUDIO_DIR = str(BASE_DIR / "references")
-STRUCTURED_MEMORY_FILE = str(BASE_DIR / "structured_memory.json")
+COMMAND_FILE = r"C:\Users\moosb\AIAGENT DAW\reaper_commands.txt"
+STATE_FILE = r"C:\Users\moosb\AIAGENT DAW\reaper_state.txt"
+MEMORY_FILE = r"C:\Users\moosb\AIAGENT DAW\agent_memory.txt"
+FEEDBACK_FILE = r"C:\Users\moosb\AIAGENT DAW\reaper_feedback.txt"
+DEBUG_LOG_FILE = r"C:\Users\moosb\AIAGENT DAW\agent_debug.log"
+KNOWLEDGE_BASE_FILE = r"C:\Users\moosb\AIAGENT DAW\sound_knowledge_base.json"
+USER_PREFERENCES_FILE = r"C:\Users\moosb\AIAGENT DAW\user_preferences.json"
+LYRICS_CACHE_DIR = r"C:\Users\moosb\AIAGENT DAW\lyrics_cache"
+TEMP_AUDIO_DIR = r"C:\Users\moosb\AIAGENT DAW\temp_audio"
+STATE_HISTORY_FILE = r"C:\Users\moosb\AIAGENT DAW\state_history.json"
+REFERENCE_AUDIO_DIR = r"C:\Users\moosb\AIAGENT DAW\references"
+STRUCTURED_MEMORY_FILE = r"C:\Users\moosb\AIAGENT DAW\structured_memory.json"
 
 # Production terms for CLAP semantic matching
 PRODUCTION_TERMS = [
@@ -683,98 +632,31 @@ def parse_fx_list(state):
     return fx_list
 
 def send_reaper_commands(commands):
-    """Send commands to Reaper.
-    - In cloud mode, push over HTTP to connected client via cloud server
-    - Locally, write to command file for Lua to consume
-    """
+    """Send commands to Reaper"""
     try:
-        # Cloud hook path: send via injected command sink if available
-        if (CLOUD_MODE or _CLOUD_COMMAND_SINK) and _CLOUD_COMMAND_SINK is not None:
-            if not isinstance(commands, list):
-                commands = [commands]
-            ok = False
-            try:
-                ok = bool(_CLOUD_COMMAND_SINK(commands, _CURRENT_SESSION_ID))
-            except Exception:
-                ok = False
-            if ok:
-                log_debug(f"Sent via cloud sink: {commands}")
-                return True
-
-        if not isinstance(commands, list):
-            commands = [commands]
-
-        if USE_CLOUD and SERVER:
-            try:
-                payload = {"type": "cloud_cmd", "commands": commands}
-                r = requests.post(f"{SERVER}/send/{CLIENT_ID}", headers=HEADERS, json=payload, timeout=15)
-                ok = r.ok
-            except Exception as http_err:
-                log_debug(f"HTTP send error: {http_err}")
-                ok = False
-            if ok:
-                log_debug(f"Sent to cloud: {commands}")
-                return True
-            # fall back to local if HTTP failed
-
-        with open(COMMAND_FILE, 'w', encoding='utf-8') as f:
+        with open(COMMAND_FILE, 'w') as f:
             for cmd in commands:
                 f.write(cmd + '\n')
         time.sleep(0.3)
-        log_debug(f"Sent local: {commands}")
+        log_debug(f"Sent: {commands}")
         return True
     except Exception as e:
         log_debug(f"Send error: {e}")
         return False
 
 def get_reaper_state():
-    """Get current Reaper state.
-    - In cloud mode, read state via server
-    - Locally, request and read from file
-    """
-    # Cloud hook path: read from injected state provider if available
-    if (CLOUD_MODE or _CLOUD_STATE_PROVIDER) and _CLOUD_STATE_PROVIDER is not None:
-        try:
-            state_text = _CLOUD_STATE_PROVIDER(_CURRENT_SESSION_ID)
-            # Mirror local behavior: proceed even if missing
-            return state_text if isinstance(state_text, str) else str(state_text)
-        except Exception:
-            return "State unavailable"
-
-    if USE_CLOUD and SERVER:
-        try:
-            r = requests.get(f"{SERVER}/state/{CLIENT_ID}", headers=HEADERS, timeout=10)
-            if r.ok:
-                data = r.json() or {}
-                state = data.get("state")
-                if state:
-                    return state
-        except Exception as http_err:
-            log_debug(f"HTTP state error: {http_err}")
-        # continue to local fallback below
-
+    """Get current Reaper state"""
     if not send_reaper_commands(["GET_STATE"]):
         return "State unavailable"
     time.sleep(0.3)
     try:
-        with open(STATE_FILE, "r", encoding='utf-8') as f:
+        with open(STATE_FILE, "r") as f:
             return f.read()
-    except Exception:
+    except:
         return "State unavailable"
 
 def get_reaper_feedback():
     """Read feedback from Reaper about last command execution"""
-    # Cloud hook path: read from injected feedback provider if available
-    if (CLOUD_MODE or _CLOUD_FEEDBACK_PROVIDER) and _CLOUD_FEEDBACK_PROVIDER is not None:
-        try:
-            fb = _CLOUD_FEEDBACK_PROVIDER(_CURRENT_SESSION_ID)
-            if fb:
-                log_debug(f"Feedback: {fb}")
-                return fb
-            return "No feedback available"
-        except Exception:
-            return "No feedback available"
-
     try:
         with open(FEEDBACK_FILE, "r") as f:
             feedback = f.read().strip()
@@ -793,36 +675,6 @@ def clear_reaper_feedback():
         log_debug("Cleared feedback file")
     except Exception as e:
         log_debug(f"Failed to clear feedback: {e}")
-
-# Optional cloud memory indirection for save/load if hooks provided
-def save_memory(data):
-    try:
-        if (CLOUD_MODE or _CLOUD_MEMORY_SAVE) and _CLOUD_MEMORY_SAVE is not None:
-            return bool(_CLOUD_MEMORY_SAVE(_CURRENT_SESSION_ID, data))
-    except Exception:
-        pass
-    # Fall back to local file save
-    try:
-        with open(STRUCTURED_MEMORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f)
-        return True
-    except Exception:
-        return False
-
-def load_memory():
-    try:
-        if (CLOUD_MODE or _CLOUD_MEMORY_LOAD) and _CLOUD_MEMORY_LOAD is not None:
-            mem = _CLOUD_MEMORY_LOAD(_CURRENT_SESSION_ID)
-            return mem if isinstance(mem, dict) else {}
-    except Exception:
-        pass
-    try:
-        if os.path.exists(STRUCTURED_MEMORY_FILE):
-            with open(STRUCTURED_MEMORY_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception:
-        pass
-    return {}
 
 def sanity_check_actions(user_goal, planned_steps, known_actions):
     """
@@ -880,7 +732,7 @@ def sanity_check_actions(user_goal, planned_steps, known_actions):
     
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-5-20250929",
+            model="claude-sonnet-4-20250514",
             max_tokens=1000,
             temperature=0,
             messages=[{"role": "user", "content": prompt}]
@@ -929,7 +781,7 @@ def load_action_list():
     """Load complete action database (6,309 actions!)"""
     known_actions = {}
     try:
-        with open(str(REPO_DIR / "reaper_actions.txt"), "r", encoding="utf-8") as f:
+        with open(r"C:\Users\moosb\AIAGENT DAW\reaper_actions.txt", "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line or line.startswith("REAPER") or line.startswith("Format:") or line.startswith("Generated:"):
@@ -950,7 +802,7 @@ def load_plugin_list():
     """Load available plugins from Reaper"""
     plugins = []
     try:
-        with open(str(REPO_DIR / "reaper_plugins_list.txt"), "r", encoding="utf-8") as f:
+        with open(r"C:\Users\moosb\AIAGENT DAW\reaper_plugins_list.txt", "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line or line.startswith("===") or line in ["Video processor", "Container"]:
@@ -3981,32 +3833,10 @@ def plan_actions(user_input, state, known_actions, available_plugins, previous_i
     user_lower = user_input.lower()
     user_words = [w for w in user_lower.split() if len(w) > 2 and w not in ['open', 'add', 'and', 'the']]
     
-    # Check if user wants VSTi (virtual instrument) vs VST (effect)
-    wants_instrument = any(word in user_lower for word in ['instrument', 'vsti', 'virtual instrument', 'synth', 'synthesizer'])
-    
-    # Add instrument-specific guidance to prompt
-    instrument_guidance = ""
-    if wants_instrument:
-        instrument_guidance = """
-**IMPORTANT: User wants VIRTUAL INSTRUMENT**
-- Use ADD_INSTRUMENT command (not ADD_FX) for instruments
-- This creates instrument track with MIDI input, not FX chain
-- Example: ADD_INSTRUMENT 6 "VSTi: ElectraX (Tone2.com)"
-"""
-    
     scored_plugins = []
     for plugin in available_plugins:
         plugin_lower = plugin.lower()
         score = 0
-        
-        # VSTi vs VST preference based on user intent
-        if wants_instrument and 'vsti:' in plugin_lower:
-            score += 100  # Strong preference for VSTi when user wants instrument
-        elif wants_instrument and 'vst:' in plugin_lower:
-            score -= 50   # Penalty for VST when user wants instrument
-        elif not wants_instrument and 'vsti:' in plugin_lower:
-            score -= 20   # Slight penalty for VSTi when user wants effect
-        
         # Score by keyword matches (more matches = higher score)
         for word in user_words:
             if word in plugin_lower:
@@ -4171,8 +4001,6 @@ When user requests effects like "underwater", "drake style", "lo-fi", "sidechain
 ╚═══════════════════════════════════════════════════════════════════════════════╝
 
 **NEVER USE DESTRUCTIVE ACTIONS FOR NON-DESTRUCTIVE REQUESTS**
-
-{instrument_guidance}
 
 SEMANTIC CATEGORIES:
 1. **AUTOMATION/MIXING** (non-destructive - volume, pan, FX params, etc.)
@@ -4488,10 +4316,6 @@ When user says "add Waves distortion", search for: Manny M, Kramer Tape, J37 Tap
   * Example: User says "open ssl channel" → Search list → Find "VST: SSLChannel Stereo (x86) (Waves)" → Use that exact name
   * Example: User says "add reverb" → Search list → Find "VST3: ValhallaRoom (Valhalla DSP, LLC)" or similar → Use exact name
   * If plugin already exists on track, it will just open it (no duplicate)
-- ADD_INSTRUMENT <trackIdx> <pluginName> - Add VSTi instrument to track (creates instrument track, not FX)
-  * Use for virtual instruments that produce sound from MIDI
-  * Example: ADD_INSTRUMENT 6 "VSTi: ElectraX (Tone2.com)" → Makes track 6 an instrument track
-  * Different from ADD_FX - this adds as instrument, not effect
 - REMOVE_FX <trackIdx> <fxIdx> - Remove FX plugin from track
   * Example: REMOVE_FX 0 1 (removes second plugin from track 0)
   * fxIdx: 0=first plugin, 1=second, 2=third, etc.
@@ -5399,7 +5223,7 @@ CRITICAL: Return ONLY valid JSON. No text before or after."""
 
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-5-20250929",
+            model="claude-sonnet-4-20250514",
             max_tokens=8000,
             messages=[{"role": "user", "content": system_prompt}]
         ).content[0].text.strip()
@@ -5455,7 +5279,7 @@ CRITICAL: Return ONLY valid JSON."""
 
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-5-20250929",
+            model="claude-sonnet-4-20250514",
             max_tokens=3000,
             messages=[{"role": "user", "content": system_prompt}]
         ).content[0].text.strip()
@@ -5743,7 +5567,7 @@ Action 40294 (mute) → "Muted: YES" appears
 
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-5-20250929",
+            model="claude-sonnet-4-20250514",
             max_tokens=2000,
             temperature=0,
             messages=[{"role": "user", "content": system_prompt}]
@@ -5802,7 +5626,7 @@ Sub-goals:
     
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-5-20250929",
+            model="claude-sonnet-4-20250514",
             max_tokens=1000,
             temperature=0,
             messages=[{"role": "user", "content": prompt}]

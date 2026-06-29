@@ -82,7 +82,9 @@ def api_chat(body: ChatIn):
         
         # Step 2: Execute using REAL agent with cloud hooks
         agent._CURRENT_SESSION_ID = body.session_id
+        print(f"🔥 Calling agent.execute_user_command with: {enhanced_prompt}")
         agent.execute_user_command(enhanced_prompt)
+        print(f"🔥 Agent finished. Commands in queue: {len(REAPER_SESSIONS.get(body.session_id, []))}")
         
         # Get commands that were queued by the agent (via hooks)
         commands = REAPER_SESSIONS.get(body.session_id, [])
@@ -204,12 +206,18 @@ import ai_agent_reaper_final as agent
 
 def _state_provider(session_id: str) -> str:
     state = REAPER_STATE.get(session_id, {})
+    print(f"🔍 State provider called for session {session_id}")
+    print(f"🔍 State keys: {list(state.keys()) if isinstance(state, dict) else 'not a dict'}")
     # Prefer raw text dump if present
     if isinstance(state, dict) and isinstance(state.get("state_text"), str):
+        print(f"🔍 Returning state_text: {len(state['state_text'])} chars")
         return state["state_text"]
     try:
-        return json.dumps(state) if state else ""
-    except Exception:
+        result = json.dumps(state) if state else ""
+        print(f"🔍 Returning JSON state: {len(result)} chars")
+        return result
+    except Exception as e:
+        print(f"🔍 State error: {e}")
         return ""
 
 def _command_sink(commands, session_id: str) -> bool:
