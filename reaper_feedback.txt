@@ -1,0 +1,5 @@
+✓ Inserted audio: room_take_5573.wav at 0.00s
+✓ Inserted audio: drums_5573.wav at 0.00s
+✓ Inserted audio: bass_5573.wav at 0.00s
+✓ Inserted audio: vocals_5573.wav at 0.00s
+✓ Inserted audio: other_5573.wav at 0.00s
